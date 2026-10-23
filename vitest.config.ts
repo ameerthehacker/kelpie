@@ -6,5 +6,5 @@ const conditions = ['kelpie-src', 'module', 'node'];
 export default defineConfig({
   resolve: { conditions },
   ssr: { resolve: { conditions } },
-  test: { include: ['packages/*/test/**/*.test.ts'] },
+  test: { include: ['packages/*/test/**/*.test.ts', 'apps/*/test/**/*.test.ts'] },
 });

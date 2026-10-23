@@ -1,0 +1,58 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import type { KelpieEvent } from '@kelpie/protocol';
+import { ClaudeCodeParser } from '@kelpie/adapters';
+import { buildChat, type AssistantPart, type ToolView } from '../src/lib/chat.js';
+
+const FIXTURES = join(import.meta.dirname, '../../../packages/adapters/fixtures/claude-code');
+
+function events(name: string): KelpieEvent[] {
+  const parser = new ClaudeCodeParser({ runId: 'r', now: () => '2026-01-01T00:00:00.000Z' });
+  return readFileSync(join(FIXTURES, `${name}.jsonl`), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .flatMap((l, i) => parser.parse(JSON.parse(l), i + 1));
+}
+
+const partsOf = (name: string): AssistantPart[] => buildChat(events(name)).flatMap((i) => (i.role === 'assistant' ? i.parts : []));
+const toolsOf = (name: string) => partsOf(name).filter((p): p is ToolView => p.type === 'tool');
+
+describe('buildChat', () => {
+  it('alternates user turns and assistant replies', () => {
+    expect(buildChat(events('multi-turn')).map((i) => (i.role === 'user' ? `user:${i.text.slice(0, 8)}` : `assistant:${i.parts.length}`))).toEqual([
+      'user:Remember',
+      'assistant:1',
+      'user:What wor',
+      'assistant:1',
+    ]);
+  });
+
+  it('shows tools with their outcome and line counts', () => {
+    const tools = toolsOf('edit-bash');
+    expect(tools.every((t) => t.state === 'done')).toBe(true);
+    expect(tools.find((t) => t.name === 'Edit')?.delta).toEqual({ added: 4, removed: 0 });
+    expect(toolsOf('bash-fail')[0]).toMatchObject({ state: 'error', output: 'Exit code 3' });
+  });
+
+  it('shows the todo list once, at its latest state', () => {
+    const todos = partsOf('todos').filter((p) => p.type === 'todos');
+    expect(todos).toHaveLength(1);
+    expect(todos[0]!.type === 'todos' && todos[0]!.items.map((t) => t.status)).toEqual(['completed', 'completed']);
+    expect(toolsOf('todos').some((t) => t.category === 'todo')).toBe(false);
+  });
+
+  it('nests sub-agent work under the Agent call', () => {
+    const agent = toolsOf('subagent').find((t) => t.category === 'task')!;
+    expect(agent.steps).toEqual(['read src/math.js']);
+    expect(toolsOf('subagent').map((t) => t.name)).toEqual(['Agent']);
+  });
+
+  it('notes an interrupted turn', () => {
+    expect(partsOf('interrupt').at(-1)).toEqual({ type: 'notice', tone: 'info', text: 'Interrupted.' });
+  });
+
+  it('shows queued messages as separate user turns before the merged reply', () => {
+    expect(buildChat(events('queued')).map((i) => i.role)).toEqual(['user', 'assistant', 'user', 'user', 'assistant']);
+  });
+});

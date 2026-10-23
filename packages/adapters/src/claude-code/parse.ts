@@ -47,6 +47,7 @@ export class ClaudeCodeParser {
   /** Turns sent on stdin that the CLI has not yet taken in (it replays each one as it does). */
   private unconsumed = 0;
   private inTurn = false;
+  private lastBusy = false;
 
   constructor(opts: ParserOptions) {
     this.runId = opts.runId;
@@ -76,15 +77,36 @@ export class ClaudeCodeParser {
   }
 
   /** Records a turn written to stdin; it counts as queued until the CLI replays it. */
-  noteSent(): void {
+  noteSent(): KelpieEvent[] {
     this.unconsumed++;
+    return this.activity();
+  }
+
+  /** The process is gone: nothing is running or queued any more. */
+  noteExited(): KelpieEvent[] {
+    this.unconsumed = 0;
+    this.inTurn = false;
+    return this.activity();
   }
 
   parse(o: Obj, rawLine?: number): KelpieEvent[] {
+    if (o.type === 'assistant' || o.type === 'user') this.inTurn = true;
+    const out = this.translate(o, rawLine);
+    return out.concat(this.activity(rawLine));
+  }
+
+  /** An `activity` event when busy has flipped, so consumers see it in order with everything else. */
+  private activity(rawLine?: number): KelpieEvent[] {
+    const busy = this.busy;
+    if (busy === this.lastBusy) return [];
+    this.lastBusy = busy;
+    return [this.emit('activity', { busy }, { rawLine })];
+  }
+
+  private translate(o: Obj, rawLine?: number): KelpieEvent[] {
     const parentCallId: string | undefined = o.parent_tool_use_id ?? undefined;
     const x: EmitExtra = { parentCallId, rawLine };
 
-    if (o.type === 'assistant' || o.type === 'user') this.inTurn = true;
     switch (o.type) {
       case 'system':
         return this.system(o, x);

@@ -130,6 +130,9 @@ export const RateLimit = ev(
   }),
 );
 
+/** The harness started or stopped working (a turn running, or sent turns still queued). Emitted on change. */
+export const Activity = ev('activity', z.object({ busy: z.boolean() }));
+
 export const TurnEnded = ev(
   'turn.ended',
   z.object({
@@ -169,6 +172,7 @@ export const KelpieEvent = z.discriminatedUnion('kind', [
   Todos,
   Usage,
   RateLimit,
+  Activity,
   TurnEnded,
   ProcessExited,
   Other,

@@ -128,7 +128,8 @@ describe('claude-code mapping', () => {
   it('swallows both interrupt markers instead of reporting them as user messages', () => {
     const parser = new ClaudeCodeParser({ runId: 'r' });
     for (const text of ['[Request interrupted by user]', '[Request interrupted by user for tool use]']) {
-      expect(parser.parse({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } })).toEqual([]);
+      const evs = parser.parse({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } });
+      expect(evs.filter((e) => e.kind === 'message')).toEqual([]);
     }
   });
 
@@ -146,6 +147,13 @@ describe('claude-code mapping', () => {
   it('ignores updates to todos it never saw created', () => {
     const items = [{ id: '1', text: 'a', status: 'pending' as const }];
     expect(applyTodoTool('TaskUpdate', { taskId: '9', status: 'completed' }, { success: true }, items)).toBeUndefined();
+  });
+
+  it('emits activity on every busy flip, in order with the turn', () => {
+    const kinds = replay('multi-turn').filter((e) => ['activity', 'turn.ended'].includes(e.kind));
+    expect(kinds.map((e) => (e.kind === 'activity' ? `busy:${e.data.busy}` : e.kind))).toEqual([
+      'busy:true', 'turn.ended', 'busy:false', 'busy:true', 'turn.ended', 'busy:false',
+    ]);
   });
 
   it('keeps unknown events as `other`', () => {

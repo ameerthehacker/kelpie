@@ -129,7 +129,7 @@ class ClaudeCodeRun implements Run {
 
   send(text: string): void {
     if (this.exit || this.stopping) throw new Error(`run ${this.runId} is ${this.exit ? 'exited' : 'stopping'}`);
-    this.parser.noteSent();
+    this.parser.noteSent().forEach((ev) => this.events.push(ev));
     // The CLI replays the turn on stdout once it takes it in; that becomes the user `message` event.
     this.child.stdin.write(userTurn(text));
   }
@@ -209,6 +209,7 @@ class ClaudeCodeRun implements Run {
           : this.parser.emit('turn.ended', { status: 'failed', error: error ?? 'harness process exited mid-turn' }),
       );
     }
+    this.parser.noteExited().forEach((ev) => this.events.push(ev));
     const stderrTail = error ? `${this.stderrTail}${error}` : this.stderrTail;
     this.events.push(this.parser.emit('process.exited', { ...exit, stderrTail }));
     this.events.close();

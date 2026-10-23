@@ -40,7 +40,9 @@ describe('claude-code spawn', () => {
         await run.stop();
       }
     });
-    expect(events.map((e) => e.kind)).toEqual(['session.started', 'message', 'message', 'rate_limit', 'usage', 'turn.ended', 'process.exited']);
+    expect(events.map((e) => e.kind)).toEqual([
+      'activity', 'session.started', 'message', 'message', 'rate_limit', 'usage', 'turn.ended', 'activity', 'process.exited',
+    ]);
     events.forEach((e) => expect(KelpieEvent.safeParse(e).error).toBeUndefined());
     expect(run.harnessSessionId).toBeTruthy();
 
@@ -85,7 +87,8 @@ describe('claude-code spawn', () => {
       if (e.kind === 'session.started') await run.interrupt();
     });
     const kinds = events.map((e) => e.kind);
-    expect(kinds.slice(-2)).toEqual(['turn.ended', 'process.exited']);
-    expect(events.at(-2)!.data).toMatchObject({ status: 'interrupted' });
+    expect(kinds.slice(-3)).toEqual(['turn.ended', 'activity', 'process.exited']);
+    expect(events.at(-3)!.data).toMatchObject({ status: 'interrupted' });
+    expect(events.at(-2)!.data).toEqual({ busy: false });
   });
 });

@@ -14,14 +14,16 @@ Every harness stream is normalized into the **Kelpie Event Format (KEF)**. The U
 | 4 | Supervisor: scheduling, dependencies, worktrees, questions | |
 | 5 | Kelpie MCP server (orchestrator + sub-agent tools) | |
 | 6 | Orchestrator runner | |
-| 7 | HTTP / WebSocket API | |
-| 8 | Web UI (design canvas "Kelpie") | |
+| 7 | HTTP API | basic: in-memory chat sessions + SSE (`packages/daemon`) |
+| 8 | Web UI (design canvas "Kelpie") | basic: single chat page (`apps/web`) |
 
 ## Layout
 
 ```
 packages/protocol   KEF types + zod schemas
 packages/adapters   harness adapters: spawn, parse, fixtures, golden tests
+packages/daemon     HTTP API: chat sessions over the adapter, KEF over SSE
+apps/web            chat UI: Vite + React + shadcn/ui + AI Elements
 scripts/            capture-claude.ts (fixtures), run.ts (dev runner)
 ```
 
@@ -41,6 +43,7 @@ Envelope: `{ id, runId, seq, ts, harness, kind, data, parentCallId?, rawLine? }`
 | `todos` | full todo-list snapshot after each change |
 | `usage` | tokens and cost **for that turn** |
 | `rate_limit` | subscription window status and utilization |
+| `activity` | busy flipped: a turn started, or the agent went idle. In-stream, so consumers never see busy run ahead of the events |
 | `turn.ended` | `completed` / `failed` / `interrupted` |
 | `process.exited` | exit code and stderr tail |
 | `other` | anything not understood yet; kept, never dropped |
@@ -62,14 +65,30 @@ Kelpie runs a long-lived `claude -p --input-format stream-json --output-format s
 
 Every run writes `~/.kelpie/runs/<runId>/run.json` (argv, cwd) and `raw.jsonl` (the untouched stream). A run directory holds exactly one run, since `rawLine` indexes `raw.jsonl` from line 1. To continue a session, start a new run with `resume`.
 
+## Daemon and web UI
+
+`pnpm kelpie:serve --cwd <repo>` starts the daemon on `127.0.0.1:7317`. It also serves `apps/web/dist` when that has been built.
+
+- **Sessions.** A session is one chat: an in-memory KEF log that spans harness processes. If the process has exited, the next message starts a new one with `resume`.
+- **API.** `POST /api/sessions`, `POST /api/sessions/:id/messages {text}`, `POST /api/sessions/:id/interrupt`.
+- **Event stream.** `GET /api/sessions/:id/events` is SSE. Each `kef` event's id is its log index, so `Last-Event-ID` reconnects resume exactly where they left off.
+- **Local only.** Agents can run shell commands, so the API only answers loopback Host names (defeats DNS rebinding), rejects non-local Origins, and requires JSON for writes (forces a CORS preflight, which is never granted).
+
+The web app renders KEF with AI Elements (`Conversation`, `Message`, `Tool`, `Reasoning`, `PromptInput`). `src/lib/chat.ts` folds the event log into chat items and is tested against the adapter fixtures.
+
 ## Developing
 
 ```sh
 pnpm install
 pnpm test                       # golden tests over the fixtures + spawn tests against a fake CLI
-pnpm typecheck && pnpm build
+pnpm typecheck && pnpm build   # via turbo
+pnpm dev                        # turbo: daemon (tsx watch, :7317) + UI (vite, :5173, proxies /api)
+KELPIE_CWD=<repo> pnpm dev      # point agents at another repo (default: this one); also KELPIE_PORT, KELPIE_MODEL
 pnpm capture:claude [scenario]  # re-record fixtures from the real CLI (uses haiku)
 pnpm kelpie:run --cwd <repo> [--model m] [--resume id] [--json] [--verbose] "prompt"
+pnpm kelpie:serve --cwd <repo> [--model m]   # daemon only; serves apps/web/dist after `pnpm build`
 ```
+
+The daemon restarts whenever its own source or an adapter's source changes, and a restart drops the in-memory sessions.
 
 In the dev runner: type a line to send another turn, Ctrl-C to interrupt the turn, and Ctrl-C again (or `/exit`) to end the session.
