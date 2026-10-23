@@ -13,7 +13,7 @@ export interface PendingMessage {
  * top-level user echo takes the oldest one, and a process exit takes them all
  * (whatever it had not read from stdin yet is gone).
  */
-export function settlePending(pending: PendingMessage[], batch: readonly KelpieEvent[]): PendingMessage[] {
+export function settlePending<P extends PendingMessage>(pending: P[], batch: readonly KelpieEvent[]): P[] {
   let next = pending;
   for (const ev of batch) {
     if (ev.kind === 'process.exited') next = [];

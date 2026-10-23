@@ -2,14 +2,23 @@
   "$schema": "https://turborepo.com/schema.json",
   "tasks": {
     "build": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
+      "dependsOn": [
+        "^build"
+      ],
+      "outputs": [
+        "dist/**"
+      ]
     },
     "typecheck": {},
     "dev": {
       "cache": false,
       "persistent": true,
-      "passThroughEnv": ["KELPIE_CWD", "KELPIE_PORT", "KELPIE_MODEL"]
+      "passThroughEnv": [
+        "KELPIE_CWD",
+        "KELPIE_PORT",
+        "KELPIE_MODEL",
+        "KELPIE_HOME"
+      ]
     }
   }
 }

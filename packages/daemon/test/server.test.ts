@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { openStore } from '@kelpie/store';
 import { createApp, SessionManager } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
@@ -10,8 +11,16 @@ chmodSync(FAKE, 0o755);
 
 const local = { host: '127.0.0.1:7317', 'content-type': 'application/json' };
 
+const manager = (defaultCwd = tmpdir()) =>
+  new SessionManager({
+    store: openStore(':memory:'),
+    defaultCwd,
+    runsDir: mkdtempSync(join(tmpdir(), 'kelpie-runs-')),
+    defaults: { bin: FAKE, env: { FAKE_FIXTURE: FIXTURE } },
+  });
+
 function setup() {
-  const sessions = new SessionManager(tmpdir(), { bin: FAKE, env: { FAKE_FIXTURE: FIXTURE } });
+  const sessions = manager();
   return { sessions, app: createApp(sessions) };
 }
 
@@ -67,7 +76,7 @@ describe('chat API', () => {
   it('resolves a relative cwd against the default repo, not the daemon process cwd', async () => {
     const root = mkdtempSync(join(tmpdir(), 'kelpie-repo-'));
     mkdirSync(join(root, 'sub'));
-    const app = createApp(new SessionManager(root));
+    const app = createApp(manager(root));
     const res = await app.request('/api/sessions', { method: 'POST', headers: local, body: '{"cwd":"sub"}' });
     expect(((await res.json()) as { cwd: string }).cwd).toBe(join(root, 'sub'));
     expect((await app.request('/api/sessions', { method: 'POST', headers: local, body: '{"cwd":3}' })).status).toBe(400);
@@ -76,11 +85,63 @@ describe('chat API', () => {
   it('answers unknown API paths with a JSON 404, not the UI page', async () => {
     const dist = mkdtempSync(join(tmpdir(), 'kelpie-dist-'));
     writeFileSync(join(dist, 'index.html'), '<!doctype html>');
-    const app = createApp(new SessionManager(tmpdir()), { staticDir: dist });
+    const app = createApp(manager(), { staticDir: dist });
     const res = await app.request('/api/sessions/abc/event', { headers: { host: local.host } });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'not found' });
     expect(await (await app.request('/some/page', { headers: { host: local.host } })).text()).toBe('<!doctype html>');
+  });
+});
+
+describe('round-up API', () => {
+  const json = (body: unknown) => ({ headers: local, body: JSON.stringify(body) });
+  const create = async (app: ReturnType<typeof createApp>) =>
+    ((await (await app.request('/api/sessions', { method: 'POST', ...json({}) })).json()) as { id: string }).id;
+
+  it('renames and deletes a round-up', async () => {
+    const { app } = setup();
+    const id = await create(app);
+    const renamed = await app.request(`/api/sessions/${id}`, { method: 'PATCH', ...json({ title: '  Fix   the build ' }) });
+    expect(await renamed.json()).toMatchObject({ id, title: 'Fix the build' });
+    expect((await app.request(`/api/sessions/${id}`, { method: 'PATCH', ...json({ title: ' ' }) })).status).toBe(400);
+    expect((await app.request(`/api/sessions/${id}`, { method: 'DELETE', headers: local })).status).toBe(204);
+    expect((await app.request(`/api/sessions/${id}`, { headers: local })).status).toBe(404);
+    expect((await app.request(`/api/sessions/${id}`, { method: 'DELETE', headers: local })).status).toBe(404);
+  });
+
+  it('ends open event streams when the round-up is deleted', async () => {
+    const { app } = setup();
+    const id = await create(app);
+    const res = await app.request(`/api/sessions/${id}/events`, { headers: { host: local.host } });
+    const reader = res.body!.getReader();
+    await app.request(`/api/sessions/${id}`, { method: 'DELETE', headers: local });
+    let done = false;
+    while (!done) done = (await reader.read()).done;
+    expect(done).toBe(true);
+  });
+
+  it('streams the round-up list: a snapshot, then changes', async () => {
+    const { app, sessions } = setup();
+    const first = await create(app);
+    const res = await app.request('/api/events', { headers: { host: local.host } });
+    const reader = res.body!.getReader();
+    let text = '';
+    const until = async (needle: string) => {
+      while (!text.includes(needle)) text += new TextDecoder().decode((await reader.read()).value);
+    };
+    await until('event: sessions');
+    const second = await create(app);
+    await until(`"id":"${second}"`);
+    await app.request(`/api/sessions/${second}/messages`, { method: 'POST', ...json({ text: 'What is 2+2?' }) });
+    await until('"lastTurn":"completed"');
+    await app.request(`/api/sessions/${first}`, { method: 'DELETE', headers: local });
+    await until('event: deleted');
+    await reader.cancel();
+    await sessions.stopAll();
+
+    expect(text).toMatch(new RegExp(`event: sessions\ndata: \\[\\{"id":"${first}"`));
+    expect(text).toContain('"title":"What is 2+2?"');
+    expect(text).toContain(`event: deleted\ndata: {"id":"${first}"}`);
   });
 });
 

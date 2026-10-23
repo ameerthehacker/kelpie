@@ -1,207 +1,161 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router';
 import type { KelpieEvent } from '@kelpie/protocol';
+import { api, isGone } from '@/lib/api';
 import { buildChat, type ChatItem } from '@/lib/chat';
+import { liveStream } from '@/lib/live-stream';
 import { chatStatus, lastBusy, settlePending, type PendingMessage } from '@/lib/session-state';
 
 export type { ChatStatus } from '@/lib/session-state';
 
-const STORAGE_KEY = 'kelpie.sessionId';
-const LOST = 'The daemon no longer has this chat (it probably restarted). Your next message starts a new one.';
+const GONE = 'This round-up no longer exists. Your next message starts a new one.';
 
-function readStoredId(): string | undefined {
-  try {
-    return localStorage.getItem(STORAGE_KEY) ?? undefined;
-  } catch {
-    return undefined;
-  }
+/** A sent message not yet echoed, tagged with the view it was sent from. */
+interface Pending extends PendingMessage {
+  /** A round-up id, or `draft:<n>` for a round-up not created yet. */
+  view: string;
+  /** The round-up created for it, when sent from a draft; it shows in both views across the move. */
+  created?: string;
+  /** Its POST has not answered yet. */
+  sending: boolean;
 }
 
-function storeId(id: string | undefined): void {
-  try {
-    if (id) localStorage.setItem(STORAGE_KEY, id);
-    else localStorage.removeItem(STORAGE_KEY);
-  } catch {}
-}
+const belongs = (m: Pending, view: string) => m.view === view || m.created === view;
 
-class HttpError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-  }
-}
-
-async function post<T>(url: string, body: unknown): Promise<T> {
-  const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new HttpError(json.error ?? `${res.status} ${res.statusText}`, res.status);
-  return json as T;
-}
-
-const isGone = (err: unknown) => err instanceof HttpError && err.status === 404;
-
-interface SessionInfo {
-  id: string;
-  cwd: string;
-  busy: boolean;
-}
-
-/** One chat session on the daemon: its KEF log, live over SSE, plus send / interrupt. */
-export function useSession() {
-  const [session, setSession] = useState<SessionInfo | undefined>();
+/**
+ * One round-up's conversation: its KEF log, live over SSE, plus send and
+ * interrupt. `id` is undefined for a new round-up; the first send creates it
+ * on the daemon and reports the id through `onCreated`.
+ *
+ * Sends outlive the view they started in (the user can switch round-ups
+ * while one is in flight), so everything they touch on completion is
+ * checked against the view on screen now.
+ */
+export function useSession(id: string | undefined, onCreated: (id: string) => void) {
   const [events, setEvents] = useState<KelpieEvent[]>([]);
-  const [inFlight, setInFlight] = useState(0);
-  const [pending, setPending] = useState<PendingMessage[]>([]);
+  const [pending, setPending] = useState<Pending[]>([]);
   const [error, setError] = useState<string | undefined>();
-  // The daemon dropped the session; its transcript stays on screen until the next send.
-  const [lost, setLost] = useState(false);
+  const [goneView, setGoneView] = useState<string | undefined>();
 
-  // Read by send() so quick successive calls see the session the first one created.
-  const sessionRef = useRef<SessionInfo | undefined>(undefined);
-  const creating = useRef<Promise<SessionInfo> | undefined>(undefined);
+  // Each visit to `/` is its own history entry, hence its own draft: a slow create from an earlier
+  // one can't land in it. (Router state, not a counter: renders can be discarded, so they must not
+  // mutate anything.)
+  const { key } = useLocation();
+  const view = id ?? `draft:${key}`;
+  // Latest committed values, for sends that finish later.
+  const viewRef = useRef(view);
+  const goneRef = useRef(goneView);
+  useLayoutEffect(() => {
+    viewRef.current = view;
+    goneRef.current = goneView;
+  });
+  const creating = useRef<{ view: string; promise: Promise<string> } | undefined>(undefined);
   const nextPendingId = useRef(0);
 
-  const adopt = useCallback((info: SessionInfo | undefined) => {
-    sessionRef.current = info;
-    storeId(info?.id);
-    setSession(info);
-    setLost(false);
+  const markGone = useCallback((gone: string) => {
+    setGoneView(gone);
+    setPending((p) => p.filter((m) => !belongs(m, gone)));
+    if (viewRef.current === gone) setError(GONE);
   }, []);
 
-  const markLost = useCallback(() => {
-    sessionRef.current = undefined;
-    storeId(undefined);
-    setLost(true);
-    setPending([]);
-    setError(LOST);
-  }, []);
-
-  // Reattach to the session from a previous page load, if the daemon still has it.
   useEffect(() => {
-    const id = readStoredId();
-    if (!id) return;
-    fetch(`/api/sessions/${id}`)
-      .then((r) => (r.ok ? r.json() : undefined))
-      .then((info: SessionInfo | undefined) => (info ? adopt(info) : storeId(undefined)))
-      .catch(() => {});
-  }, [adopt]);
-
-  useEffect(() => {
-    if (!session) return;
     setEvents([]);
+    setError(undefined);
+    // Finished sends from other views are on the daemon now and come back through its log.
+    setPending((p) => p.filter((m) => belongs(m, view) || m.sending));
+    if (!id) return;
+
     let seen = 0; // log indices received so far
     let buffer: KelpieEvent[] = [];
     let frame = 0;
-    let source: EventSource | undefined;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let disposed = false;
-
     // A long log replays as thousands of SSE messages; fold them in once per frame, not once each.
     const flush = () => {
       frame = 0;
       const batch = buffer;
       buffer = [];
       setEvents((prev) => prev.concat(batch));
-      setPending((p) => settlePending(p, batch));
+      setPending((p) => {
+        const mine = p.filter((m) => belongs(m, id));
+        const settled = settlePending(mine, batch);
+        return settled.length === mine.length ? p : [...p.filter((m) => !belongs(m, id)), ...settled];
+      });
     };
 
-    const onKef = (e: MessageEvent) => {
-      const index = Number(e.lastEventId);
-      if (index < seen) return;
-      seen = index + 1;
-      buffer.push(JSON.parse(e.data) as KelpieEvent);
-      frame ||= requestAnimationFrame(flush);
-    };
-
-    // The daemon pings every 15s; a stream silent for longer is dead even if the socket looks open.
-    let watchdog: ReturnType<typeof setTimeout> | undefined;
-    const alive = () => {
-      clearTimeout(watchdog);
-      watchdog = setTimeout(() => {
-        source?.close();
-        void check();
-      }, 40_000);
-    };
-
-    const connect = () => {
-      source = new EventSource(`/api/sessions/${session.id}/events?after=${seen - 1}`);
-      source.addEventListener('kef', (e) => (alive(), onKef(e)));
-      source.addEventListener('ping', alive);
-      source.onopen = () => (alive(), setError(undefined));
-      source.onerror = () => {
-        if (source!.readyState !== EventSource.CLOSED) return; // the browser is retrying by itself
-        clearTimeout(watchdog);
-        source!.close();
-        void check();
-      };
-    };
-
-    // The stream was refused for good: either the daemon is down, or it is back without this session.
-    const check = async () => {
-      if (disposed) return;
-      const res = await fetch(`/api/sessions/${session.id}`).catch(() => undefined);
-      if (disposed) return;
-      if (res?.status === 404) return markLost();
-      if (res?.ok) return connect();
-      setError('Lost connection to the Kelpie daemon. Retrying…');
-      retry = setTimeout(check, 2000);
-    };
-
-    connect();
+    const stop = liveStream({
+      url: () => `/api/sessions/${id}/events?after=${seen - 1}`,
+      on: {
+        kef: (msg) => {
+          const index = Number(msg.id);
+          if (index < seen) return;
+          seen = index + 1;
+          buffer.push(JSON.parse(msg.data) as KelpieEvent);
+          frame ||= requestAnimationFrame(flush);
+        },
+      },
+      onGone: () => markGone(id),
+      onStatus: setError,
+    });
     return () => {
-      disposed = true;
-      source?.close();
-      clearTimeout(retry);
-      clearTimeout(watchdog);
+      stop();
       cancelAnimationFrame(frame);
     };
-  }, [session, markLost]);
+  }, [id, view, markGone]);
 
   const send = useCallback(
     async (text: string) => {
-      const id = nextPendingId.current++;
+      const pendingId = nextPendingId.current++;
+      const from = viewRef.current;
+      let tag = from;
       setError(undefined);
-      setPending((p) => [...p, { id, text }]);
-      setInFlight((n) => n + 1);
+      setPending((p) => [...p, { id: pendingId, text, view: from, sending: true }]);
       try {
-        const current =
-          sessionRef.current ??
-          (await (creating.current ??= post<SessionInfo>('/api/sessions', {})
-            .then((info) => (adopt(info), info))
-            .finally(() => (creating.current = undefined))));
-        await post(`/api/sessions/${current.id}/messages`, { text });
+        // A draft, or a round-up the daemon no longer has: create one first, once per view.
+        let target = from.startsWith('draft:') || goneRef.current === from ? undefined : from;
+        if (!target) {
+          if (creating.current?.view !== from) {
+            const promise = api<{ id: string }>('POST', '/api/sessions').then(({ id: created }) => {
+              // Every message sent from this view goes with it, and stays visible while the route changes.
+              setPending((p) => p.map((m) => (m.view === from ? { ...m, created } : m)));
+              // Only follow it there if the user is still looking at where they sent from.
+              if (viewRef.current === from) onCreated(created);
+              return created;
+            });
+            creating.current = { view: from, promise };
+            void promise.catch(() => {}).finally(() => creating.current?.promise === promise && (creating.current = undefined));
+          }
+          target = await creating.current!.promise;
+          tag = target;
+        }
+        await api('POST', `/api/sessions/${target}/messages`, { text });
+        // Off screen now: the daemon's log has it, and that view reloads from there.
+        if (viewRef.current !== tag && viewRef.current !== from) setPending((p) => p.filter((m) => m.id !== pendingId));
+        else setPending((p) => p.map((m) => (m.id === pendingId ? { ...m, sending: false } : m)));
       } catch (err) {
-        setPending((p) => p.filter((m) => m.id !== id));
-        if (isGone(err)) markLost();
-        else setError((err as Error).message);
+        setPending((p) => p.filter((m) => m.id !== pendingId));
+        if (isGone(err)) markGone(tag);
+        else if (viewRef.current === tag || viewRef.current === from) setError((err as Error).message);
         throw err;
-      } finally {
-        setInFlight((n) => n - 1);
       }
     },
-    [adopt, markLost],
+    [markGone, onCreated],
   );
 
   const interrupt = useCallback(async () => {
-    const current = sessionRef.current;
-    if (!current) return;
-    await post(`/api/sessions/${current.id}/interrupt`, {}).catch((err) => (isGone(err) ? markLost() : setError(err.message)));
-  }, [markLost]);
+    const current = viewRef.current;
+    if (current.startsWith('draft:')) return;
+    await api('POST', `/api/sessions/${current}/interrupt`).catch((err) =>
+      isGone(err) ? markGone(current) : viewRef.current === current && setError(err.message),
+    );
+  }, [markGone]);
 
-  const reset = useCallback(() => {
-    adopt(undefined);
-    setEvents([]);
-    setPending([]);
-    setError(undefined);
-  }, [adopt]);
-
+  const visible = useMemo(() => pending.filter((m) => belongs(m, view)), [pending, view]);
   const items = useMemo(
-    () => [...buildChat(events), ...pending.map(({ id, text }): ChatItem => ({ role: 'user', id: `pending-${id}`, text }))],
-    [events, pending],
+    () => [...buildChat(events), ...visible.map(({ id: pid, text }): ChatItem => ({ role: 'user', id: `pending-${pid}`, text }))],
+    [events, visible],
   );
-  const busy = useMemo(() => !lost && lastBusy(events), [events, lost]);
-  const status = chatStatus({ inFlight, pending: pending.length, busy, error });
+  const gone = goneView === view;
+  const busy = useMemo(() => !gone && lastBusy(events), [events, gone]);
+  const status = chatStatus({ inFlight: visible.filter((m) => m.sending).length, pending: visible.length, busy, error });
 
-  return { session, items, status, busy: busy || status === 'submitted', error, send, interrupt, reset };
+  return { items, status, busy: busy || status === 'submitted', error, send, interrupt };
 }

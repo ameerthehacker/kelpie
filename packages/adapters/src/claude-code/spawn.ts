@@ -1,12 +1,13 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { createWriteStream, existsSync, mkdirSync, writeFileSync, type WriteStream } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
+import { Readable } from 'node:stream';
 import type { KelpieEvent } from '@kelpie/protocol';
 import type { Adapter, Run, RunExit, RunSpec } from '../types.js';
-import { LineSplitter } from '../util/jsonl.js';
-import { AsyncQueue } from '../util/queue.js';
 import { ClaudeCodeParser } from './parse.js';
 
 type Obj = Record<string, any>;
@@ -66,18 +67,20 @@ class ClaudeCodeRun implements Run {
   readonly harness = 'claude-code' as const;
   readonly runId: string;
   readonly runDir: string;
-  readonly events = new AsyncQueue<KelpieEvent>();
+  /** Buffered until read; ended after `process.exited`. */
+  private readonly stream = new Readable({ objectMode: true, read() {} });
+  readonly events: AsyncIterable<KelpieEvent> = this.stream;
   readonly done: Promise<RunExit>;
 
   private readonly parser: ClaudeCodeParser;
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly raw: WriteStream;
-  private readonly splitter = new LineSplitter();
   private readonly controls = new Map<string, (res: Obj) => void>();
   private rawLines = 0;
   private killedByInterrupt = false;
   private stderrTail = '';
   private exit: RunExit | undefined;
+  private ended = false;
   private stopping = false;
   private resolveDone!: (e: RunExit) => void;
 
@@ -104,13 +107,13 @@ class ClaudeCodeRun implements Run {
     this.child.stdin.on('error', () => {}); // EPIPE after exit is reported via 'close'
     this.child.stdout.setEncoding('utf8');
     this.child.stderr.setEncoding('utf8');
-    this.child.stdout.on('data', (chunk: string) => this.splitter.push(chunk).forEach((l) => this.onLine(l)));
+    const lines = createInterface({ input: this.child.stdout, crlfDelay: Infinity });
+    const linesDone = once(lines, 'close');
+    lines.on('line', (line) => line.trim() && this.onLine(line));
     this.child.stderr.on('data', (chunk: string) => (this.stderrTail = (this.stderrTail + chunk).slice(-STDERR_TAIL)));
     this.child.on('error', (err) => this.finish({ code: null, signal: null }, err.message));
-    this.child.on('close', (code, signal) => {
-      this.splitter.flush().forEach((l) => this.onLine(l));
-      this.finish({ code, signal });
-    });
+    // Exit is reported only after the last stdout line has been read.
+    this.child.on('close', (code, signal) => void linesDone.then(() => this.finish({ code, signal })));
 
     if (spec.prompt) this.send(spec.prompt);
   }
@@ -129,7 +132,7 @@ class ClaudeCodeRun implements Run {
 
   send(text: string): void {
     if (this.exit || this.stopping) throw new Error(`run ${this.runId} is ${this.exit ? 'exited' : 'stopping'}`);
-    this.parser.noteSent().forEach((ev) => this.events.push(ev));
+    this.parser.noteSent().forEach((ev) => this.emit(ev));
     // The CLI replays the turn on stdout once it takes it in; that becomes the user `message` event.
     this.child.stdin.write(userTurn(text));
   }
@@ -179,7 +182,7 @@ class ClaudeCodeRun implements Run {
     try {
       o = JSON.parse(line);
     } catch {
-      this.events.push(this.parser.emit('other', { type: 'non-json', raw: line }, { rawLine }));
+      this.emit(this.parser.emit('other', { type: 'non-json', raw: line }, { rawLine }));
       return;
     }
 
@@ -194,7 +197,7 @@ class ClaudeCodeRun implements Run {
       );
     }
 
-    for (const ev of this.parser.parse(o, rawLine)) this.events.push(ev);
+    for (const ev of this.parser.parse(o, rawLine)) this.emit(ev);
   }
 
   private finish(exit: RunExit, error?: string): void {
@@ -203,18 +206,24 @@ class ClaudeCodeRun implements Run {
     for (const resolve of this.controls.values()) resolve({ subtype: 'error', error: 'process exited' });
     this.controls.clear();
     if (this.parser.busy) {
-      this.events.push(
+      this.emit(
         this.killedByInterrupt
           ? this.parser.emit('turn.ended', { status: 'interrupted', error: 'harness did not answer the interrupt; process killed' })
           : this.parser.emit('turn.ended', { status: 'failed', error: error ?? 'harness process exited mid-turn' }),
       );
     }
-    this.parser.noteExited().forEach((ev) => this.events.push(ev));
+    this.parser.noteExited().forEach((ev) => this.emit(ev));
     const stderrTail = error ? `${this.stderrTail}${error}` : this.stderrTail;
-    this.events.push(this.parser.emit('process.exited', { ...exit, stderrTail }));
-    this.events.close();
+    this.emit(this.parser.emit('process.exited', { ...exit, stderrTail }));
+    this.ended = true;
+    this.stream.push(null);
     this.raw.end();
     this.resolveDone(exit);
+  }
+
+  /** Queues an event for the consumer; nothing is added once the run has finished. */
+  private emit(ev: KelpieEvent): void {
+    if (!this.ended) this.stream.push(ev);
   }
 
   private exitWithin(ms: number): Promise<boolean> {

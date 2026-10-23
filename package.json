@@ -19,6 +19,7 @@
     "@kelpie/adapters": "workspace:*",
     "@kelpie/daemon": "workspace:*",
     "@kelpie/protocol": "workspace:*",
+    "@kelpie/store": "workspace:*",
     "@types/node": "^22.20.5",
     "tsx": "^4.23.15",
     "turbo": "2.11.10",

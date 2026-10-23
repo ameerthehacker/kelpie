@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { KelpieEvent, type EventOf } from '@kelpie/protocol';
-import { ClaudeCodeParser, LineSplitter } from '../src/index.js';
+import { ClaudeCodeParser } from '../src/index.js';
 import { applyTodoTool, toolTitle } from '../src/claude-code/tools.js';
 
 const DIR = join(import.meta.dirname, '../fixtures/claude-code');
@@ -159,16 +159,5 @@ describe('claude-code mapping', () => {
   it('keeps unknown events as `other`', () => {
     const parser = new ClaudeCodeParser({ runId: 'r' });
     expect(parser.parse({ type: 'brand_new_thing', x: 1 })[0]).toMatchObject({ kind: 'other', data: { type: 'brand_new_thing' } });
-  });
-});
-
-describe('LineSplitter', () => {
-  it('reassembles lines split across chunks', () => {
-    const s = new LineSplitter();
-    expect(s.push('{"a":')).toEqual([]);
-    expect(s.push('1}\n{"b"')).toEqual(['{"a":1}']);
-    expect(s.push(':2}\r\n\n')).toEqual(['{"b":2}']);
-    expect(s.push('{"c":3}')).toEqual([]);
-    expect(s.flush()).toEqual(['{"c":3}']);
   });
 });
