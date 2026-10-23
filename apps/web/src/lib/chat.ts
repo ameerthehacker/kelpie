@@ -87,6 +87,8 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
         if (ev.data.status === 'interrupted') assistant(ev.id).push({ type: 'notice', tone: 'info', text: 'Interrupted.' });
         break;
       case 'process.exited':
+        // Tools still open when the process is gone will never finish, even if a later run resumes the session.
+        tools.forEach((t) => t.state === 'running' && (t.state = 'error'));
         if (ev.data.code) {
           const detail = ev.data.stderrTail.trim().split('\n').slice(-3).join('\n');
           assistant(ev.id).push({ type: 'notice', tone: 'error', text: `Agent process exited with code ${ev.data.code}${detail ? `: ${detail}` : ''}` });
@@ -94,8 +96,6 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
         break;
     }
   }
-  // Tools still open when the process is gone will never finish.
-  if (events.at(-1)?.kind === 'process.exited') tools.forEach((t) => t.state === 'running' && (t.state = 'error'));
   return items;
 }
 

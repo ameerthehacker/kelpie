@@ -79,11 +79,22 @@ export class Session {
   }
 
   private async pump(run: Run): Promise<void> {
-    for await (const event of run.events) {
-      if (event.kind === 'session.started') this.harnessSessionId = event.data.harnessSessionId;
-      if (event.kind === 'activity') this.busyState = event.data.busy;
-      const index = this.log.push(event) - 1;
-      this.listeners.forEach((l) => l({ index, event }));
+    try {
+      for await (const event of run.events) {
+        if (event.kind === 'session.started') this.harnessSessionId = event.data.harnessSessionId;
+        if (event.kind === 'activity') this.busyState = event.data.busy;
+        const index = this.log.push(event) - 1;
+        // One broken subscriber must neither starve the others nor take the daemon down.
+        for (const listener of this.listeners) {
+          try {
+            listener({ index, event });
+          } catch (err) {
+            console.error(`session ${this.id}: listener failed`, err);
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`session ${this.id}: event stream failed`, err);
     }
   }
 }

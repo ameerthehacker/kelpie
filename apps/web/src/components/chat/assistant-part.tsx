@@ -1,39 +1,9 @@
 import { CheckIcon, CircleIcon, InfoIcon, LoaderCircleIcon, TriangleAlertIcon } from 'lucide-react';
 import { MessageResponse } from '@/components/ai-elements/message';
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning';
-import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@/components/ai-elements/tool';
+import { ToolGroup } from '@/components/chat/tool-group';
 import type { AssistantPart, ToolView } from '@/lib/chat';
 import { cn } from '@/lib/utils';
-
-const TOOL_STATE = { running: 'input-available', done: 'output-available', error: 'output-error' } as const;
-
-const clip = (s: string, max = 90) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
-
-function ToolPart({ part }: { part: ToolView }) {
-  const delta = part.delta ? ` +${part.delta.added} −${part.delta.removed}` : '';
-  return (
-    <Tool>
-      <ToolHeader type="dynamic-tool" toolName={part.name} state={TOOL_STATE[part.state]} title={`${part.name} · ${clip(part.title)}${delta}`} />
-      <ToolContent>
-        <ToolInput input={part.input} />
-        {part.steps.length > 0 && (
-          <div className="space-y-1">
-            <h4 className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Sub-agent steps</h4>
-            <ul className="text-muted-foreground font-mono text-xs">
-              {part.steps.map((s, i) => (
-                <li key={i}>{s}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-        <ToolOutput
-          output={part.state === 'done' && part.output ? <pre className="whitespace-pre-wrap p-3 font-mono">{part.output}</pre> : undefined}
-          errorText={part.state === 'error' ? (part.output ?? 'Failed') : undefined}
-        />
-      </ToolContent>
-    </Tool>
-  );
-}
 
 const TODO_ICON = {
   completed: <CheckIcon className="size-3.5 text-green-600" />,
@@ -41,7 +11,27 @@ const TODO_ICON = {
   pending: <CircleIcon className="text-muted-foreground size-3.5" />,
 };
 
-export function AssistantPartView({ part, streaming }: { part: AssistantPart; streaming: boolean }) {
+type Block = Exclude<AssistantPart, ToolView> | { type: 'tools'; tools: ToolView[] };
+
+/** Folds runs of consecutive tool calls into one block, so they render as a single log. */
+function blocks(parts: AssistantPart[]): Block[] {
+  const out: Block[] = [];
+  for (const part of parts) {
+    const last = out.at(-1);
+    if (part.type !== 'tool') out.push(part);
+    else if (last?.type === 'tools') last.tools.push(part);
+    else out.push({ type: 'tools', tools: [part] });
+  }
+  return out;
+}
+
+/** An assistant reply: text, reasoning, tool logs, todos and notices, in order. */
+export function AssistantParts({ parts, streaming }: { parts: AssistantPart[]; streaming: boolean }) {
+  const list = blocks(parts);
+  return list.map((block, i) => <BlockView key={i} block={block} streaming={streaming && i === list.length - 1} />);
+}
+
+function BlockView({ block: part, streaming }: { block: Block; streaming: boolean }) {
   switch (part.type) {
     case 'text':
       return <MessageResponse isAnimating={streaming}>{part.text}</MessageResponse>;
@@ -52,8 +42,8 @@ export function AssistantPartView({ part, streaming }: { part: AssistantPart; st
           <ReasoningContent>{part.text}</ReasoningContent>
         </Reasoning>
       );
-    case 'tool':
-      return <ToolPart part={part} />;
+    case 'tools':
+      return <ToolGroup tools={part.tools} />;
     case 'todos':
       return (
         <ul className="space-y-1 rounded-md border p-3 text-sm">

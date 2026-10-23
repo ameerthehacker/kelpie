@@ -1,5 +1,6 @@
 import { MessageSquareIcon, PlusIcon } from 'lucide-react';
-import { AssistantPartView } from '@/components/chat/assistant-part';
+import { useRef } from 'react';
+import { AssistantParts } from '@/components/chat/assistant-part';
 import {
   Conversation,
   ConversationContent,
@@ -11,14 +12,52 @@ import {
   PromptInput,
   PromptInputBody,
   PromptInputFooter,
+  PromptInputProvider,
   PromptInputSubmit,
   PromptInputTextarea,
   PromptInputTools,
+  usePromptInputController,
 } from '@/components/ai-elements/prompt-input';
 import { Shimmer } from '@/components/ai-elements/shimmer';
 import { Button } from '@/components/ui/button';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { useSession } from '@/hooks/use-session';
+import { useSession, type ChatStatus } from '@/hooks/use-session';
+
+interface ComposerProps {
+  status: ChatStatus;
+  send: (text: string) => Promise<void>;
+  interrupt: () => void;
+}
+
+/** Clears as soon as a message is sent, and puts the text back if sending fails and the box is still empty. */
+function Composer({ status, send, interrupt }: ComposerProps) {
+  const { textInput } = usePromptInputController();
+  const current = useRef(textInput.value);
+  current.current = textInput.value;
+
+  return (
+    <PromptInput
+      onSubmit={({ text }) => {
+        const message = text.trim();
+        if (!message) return;
+        textInput.clear();
+        send(message).catch(() => {
+          if (!current.current) textInput.setInput(text);
+        });
+      }}
+    >
+      <PromptInputBody>
+        <PromptInputTextarea placeholder="Ask Claude Code to do something…" />
+      </PromptInputBody>
+      <PromptInputFooter>
+        <PromptInputTools>
+          <span className="text-muted-foreground px-2 text-xs">Claude Code</span>
+        </PromptInputTools>
+        <PromptInputSubmit status={status} onStop={interrupt} />
+      </PromptInputFooter>
+    </PromptInput>
+  );
+}
 
 export function App() {
   const { session, items, status, busy, error, send, interrupt, reset } = useSession();
@@ -47,13 +86,11 @@ export function App() {
               />
             ) : (
               items.map((item, i) => (
-                <Message from={item.role} key={item.id}>
+                <Message from={item.role} key={item.id} className={item.role === 'assistant' ? 'max-w-full' : undefined}>
                   <MessageContent className={item.role === 'assistant' ? 'w-full' : undefined}>
                     {item.role === 'user'
                       ? <p className="whitespace-pre-wrap">{item.text}</p>
-                      : item.parts.map((part, j) => (
-                          <AssistantPartView key={j} part={part} streaming={busy && i === items.length - 1 && j === item.parts.length - 1} />
-                        ))}
+                      : <AssistantParts parts={item.parts} streaming={busy && i === items.length - 1} />}
                   </MessageContent>
                 </Message>
               ))
@@ -65,17 +102,9 @@ export function App() {
 
         <div className="mx-auto w-full max-w-3xl px-4 pb-4">
           {error && <p className="text-destructive mb-2 text-sm">{error}</p>}
-          <PromptInput onSubmit={({ text }) => (text.trim() ? send(text.trim()) : undefined)}>
-            <PromptInputBody>
-              <PromptInputTextarea placeholder="Ask Claude Code to do something…" />
-            </PromptInputBody>
-            <PromptInputFooter>
-              <PromptInputTools>
-                <span className="text-muted-foreground px-2 text-xs">Claude Code</span>
-              </PromptInputTools>
-              <PromptInputSubmit status={status} onStop={interrupt} />
-            </PromptInputFooter>
-          </PromptInput>
+          <PromptInputProvider>
+            <Composer status={status} send={send} interrupt={interrupt} />
+          </PromptInputProvider>
         </div>
       </div>
     </TooltipProvider>

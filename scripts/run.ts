@@ -167,7 +167,8 @@ rl.on('close', () => void run.stop());
 if (!positionals.length) rl.prompt();
 for await (const ev of run.events) {
   render(ev);
-  if (ev.kind === 'turn.ended' && !run.busy) rl.prompt();
+  // In-stream, so it is ordered with the events around it (unlike reading run.busy here).
+  if (ev.kind === 'activity' && !ev.data.busy) rl.prompt();
 }
 flushHeldEdit();
 rl.close();

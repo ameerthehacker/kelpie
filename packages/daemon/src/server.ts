@@ -1,5 +1,5 @@
 import { existsSync, statSync } from 'node:fs';
-import { relative } from 'node:path';
+import { relative, resolve } from 'node:path';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { streamSSE } from 'hono/streaming';
@@ -45,8 +45,10 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   app.get('/api/sessions', (c) => c.json(sessions.list()));
 
   app.post('/api/sessions', async (c) => {
-    const body = await c.req.json<{ cwd?: string }>().catch(() => ({}) as { cwd?: string });
-    const cwd = body.cwd ?? sessions.defaultCwd;
+    const body = await c.req.json<{ cwd?: unknown }>().catch(() => ({}) as { cwd?: unknown });
+    if (body.cwd !== undefined && typeof body.cwd !== 'string') return c.json({ error: 'cwd must be a string' }, 400);
+    // Relative to the daemon's default repo, not its process cwd (a package dir under `pnpm dev`).
+    const cwd = resolve(sessions.defaultCwd, body.cwd ?? '.');
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) return c.json({ error: `not a directory: ${cwd}` }, 400);
     return c.json(sessions.create(cwd).info(), 201);
   });
@@ -100,6 +102,9 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
       }
     });
   });
+
+  // Keep unknown API paths out of the SPA fallback below.
+  app.all('/api/*', (c) => c.json({ error: 'not found' }, 404));
 
   if (opts.staticDir && existsSync(opts.staticDir)) {
     // serveStatic resolves `root` against the process cwd.

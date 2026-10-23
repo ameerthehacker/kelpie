@@ -1,4 +1,4 @@
-import { chmodSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -62,5 +62,51 @@ describe('chat API', () => {
     const { id } = (await (await app.request('/api/sessions', { method: 'POST', headers: local, body: '{}' })).json()) as { id: string };
     expect((await app.request(`/api/sessions/${id}/messages`, { method: 'POST', headers: local, body: '{"text":"  "}' })).status).toBe(400);
     expect((await app.request('/api/sessions/nope/messages', { method: 'POST', headers: local, body: '{"text":"hi"}' })).status).toBe(404);
+  });
+
+  it('resolves a relative cwd against the default repo, not the daemon process cwd', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kelpie-repo-'));
+    mkdirSync(join(root, 'sub'));
+    const app = createApp(new SessionManager(root));
+    const res = await app.request('/api/sessions', { method: 'POST', headers: local, body: '{"cwd":"sub"}' });
+    expect(((await res.json()) as { cwd: string }).cwd).toBe(join(root, 'sub'));
+    expect((await app.request('/api/sessions', { method: 'POST', headers: local, body: '{"cwd":3}' })).status).toBe(400);
+  });
+
+  it('answers unknown API paths with a JSON 404, not the UI page', async () => {
+    const dist = mkdtempSync(join(tmpdir(), 'kelpie-dist-'));
+    writeFileSync(join(dist, 'index.html'), '<!doctype html>');
+    const app = createApp(new SessionManager(tmpdir()), { staticDir: dist });
+    const res = await app.request('/api/sessions/abc/event', { headers: { host: local.host } });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'not found' });
+    expect(await (await app.request('/some/page', { headers: { host: local.host } })).text()).toBe('<!doctype html>');
+  });
+});
+
+describe('Session', () => {
+  it('keeps delivering events when a subscriber throws', async () => {
+    const { sessions } = setup();
+    const session = sessions.create();
+    const seen: string[] = [];
+    session.subscribe(() => {
+      throw new Error('bad subscriber');
+    });
+    const ended = new Promise<void>((done) =>
+      session.subscribe(({ event }) => {
+        seen.push(event.kind);
+        if (event.kind === 'turn.ended') done();
+      }),
+    );
+    const errors = console.error;
+    console.error = () => {};
+    try {
+      session.send('What is 2+2?');
+      await ended;
+    } finally {
+      console.error = errors;
+      await sessions.stopAll();
+    }
+    expect(seen).toContain('message');
   });
 });

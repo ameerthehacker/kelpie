@@ -52,6 +52,17 @@ describe('buildChat', () => {
     expect(partsOf('interrupt').at(-1)).toEqual({ type: 'notice', tone: 'info', text: 'Interrupted.' });
   });
 
+  it('keeps a tool cut off by a dead process failed after a later run resumes the session', () => {
+    const ev = (kind: string, data: unknown) => ({ id: `${kind}-${Math.random()}`, kind, data }) as unknown as KelpieEvent;
+    const crashed = [
+      ev('tool.started', { callId: 'c1', name: 'Bash', category: 'bash', title: 'sleep 100', input: {} }),
+      ev('process.exited', { code: 1, signal: null, stderrTail: '' }),
+    ];
+    const tool = (es: KelpieEvent[]) => buildChat(es).flatMap((i) => (i.role === 'assistant' ? i.parts : [])).find((p) => p.type === 'tool');
+    expect(tool(crashed)).toMatchObject({ state: 'error' });
+    expect(tool([...crashed, ...events('plain')])).toMatchObject({ state: 'error' });
+  });
+
   it('shows queued messages as separate user turns before the merged reply', () => {
     expect(buildChat(events('queued')).map((i) => i.role)).toEqual(['user', 'assistant', 'user', 'user', 'assistant']);
   });
