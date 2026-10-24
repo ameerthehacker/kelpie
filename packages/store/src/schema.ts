@@ -63,6 +63,8 @@ export const outbox = sqliteTable(
     text: text('text').notNull(),
     /** Who sent it: the person, the orchestrator (to a sub-agent), or Kelpie itself (notifications, restarts). */
     source: text('source', { enum: ['user', 'orchestrator', 'kelpie'] }).notNull(),
+    /** Extra `message` data (JSON) the logged echo of this turn carries, e.g. a notification's agents. */
+    meta: text('meta'),
     createdAt: integer('created_at').notNull(),
     /** Set once taken in, or once dropped because the process that should have read it died. */
     deliveredAt: integer('delivered_at'),

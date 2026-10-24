@@ -62,6 +62,19 @@ function midWork(store: Store, id: string, text: string) {
 }
 
 describe('recovery after Kelpie stops', () => {
+  it('shows a cut-off agent as stopped, with its own todos and not a sub-agent’s', () => {
+    const store = openStore(':memory:');
+    store.createSession({ id: 'orch', cwd: tmpdir(), title: 'RCA' }, 1000);
+    store.createSession({ id: 'a', cwd: tmpdir(), title: 'A', parentId: 'orch', role: 'agent' }, 1000);
+    midWork(store, 'a', 'Investigate ticket 1');
+    const todos = (id: string, text: string, parentCallId?: string) =>
+      ({ ...base, runId: 'run-a', id, seq: 3, kind: 'todos', ...(parentCallId ? { parentCallId } : {}), data: { items: [{ id: '1', text, status: 'in_progress' }] } }) as KelpieEvent;
+    store.appendEvent('a', 3, todos('a3', 'Read the logs'));
+    store.appendEvent('a', 4, todos('a4', 'Nested agent step', 'sub'));
+    const { sessions } = start(store, {});
+    expect(sessions.get('a')!.summary()).toMatchObject({ status: 'stopped', now: 'Stopped.', todos: [{ text: 'Read the logs' }] });
+  });
+
   it('resumes agents and orchestrators that a crash cut off, and re-sends turns never taken in', async () => {
     const db = join(tmp('kelpie-home-'), 'kelpie.db');
     const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
@@ -92,7 +105,7 @@ describe('recovery after Kelpie stops', () => {
         { resume: 'h-a', text: expect.stringContaining('Kelpie restarted while you were working') },
         { resume: 'h-b', text: expect.stringContaining('Kelpie restarted while you were working') },
         { resume: 'h-c', text: 'Also check ticket 3' },
-        { resume: 'h-orch', text: expect.stringContaining('Call list_agents and TaskList') },
+        { resume: 'h-orch', text: expect.stringContaining('Call list_agents to pick your state back up') },
       ]),
     );
     // Sub-agents first, then their orchestrator.

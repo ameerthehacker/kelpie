@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
-import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { HarnessUsage, KelpieEvent, type EventData, type EventKind, type EventOf } from '@kelpie/protocol';
@@ -72,9 +72,13 @@ export class Store {
     });
   }
 
-  /** Records a turn about to be sent to a round-up. */
-  enqueue(sessionId: string, text: string, source: OutboxSource, now = Date.now()): OutboxRow {
-    return this.db.insert(schema.outbox).values({ sessionId, text, source, createdAt: now }).returning().get();
+  /** Records a turn about to be sent to a round-up. `meta` is merged into its echo's `message` data. */
+  enqueue(sessionId: string, text: string, source: OutboxSource, now = Date.now(), meta?: Record<string, unknown>): OutboxRow {
+    return this.db
+      .insert(schema.outbox)
+      .values({ sessionId, text, source, createdAt: now, ...(meta ? { meta: JSON.stringify(meta) } : {}) })
+      .returning()
+      .get();
   }
 
   /** Turns sent (or about to be) that the harness has not taken in yet, oldest first. */
@@ -146,6 +150,18 @@ export class Store {
       .limit(1)
       .get();
     return row ? { index: row.idx, event: KelpieEvent.parse(JSON.parse(row.event)) as EventOf<K> } : undefined;
+  }
+
+  /** The latest `limit` events of the given kinds, newest first. */
+  recentEvents(sessionId: string, kinds: EventKind[], limit: number): KelpieEvent[] {
+    return this.db
+      .select({ event: schema.events.event })
+      .from(schema.events)
+      .where(and(eq(schema.events.sessionId, sessionId), inArray(schema.events.kind, kinds)))
+      .orderBy(desc(schema.events.idx))
+      .limit(limit)
+      .all()
+      .map((r) => KelpieEvent.parse(JSON.parse(r.event)));
   }
 
   /** Runs `fn` in one transaction: every write in it lands, or none does. */

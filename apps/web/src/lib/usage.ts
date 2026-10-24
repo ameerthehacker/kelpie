@@ -1,12 +1,9 @@
 import { format, formatDuration } from 'date-fns';
 import type { HarnessUsage } from '@kelpie/protocol';
+import { harnessOf } from './harnesses.js';
 
 export type { HarnessUsage };
 
-export const HARNESSES: Record<string, { name: string; mark: string }> = {
-  'claude-code': { name: 'Claude Code', mark: 'CC' },
-  codex: { name: 'Codex', mark: 'CX' },
-};
 
 /** The windows the design shows, in its order and words. */
 const WINDOWS = [
@@ -62,7 +59,7 @@ export function metersOf(u: HarnessUsage, now: number): Meter[] {
  */
 export function limitHint(u: HarnessUsage | undefined, now: number): string | undefined {
   if (!u) return undefined;
-  const name = HARNESSES[u.harness]?.name ?? u.harness;
+  const name = harnessOf(u.harness).name;
   const { status, window, resetsAt } = u.usage;
   if (status === 'rejected' && resetsAt && new Date(resetsAt).getTime() > now) {
     const noun = WINDOWS.find((w) => w.key === window)?.noun ?? 'usage limit';

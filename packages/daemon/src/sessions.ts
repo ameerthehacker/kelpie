@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { mergeUsage, type EventData, type EventKind, type HarnessUsage, type KelpieEvent } from '@kelpie/protocol';
+import { mergeUsage, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
 import { claudeCode, type Adapter, type Run, type RunSpec } from '@kelpie/adapters';
 import type { OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
+import { nowOf, SUMMARY_KINDS, type AgentSummary } from './agent-summary.js';
 
 export type TurnStatus = EventData<'turn.ended'>['status'];
 
@@ -37,7 +38,9 @@ export interface SessionUpdate {
 export type ManagerUpdate =
   | { type: 'session'; session: SessionInfo }
   | { type: 'deleted'; id: string }
-  | { type: 'usage'; usage: HarnessUsage[] };
+  | { type: 'usage'; usage: HarnessUsage[] }
+  /** A sub-agent's summary changed (throttled). */
+  | { type: 'agent'; agent: AgentSummary };
 
 export type SessionDefaults = Omit<RunSpec, 'cwd' | 'prompt' | 'resume' | 'runId' | 'runDir'>;
 
@@ -55,6 +58,13 @@ export interface SessionHooks {
   specFor?(session: Session, run: RunContext): Partial<RunSpec>;
   /** Every event, once it is logged and subscribers have seen it. Must not throw. */
   observe?(session: Session, index: number, event: KelpieEvent): void;
+}
+
+export interface SendOptions {
+  /** Runs in the same transaction as the outbox write (e.g. marking what a notification covers). */
+  alsoInTx?: () => void;
+  /** Extra `message` data the logged echo of this turn carries. */
+  meta?: Record<string, unknown>;
 }
 
 export interface CreateOptions {
@@ -88,9 +98,12 @@ interface SessionContext {
   closing: boolean;
   changed: (s: Session) => void;
   reportUsage: (harness: string, usage: EventData<'rate_limit'>) => void;
+  /** A sub-agent's summary may have changed. */
+  agentChanged: (s: Session) => void;
 }
 
 const STOPPED = 'Kelpie stopped while this run was active.';
+const AGENT_UPDATE_MS = 300;
 const TITLE_MAX = 60;
 
 export function titleFrom(text: string): string {
@@ -120,6 +133,10 @@ export class Session {
   /** As of the last logged `activity` event, so it never runs ahead of what subscribers have seen. */
   private busyState = false;
   private lastTurnState: TurnStatus | undefined;
+  /** For a sub-agent's summary: kept current from its events. */
+  private todosState: TodoItem[] = [];
+  private nowState = '';
+  private modelState: string | undefined;
 
   constructor(
     row: SessionRow,
@@ -127,6 +144,20 @@ export class Session {
   ) {
     this.row = row;
     this.lastTurnState = ctx.store.lastEvent(row.id, 'turn.ended')?.data.status;
+    if (row.parentId) {
+      // Its own list, as track() keeps it: not one a sub-agent of its own wrote.
+      const own = ctx.store.recentEvents(row.id, ['todos'], 200).find((e) => !e.parentCallId);
+      this.todosState = own?.kind === 'todos' ? own.data.items : [];
+      this.modelState = ctx.store.lastEvent(row.id, 'session.started')?.data.model;
+      // Sub-agent chatter is skipped, so look back a little further than one event.
+      for (const e of ctx.store.recentEvents(row.id, ['tool.started', 'message', 'turn.ended'], 20)) {
+        const now = nowOf(e);
+        if (now) {
+          this.nowState = now;
+          break;
+        }
+      }
+    }
   }
 
   get id(): string {
@@ -195,6 +226,34 @@ export class Session {
     };
   }
 
+  /** A sub-agent at a glance (see AgentSummary). */
+  summary(): AgentSummary {
+    const { id, title, harness, writes, createdAt, updatedAt } = this.row;
+    const t = this.lastTurnState;
+    return {
+      id,
+      parentId: this.row.parentId ?? '',
+      title,
+      harness,
+      model: this.modelState ?? this.row.model ?? undefined,
+      writes,
+      status: this.working ? 'working' : t === 'completed' ? 'done' : t === 'failed' ? 'failed' : t === 'interrupted' ? 'stopped' : 'idle',
+      now: this.nowState,
+      todos: this.todosState,
+      createdAt,
+      updatedAt,
+    };
+  }
+
+  /** Folds an event into a sub-agent's summary; true if the pane should hear about it. */
+  private track(event: KelpieEvent): boolean {
+    if (!this.row.parentId || !SUMMARY_KINDS.has(event.kind)) return false;
+    if (event.kind === 'todos' && !event.parentCallId) this.todosState = event.data.items;
+    if (event.kind === 'session.started') this.modelState = event.data.model;
+    this.nowState = nowOf(event) ?? this.nowState;
+    return true;
+  }
+
   /** The whole log, without keeping it in memory for longer than needed. */
   events(): KelpieEvent[] {
     const log = this.load().slice();
@@ -222,7 +281,11 @@ export class Session {
     let idx = store.eventCount(this.id);
     // Keep the round-up's place in the list: this is housekeeping, not activity.
     store.atomically(() => {
-      for (const e of closing) store.appendEvent(this.id, idx++, e, this.row.updatedAt);
+      for (const e of closing) {
+        store.appendEvent(this.id, idx++, e, this.row.updatedAt);
+        // The summary was read from the log before these were added.
+        this.track(e);
+      }
       // It was cut off mid-work: the next daemon start resumes it.
       if (busy) this.row = store.updateSession(this.id, { resumePending: true }) ?? this.row;
     });
@@ -231,10 +294,9 @@ export class Session {
 
   /**
    * Sends a turn. It is written to the outbox first, so a turn the harness has not taken in
-   * yet survives a crash and is sent again. `alsoInTx` runs in the same transaction as that
-   * write (e.g. marking what a notification covers).
+   * yet survives a crash and is sent again.
    */
-  async send(text: string, source: OutboxSource = 'user', alsoInTx?: () => void): Promise<void> {
+  async send(text: string, source: OutboxSource = 'user', opts: SendOptions = {}): Promise<void> {
     while (this.stopping) await this.stopping;
     if (this.deleted) throw new Error('this round-up was deleted');
     if (this.ctx.closing) throw new Error('Kelpie is shutting down');
@@ -242,8 +304,8 @@ export class Session {
     if (!text.trim()) throw new Error('a turn needs some text');
     this.load();
     this.ctx.store.atomically(() => {
-      alsoInTx?.();
-      this.ctx.store.enqueue(this.id, text, source);
+      opts.alsoInTx?.();
+      this.ctx.store.enqueue(this.id, text, source, Date.now(), opts.meta);
     });
     if (this.run && !this.run.exited) this.run.send(text);
     else this.start();
@@ -405,7 +467,7 @@ export class Session {
           const row = this.ctx.store.undelivered(this.id)[0];
           if (row) {
             deliveredId = row.id;
-            event = { ...event, data: { ...event.data, source: row.source } };
+            event = { ...event, data: { ...event.data, ...(row.meta ? JSON.parse(row.meta) : {}), source: row.source } };
           }
         }
 
@@ -431,6 +493,7 @@ export class Session {
           }
         }
         if (changed) this.ctx.changed(this);
+        if (this.track(event)) this.ctx.agentChanged(this);
         try {
           this.ctx.hooks.observe?.(this, index, event);
         } catch (err) {
@@ -455,6 +518,8 @@ export class SessionManager {
   private readonly ctx: SessionContext;
   /** Each harness's usage, served from memory; the store only keeps it across restarts. */
   private readonly usageByHarness = new Map<string, HarnessUsage>();
+  /** Sub-agents whose summary changed and is about to go out. */
+  private readonly agentTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(opts: SessionManagerOptions) {
     this.store = opts.store;
@@ -468,6 +533,16 @@ export class SessionManager {
       hooks: opts.hooks ?? {},
       closing: false,
       changed: (s) => this.notify({ type: 'session', session: s.info() }),
+      // A busy agent emits many events a second; the pane only needs a few updates.
+      agentChanged: (s) => {
+        if (this.agentTimers.has(s.id)) return;
+        const timer = setTimeout(() => {
+          this.agentTimers.delete(s.id);
+          if (this.sessions.get(s.id) === s) this.notify({ type: 'agent', agent: s.summary() });
+        }, AGENT_UPDATE_MS);
+        timer.unref();
+        this.agentTimers.set(s.id, timer);
+      },
       // Usage is advisory: nothing about it may disturb the run that reported it.
       reportUsage: (harness, report) => {
         const now = Date.now();

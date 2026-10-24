@@ -82,6 +82,7 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
       return sessions.watch((u) => {
         if (u.type === 'session') send({ event: 'session', data: JSON.stringify(u.session) });
         else if (u.type === 'deleted') send({ event: 'deleted', data: JSON.stringify({ id: u.id }) });
+        else if (u.type === 'agent') send({ event: 'agent', data: JSON.stringify(u.agent) });
         else send({ event: 'usage', data: JSON.stringify(u.usage) });
       });
     }),
@@ -101,10 +102,11 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     return s ? c.json(s.info()) : c.json({ error: 'no such session' }, 404);
   });
 
-  // A round-up's sub-agents (their own logs are at /api/sessions/:agentId/events).
+  // A round-up's sub-agents at a glance (each one's own log is at /api/sessions/:agentId/events);
+  // `/api/events` then sends an `agent` event whenever one changes.
   app.get('/api/sessions/:id/agents', (c) => {
     if (!sessions.get(c.req.param('id'))) return c.json({ error: 'no such session' }, 404);
-    return c.json(sessions.children(c.req.param('id')).map((s) => s.info()));
+    return c.json(sessions.children(c.req.param('id')).map((s) => s.summary()));
   });
 
   app.patch('/api/sessions/:id', async (c) => {

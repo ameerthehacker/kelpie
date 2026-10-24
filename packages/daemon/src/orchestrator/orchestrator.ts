@@ -1,13 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type RunSpec } from '@kelpie/adapters';
-import { Harness, type KelpieEvent } from '@kelpie/protocol';
+import { Harness, type AgentUpdate, type KelpieEvent } from '@kelpie/protocol';
 import type { Store } from '@kelpie/store';
 import type { RunContext, Session, SessionHooks, SessionManager } from '../sessions.js';
 import { logLines, report, type AgentReport, type LogPage } from './digest.js';
 import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_PROMPT, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface } from './prompt.js';
 
-/** The orchestrator's only built-in tools: its todo list. Everything else is the kelpie MCP server. */
-export const ORCHESTRATOR_TOOLS = ['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'];
+/**
+ * The orchestrator's built-in tools: none. Its plan is its agents (list_agents), which the
+ * person sees in the agent pane; everything it can do is the kelpie MCP server.
+ */
+export const ORCHESTRATOR_TOOLS: string[] = [];
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 export const READ_ONLY_TOOLS = DEFAULT_TOOLS.filter((t) => !EDIT_TOOLS.has(t));
 
@@ -243,9 +246,23 @@ export class Orchestrator implements SessionHooks {
       return idle && !idle.event.data.busy && idle.index > c.notifiedIdx ? [{ agent: c, index: idle.index }] : [];
     });
     if (!owed.length) return;
-    const text = notification(owed.map(({ agent }) => ({ agent, report: report(agent.events()) })));
+    const agents = owed.map(({ agent }): AgentUpdate & { report: string } => {
+      const r = report(agent.events());
+      return {
+        agentId: agent.id,
+        title: agent.title,
+        status: r.lastTurn ?? 'not started',
+        report: r.report,
+        ...(r.error ? { error: r.error } : {}),
+        ...(r.filesChanged.length ? { filesChanged: r.filesChanged } : {}),
+      };
+    });
     // Sent and marked in one transaction: after a crash it is neither lost nor sent twice.
-    await parent.send(text, 'kelpie', () => owed.forEach(({ agent, index }) => agent.markNotified(index)));
+    await parent.send(notification(agents), 'kelpie', {
+      alsoInTx: () => owed.forEach(({ agent, index }) => agent.markNotified(index)),
+      // The text has each report already, unless it was cut there.
+      meta: { agents: agents.map(({ report, ...a }) => (report.length > REPORT_CHARS ? { ...a, report } : a)) },
+    });
   }
 
   // ── rules ────────────────────────────────────────────────────────────
@@ -309,12 +326,13 @@ export class Orchestrator implements SessionHooks {
   }
 }
 
-function notification(items: { agent: Session; report: AgentReport }[]): string {
-  const body = items.map(({ agent, report: r }) => {
-    const text = r.report.length > REPORT_CHARS ? `${r.report.slice(0, REPORT_CHARS)}…\n(report cut; read_agent has all of it)` : r.report;
-    const files = r.filesChanged.length ? `\nFiles changed: ${r.filesChanged.map((f) => `${f.path} (+${f.added} -${f.removed})`).join(', ')}` : '';
-    const error = r.error ? `\nError: ${r.error}` : '';
-    return `## Agent "${agent.title}" (${agent.id}) is idle: turn ${r.lastTurn ?? 'not started'}${error}${files}\n\n${text || '(no report)'}`;
+/** What the orchestrator reads; the UI renders the same agents from the echo's `agents` and this text. */
+function notification(agents: (AgentUpdate & { report: string })[]): string {
+  const body = agents.map((a) => {
+    const text = a.report.length > REPORT_CHARS ? `${a.report.slice(0, REPORT_CHARS)}…\n(report cut; read_agent has all of it)` : a.report;
+    const files = a.filesChanged ? `\nFiles changed: ${a.filesChanged.map((f) => `${f.path} (+${f.added} -${f.removed})`).join(', ')}` : '';
+    const error = a.error ? `\nError: ${a.error}` : '';
+    return `## Agent "${a.title}" (${a.agentId}) is idle: turn ${a.status}${error}${files}\n\n${text || '(no report)'}`;
   });
   return `<${NOTIFICATION_TAG}>\n${body.join('\n\n')}\n\nThis message is from Kelpie, not the person. Use read_agent for more detail.\n</${NOTIFICATION_TAG}>`;
 }

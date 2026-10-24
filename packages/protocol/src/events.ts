@@ -53,6 +53,22 @@ export const SessionStarted = ev(
   }),
 );
 
+/** One sub-agent in a notification Kelpie sent its orchestrator. */
+export const AgentUpdate = z.object({
+  agentId: z.string(),
+  title: z.string(),
+  /** How its last turn ended, or 'not started'. */
+  status: z.string(),
+  /**
+   * Its final message of that turn. On a logged notification only when the text had to cut
+   * it: otherwise the text carries it, and it is not stored twice.
+   */
+  report: z.string().optional(),
+  error: z.string().optional(),
+  filesChanged: z.array(z.object({ path: z.string(), added: z.number(), removed: z.number() })).optional(),
+});
+export type AgentUpdate = z.infer<typeof AgentUpdate>;
+
 export const Message = ev(
   'message',
   z.object({
@@ -65,6 +81,8 @@ export const Message = ev(
      * itself (notifications, restarts). Set by the daemon from its outbox.
      */
     source: z.enum(['user', 'orchestrator', 'kelpie']).optional(),
+    /** On a notification Kelpie sent an orchestrator: the sub-agents it covers, for the UI. */
+    agents: z.array(AgentUpdate).optional(),
   }),
 );
 

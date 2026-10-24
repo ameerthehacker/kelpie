@@ -73,10 +73,11 @@ async function orchestrator(ctx: ReturnType<typeof setup>) {
 const sentTexts = (s: Session) => s.events().flatMap((e: KelpieEvent) => (e.kind === 'message' && e.data.sent ? [e.data.text] : []));
 
 describe('orchestrator round-ups', () => {
-  it('runs the orchestrator with only its todo tools and the kelpie MCP server', async () => {
+  it('runs the orchestrator with no built-in tools, only the kelpie MCP server', async () => {
     const ctx = setup();
     const { argv } = await orchestrator(ctx);
-    expect(argv[argv.indexOf('--tools') + 1]).toBe(ORCHESTRATOR_TOOLS.join(','));
+    expect(argv[argv.indexOf('--tools') + 1]).toBe(''); // no built-in tools at all
+    expect(ORCHESTRATOR_TOOLS).toEqual([]);
     expect(argv.slice(argv.indexOf('--allowedTools'), argv.indexOf('--allowedTools') + 2)).toEqual(['--allowedTools', 'mcp__kelpie']);
     expect(argv[argv.indexOf('--append-system-prompt') + 1]).toContain("You are Kelpie's orchestrator");
   });
@@ -129,16 +130,36 @@ describe('orchestrator round-ups', () => {
     const sources = (s: Session) => s.events().flatMap((e) => (e.kind === 'message' && e.data.sent ? [e.data.source] : []));
     expect(sources(ctx.sessions.get(ids[0])!)).toEqual(['orchestrator']);
     expect(sources(parent)).toEqual(['user', 'kelpie']);
+    // The notification's echo carries the agents for the UI; their reports only once, in the text.
+    const note = parent.events().find((e) => e.kind === 'message' && e.data.source === 'kelpie');
+    expect(note?.kind === 'message' && note.data.agents?.map((a) => [a.title, a.status, a.report])).toEqual([
+      ['Count A', 'completed', undefined],
+      ['Count B', 'completed', undefined],
+    ]);
+    expect(note?.kind === 'message' && note.data.text).toContain('is idle: turn completed\n\n4');
     const read = await call('read_agent', { agentId: ids[0] });
     expect(read.data).toMatchObject({ title: 'Count A', lastTurn: 'completed', report: '4' });
     const log = await call('read_agent', { agentId: ids[0], detail: 'log', limit: 2 });
     expect(log.data.lines).toHaveLength(2);
     expect(log.data.more).toBe(true);
 
+    // The pane's view of each agent: kept current without reading logs, and pushed as it changes.
+    const res = await ctx.app.request(`/api/sessions/${parent.id}/agents`, { headers: { host: '127.0.0.1:7317' } });
+    const summaries = (await res.json()) as { title: string; status: string; now: string; model: string }[];
+    expect(summaries.map((s) => [s.title, s.status, s.now])).toEqual([
+      ['Count A', 'done', '4'],
+      ['Count B', 'done', '4'],
+    ]);
+    expect(summaries[0]!.model).toBe('claude-haiku-5-5');
+    const pushed: string[] = [];
+    const unwatch = ctx.sessions.watch((u) => u.type === 'agent' && pushed.push(`${u.agent.title}:${u.agent.status}`));
+
     // A follow-up resumes the agent, and its next idle is reported in a new notification.
     await call('message_agent', { agentId: ids[0], text: 'Also count FIXMEs' });
     await waitFor(() => sentTexts(parent).filter((t) => t.startsWith('<kelpie-notification>')).length === 2);
     expect(sentTexts(ctx.sessions.get(ids[0])!)).toContain('Also count FIXMEs');
+    await waitFor(() => pushed.at(-1) === 'Count A:done');
+    unwatch();
   });
 
   it('refuses empty briefs and messages', async () => {

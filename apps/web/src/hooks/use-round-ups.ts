@@ -2,7 +2,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { liveStream } from '@/lib/live-stream';
+import type { AgentSummary } from '@/lib/agents';
 import { byRecent, type RoundUp } from '@/lib/round-ups';
+import { AGENTS, agentsKey, upsertAgent } from './use-agents';
 import type { HarnessUsage } from '@/lib/usage';
 import { USAGE } from './use-usage';
 
@@ -32,9 +34,20 @@ export function useRoundUps() {
       liveStream({
         url: () => '/api/events',
         on: {
-          sessions: (msg) => queryClient.setQueryData(ROUND_UPS, JSON.parse(msg.data) as RoundUp[]),
+          // Sent on every (re)connect: agent updates missed while away are caught up by refetching.
+          sessions: (msg) => {
+            queryClient.setQueryData(ROUND_UPS, JSON.parse(msg.data) as RoundUp[]);
+            void queryClient.invalidateQueries({ queryKey: AGENTS });
+          },
           session: (msg) => queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => upsert(rows, JSON.parse(msg.data) as RoundUp)),
           usage: (msg) => queryClient.setQueryData(USAGE, JSON.parse(msg.data) as HarnessUsage[]),
+          agent: (msg) => {
+            const agent = JSON.parse(msg.data) as AgentSummary;
+            const key = agentsKey(agent.parentId);
+            // A list being fetched may predate this update: fetch it again rather than lose it.
+            if (queryClient.getQueryState(key)?.fetchStatus === 'fetching') void queryClient.invalidateQueries({ queryKey: key });
+            else queryClient.setQueryData<AgentSummary[]>(key, (list) => upsertAgent(list, agent));
+          },
           deleted: (msg) => {
             const { id } = JSON.parse(msg.data) as { id: string };
             queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => rows?.filter((r) => r.id !== id));

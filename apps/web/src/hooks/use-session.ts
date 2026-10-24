@@ -2,8 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useLocation } from 'react-router';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { api, isGone } from '@/lib/api';
-import { buildChat, type ChatItem } from '@/lib/chat';
-import { liveStream } from '@/lib/live-stream';
+import { buildChat, latestTodos, type ChatItem } from '@/lib/chat';
+import { logStream } from '@/lib/live-stream';
 import { chatStatus, lastBusy, settlePending, type PendingMessage } from '@/lib/session-state';
 
 export type { ChatStatus } from '@/lib/session-state';
@@ -65,40 +65,18 @@ export function useSession(id: string | undefined, onCreated: (id: string) => vo
     setPending((p) => p.filter((m) => belongs(m, view) || m.sending));
     if (!id) return;
 
-    let seen = 0; // log indices received so far
-    let buffer: KelpieEvent[] = [];
-    let frame = 0;
-    // A long log replays as thousands of SSE messages; fold them in once per frame, not once each.
-    const flush = () => {
-      frame = 0;
-      const batch = buffer;
-      buffer = [];
-      setEvents((prev) => prev.concat(batch));
-      setPending((p) => {
-        const mine = p.filter((m) => belongs(m, id));
-        const settled = settlePending(mine, batch);
-        return settled.length === mine.length ? p : [...p.filter((m) => !belongs(m, id)), ...settled];
-      });
-    };
-
-    const stop = liveStream({
-      url: () => `/api/sessions/${id}/events?after=${seen - 1}`,
-      on: {
-        kef: (msg) => {
-          const index = Number(msg.id);
-          if (index < seen) return;
-          seen = index + 1;
-          buffer.push(JSON.parse(msg.data) as KelpieEvent);
-          frame ||= requestAnimationFrame(flush);
-        },
+    return logStream(id, {
+      onBatch: (batch) => {
+        setEvents((prev) => prev.concat(batch));
+        setPending((p) => {
+          const mine = p.filter((m) => belongs(m, id));
+          const settled = settlePending(mine, batch);
+          return settled.length === mine.length ? p : [...p.filter((m) => !belongs(m, id)), ...settled];
+        });
       },
       onGone: () => markGone(id),
       onStatus: setError,
     });
-    return () => {
-      stop();
-      cancelAnimationFrame(frame);
-    };
   }, [id, view, markGone]);
 
   const send = useCallback(
@@ -153,9 +131,10 @@ export function useSession(id: string | undefined, onCreated: (id: string) => vo
     () => [...buildChat(events), ...visible.map(({ id: pid, text }): ChatItem => ({ role: 'user', id: `pending-${pid}`, text }))],
     [events, visible],
   );
+  const todos = useMemo(() => latestTodos(events), [events]);
   const gone = goneView === view;
   const busy = useMemo(() => !gone && lastBusy(events), [events, gone]);
   const status = chatStatus({ inFlight: visible.filter((m) => m.sending).length, pending: visible.length, busy, error });
 
-  return { items, status, busy: busy || status === 'submitted', error, send, interrupt };
+  return { items, todos, status, busy: busy || status === 'submitted', error, send, interrupt };
 }

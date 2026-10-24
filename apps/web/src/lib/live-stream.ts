@@ -1,3 +1,4 @@
+import type { KelpieEvent } from '@kelpie/protocol';
 import { EventStreamContentType, fetchEventSource, type EventSourceMessage } from '@microsoft/fetch-event-source';
 
 export interface LiveStreamOptions {
@@ -70,5 +71,46 @@ export function liveStream(opts: LiveStreamOptions): () => void {
     disposed = true;
     conn?.abort();
     clearTimeout(watchdog);
+  };
+}
+
+export interface LogStreamOptions {
+  /** New events, in log order, at most once per animation frame. */
+  onBatch: (events: KelpieEvent[]) => void;
+  onGone?: () => void;
+  onStatus: (error: string | undefined) => void;
+}
+
+/**
+ * One round-up's KEF log from the start, then live. A reconnect resumes after the last event
+ * received, and a long log's replay (thousands of SSE messages) is folded in once per frame.
+ */
+export function logStream(id: string, { onBatch, onGone, onStatus }: LogStreamOptions): () => void {
+  let seen = 0; // log indices received so far
+  let buffer: KelpieEvent[] = [];
+  let frame = 0;
+  const flush = () => {
+    frame = 0;
+    const batch = buffer;
+    buffer = [];
+    onBatch(batch);
+  };
+  const stop = liveStream({
+    url: () => `/api/sessions/${id}/events?after=${seen - 1}`,
+    on: {
+      kef: (msg) => {
+        const index = Number(msg.id);
+        if (index < seen) return;
+        seen = index + 1;
+        buffer.push(JSON.parse(msg.data) as KelpieEvent);
+        frame ||= requestAnimationFrame(flush);
+      },
+    },
+    onGone,
+    onStatus,
+  });
+  return () => {
+    stop();
+    cancelAnimationFrame(frame);
   };
 }
