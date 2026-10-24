@@ -11,6 +11,12 @@ export interface AgentSummary {
   status: AgentStatus;
   now: string;
   todos: TodoItem[];
+  /** Ordinary work, or Muster. */
+  kind?: 'worker' | 'muster';
+  /** A writer's own branch, whether it is to be mustered or standalone, and its worktree's state. */
+  branch?: string;
+  deliver?: 'muster' | 'standalone';
+  worktree?: 'creating' | 'active' | 'mustered' | 'removed';
   createdAt: number;
   updatedAt: number;
 }

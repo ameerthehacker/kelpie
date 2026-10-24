@@ -9,6 +9,6 @@
 A round-up becomes a **feature** with a branch, a PR and a status (planning → in progress → in review → merged). Build in this order:
 
 - [ ] **Todos stored by Kelpie.** Todos live in the DB per feature and can be assigned to agents. The user edits them in the UI; the orchestrator uses `create_todo` / `update_todo` tools. This replaces the plan dock and covers the "Kelpie-owned task graph" item above.
-- [ ] **One worktree per feature.** Created automatically with its branch. The feature's agents run in it, and it is cleaned up when the PR merges or the feature is archived.
+- [x] **Worktrees.** The orchestrator's home worktree is the feature branch, cut from a base branch the person picks. Every writer has its own worktree. Muster brings their branches together, and standalone pieces stay apart. Cleanup removes worktrees on muster, on an idle sweep, under a cap, and on delete. See DESIGN.md "Worktrees and Muster".
 - [ ] **Diff view.** Each feature shows its changes against the base branch, uncommitted work included.
 - [ ] **PRs.** Either "Open PR" (push the branch, open a draft with `gh`, description built from the todos) or link an existing PR by URL. Show the PR's state and checks.

@@ -19,6 +19,11 @@ export interface RoundUp {
   role?: 'orchestrator' | 'agent';
   /** The model asked for; absent for the harness's default. */
   model?: string;
+  /** Ordinary work, or Muster (a sub-agent bringing other agents' branches together). */
+  kind?: 'worker' | 'muster';
+  /** The branch the round-up starts from (e.g. origin/main) and the commit it was pinned to, once chosen. */
+  baseBranch?: string;
+  baseCommit?: string;
 }
 
 export const NEW_TITLE = 'New round-up';

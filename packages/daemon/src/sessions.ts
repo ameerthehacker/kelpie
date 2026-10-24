@@ -28,6 +28,11 @@ export interface SessionInfo {
   writes: boolean;
   /** The model asked for, if not the harness's default. */
   model: string | undefined;
+  /** A sub-agent's job: ordinary work, or Muster. */
+  kind: 'worker' | 'muster';
+  /** An orchestrator's base branch and the commit it is pinned to, once chosen. */
+  baseBranch: string | undefined;
+  baseCommit: string | undefined;
 }
 
 /** What subscribers receive. `index` is the event's position in the session log (stable across runs and restarts). */
@@ -60,6 +65,10 @@ export interface SessionHooks {
   specFor?(session: Session, run: RunContext): Partial<RunSpec>;
   /** Every event, once it is logged and subscribers have seen it. Must not throw. */
   observe?(session: Session, index: number, event: KelpieEvent): void;
+  /** Before each harness process starts: make sure what it runs in exists (e.g. recreate a swept worktree). */
+  prepare?(session: Session): Promise<void>;
+  /** A round-up (or one sub-agent) is being deleted: its processes are stopped, its rows not yet gone. */
+  removing?(session: Session): Promise<void>;
 }
 
 export interface SendOptions {
@@ -70,7 +79,12 @@ export interface SendOptions {
 }
 
 export interface CreateOptions {
+  /** Chosen up front when the id is needed before the session exists (e.g. for its worktree path). */
+  id?: string;
   parentId?: string;
+  kind?: 'worker' | 'muster';
+  baseBranch?: string;
+  baseCommit?: string;
   role?: 'orchestrator' | 'agent';
   writes?: boolean;
   title?: string;
@@ -130,6 +144,8 @@ export class Session {
   private pumpActive = false;
   /** Set while a process is being stopped; a message then waits for it and resumes in a new one. */
   private stopping: Promise<void> | undefined;
+  /** Set while `launch` gets the harness's directory ready. */
+  private starting: Promise<void> | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private deleted = false;
   /** As of the last logged `activity` event, so it never runs ahead of what subscribers have seen. */
@@ -170,6 +186,11 @@ export class Session {
     return this.row.cwd;
   }
 
+  /** Its harness is being started (its directory readied first). */
+  get launching(): boolean {
+    return !!this.starting;
+  }
+
   get busy(): boolean {
     return this.busyState;
   }
@@ -194,6 +215,23 @@ export class Session {
     return this.row.role;
   }
 
+  get kind(): 'worker' | 'muster' {
+    return this.row.kind;
+  }
+
+  /** An orchestrator's base branch (e.g. `origin/main`) and the commit it is pinned to, once chosen. */
+  get baseBranch(): string | undefined {
+    return this.row.baseBranch ?? undefined;
+  }
+
+  get baseCommit(): string | undefined {
+    return this.row.baseCommit ?? undefined;
+  }
+
+  setBase(branch: string, commit: string): void {
+    this.update({ baseBranch: branch, baseCommit: commit });
+  }
+
   get writes(): boolean {
     return this.row.writes;
   }
@@ -211,7 +249,7 @@ export class Session {
   }
 
   info(): SessionInfo {
-    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes, model } = this.row;
+    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes, model, kind, baseBranch, baseCommit } = this.row;
     return {
       id,
       title,
@@ -226,6 +264,9 @@ export class Session {
       role,
       writes,
       model: model ?? undefined,
+      kind,
+      baseBranch: baseBranch ?? undefined,
+      baseCommit: baseCommit ?? undefined,
     };
   }
 
@@ -243,9 +284,16 @@ export class Session {
       status: this.working ? 'working' : t === 'completed' ? 'done' : t === 'failed' ? 'failed' : t === 'interrupted' ? 'stopped' : 'idle',
       now: this.nowState,
       todos: this.todosState,
+      kind: this.row.kind,
+      ...this.worktreeSummary(),
       createdAt,
       updatedAt,
     };
+  }
+
+  private worktreeSummary(): Pick<AgentSummary, 'branch' | 'deliver' | 'worktree'> {
+    const wt = this.ctx.store.worktreeOf(this.id);
+    return wt ? { branch: wt.branch, worktree: wt.state, ...(wt.deliver ? { deliver: wt.deliver } : {}) } : {};
   }
 
   /** Folds an event into a sub-agent's summary; true if the pane should hear about it. */
@@ -310,9 +358,9 @@ export class Session {
       opts.alsoInTx?.();
       this.ctx.store.enqueue(this.id, text, source, Date.now(), opts.meta);
     });
-    if (this.run && !this.run.exited) this.run.send(text);
-    else this.start();
     if (!this.row.title && source === 'user') this.update({ title: titleFrom(text) });
+    if (this.run && !this.run.exited) this.run.send(text);
+    else await this.launch();
   }
 
   /**
@@ -324,7 +372,7 @@ export class Session {
     while (this.stopping) await this.stopping;
     if (this.deleted || this.ctx.closing) return;
     if (!this.run || this.run.exited) {
-      if (this.ctx.store.undelivered(this.id).length) this.start();
+      if (this.ctx.store.undelivered(this.id).length) await this.launch();
       else await this.send(note, 'kelpie');
     }
     this.clearResumePending();
@@ -339,9 +387,30 @@ export class Session {
     if (this.row.resumePending) this.update({ resumePending: false });
   }
 
+  /** Something about a sub-agent outside its log changed (e.g. its branch was mustered): the pane hears. */
+  summaryChanged(): void {
+    if (this.row.parentId) this.ctx.agentChanged(this);
+  }
+
   /** Records that the orchestrator has been told about this sub-agent up to log index `index`. */
   markNotified(index: number): void {
     this.row = this.ctx.store.updateSession(this.id, { notifiedIdx: index }) ?? this.row;
+  }
+
+  /**
+   * Gets what the harness runs in ready (a swept worktree is recreated), then starts it. One at
+   * a time: a turn sent meanwhile is in the outbox, and `start` sends every undelivered turn.
+   */
+  private launch(): Promise<void> {
+    this.starting ??= (async () => {
+      try {
+        await this.ctx.hooks.prepare?.(this);
+      } finally {
+        this.starting = undefined;
+      }
+      if (!this.deleted && !this.ctx.closing && (!this.run || this.run.exited)) this.start();
+    })();
+    return this.starting;
   }
 
   /** Starts a harness process with every turn still undelivered, oldest first. */
@@ -519,7 +588,9 @@ export class Session {
       this.pumpActive = false;
       this.release();
     }
-    if (retryFresh && !this.deleted && !this.ctx.closing && this.run === run) this.start();
+    if (retryFresh && !this.deleted && !this.ctx.closing && this.run === run) {
+      this.launch().catch((err) => console.error(`session ${this.id}: could not restart`, err));
+    }
   }
 }
 
@@ -551,7 +622,8 @@ export class SessionManager {
         if (this.agentTimers.has(s.id)) return;
         const timer = setTimeout(() => {
           this.agentTimers.delete(s.id);
-          if (this.sessions.get(s.id) === s) this.notify({ type: 'agent', agent: s.summary() });
+          // Nobody listening, nothing to build (the summary reads the store).
+          if (this.watchers.size && this.sessions.get(s.id) === s) this.notify({ type: 'agent', agent: s.summary() });
         }, AGENT_UPDATE_MS);
         timer.unref();
         this.agentTimers.set(s.id, timer);
@@ -580,10 +652,12 @@ export class SessionManager {
   create(cwd = this.defaultCwd, opts: CreateOptions = {}): Session {
     const model = opts.model ?? this.ctx.defaults.model;
     const row = this.store.createSession({
-      id: randomUUID(),
+      id: opts.id ?? randomUUID(),
       cwd,
       ...(model ? { model } : {}),
       ...(opts.parentId ? { parentId: opts.parentId } : {}),
+      ...(opts.kind ? { kind: opts.kind } : {}),
+      ...(opts.baseBranch ? { baseBranch: opts.baseBranch, baseCommit: opts.baseCommit ?? null } : {}),
       ...(opts.role ? { role: opts.role } : {}),
       ...(opts.writes ? { writes: true } : {}),
       ...(opts.title ? { title: opts.title } : {}),
@@ -619,11 +693,17 @@ export class SessionManager {
   }
 
   /** Deletes a round-up and, first, its sub-agents (stopping their processes). */
-  async delete(id: string): Promise<boolean> {
+  /** Deletes a round-up and its sub-agents, or one sub-agent. `withParent`: its orchestrator is going too. */
+  async delete(id: string, withParent = false): Promise<boolean> {
     const session = this.sessions.get(id);
     if (!session) return false;
+    if (!withParent) {
+      // Nothing may still be writing when its worktrees are cleaned up, and their rows go with it.
+      await Promise.all([session, ...this.children(id)].map((s) => s.stop()));
+      await this.ctx.hooks.removing?.(session).catch((err) => console.error(`round-up ${id}: worktree cleanup failed`, err));
+    }
     this.sessions.delete(id);
-    await Promise.all(this.children(id).map((c) => this.delete(c.id)));
+    await Promise.all(this.children(id).map((c) => this.delete(c.id, true)));
     await session.delete();
     this.notify({ type: 'deleted', id });
     return true;
@@ -648,6 +728,9 @@ export class SessionManager {
 
   async stopAll(): Promise<void> {
     await Promise.all([...this.sessions.values()].map((s) => s.stop()));
+    // Pane updates still pending are moot once Kelpie stops (and the store may close next).
+    this.agentTimers.forEach((t) => clearTimeout(t));
+    this.agentTimers.clear();
   }
 
   private notify(update: ManagerUpdate): void {

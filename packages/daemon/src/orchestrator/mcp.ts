@@ -29,7 +29,8 @@ function server(orch: Orchestrator, parent: Session): McpServer {
     {
       description:
         'Start a sub-agent on one self-contained unit of work. Returns at once; Kelpie notifies you when it goes idle. ' +
-        `At most ${orch.maxAgents} agents work at once, and only one writing agent per repo.`,
+        `At most ${orch.maxAgents} agents work at once. Each writing agent gets its own git worktree and branch, cut from your feature branch; ` +
+        'the first writer needs a base branch (see set_base_branch).',
       inputSchema: {
         title: z.string().min(1).describe('Short name for this unit of work, shown to the person.'),
         task: z
@@ -37,6 +38,11 @@ function server(orch: Orchestrator, parent: Session): McpServer {
           .min(1)
           .describe('The complete brief. The agent sees nothing else: include the goal, all needed context, what done looks like, and what to report.'),
         writes: z.boolean().describe('True only if the unit must change files.'),
+        deliver: z
+          .enum(['muster', 'standalone'])
+          .optional()
+          .describe('Writers only. "muster" (default): its branch is brought into your feature branch with muster_agents. "standalone": a self-contained piece that ships on its own branch.'),
+        in: z.string().optional().describe("Read-only agents only: an agent id whose worktree to look at (e.g. to review its work). Default: your feature branch."),
         harness: Harness.optional().describe('Which coding agent runs it. Default claude-code.'),
         model: z.string().optional().describe('Model override; omit to use the default.'),
       },
@@ -46,7 +52,11 @@ function server(orch: Orchestrator, parent: Session): McpServer {
 
   mcp.registerTool(
     'list_agents',
-    { description: 'Your sub-agents with their status (working, idle, or waiting to resume), last turn result, and cost.' },
+    {
+      description:
+        'The base branch, your feature branch, and your sub-agents with their status (working, idle, or waiting to resume), last turn result, cost, ' +
+        'and for writers their branch and whether it is still to muster, mustered, or standalone.',
+    },
     () => result(() => orch.list(parent)),
   );
 
@@ -79,6 +89,37 @@ function server(orch: Orchestrator, parent: Session): McpServer {
     'interrupt_agent',
     { description: 'Stop the sub-agent turn in progress. The agent keeps its context for later messages.', inputSchema: { agentId } },
     ({ agentId }) => result(() => orch.interrupt(parent, agentId)),
+  );
+
+  mcp.registerTool(
+    'muster_agents',
+    {
+      description:
+        "Bring finished writers' branches into your feature branch, in the order given. Kelpie merges each one git can merge cleanly; " +
+        'at the first conflict it starts a Muster agent with the rest (you are notified when it is done). Only for writers with deliver "muster".',
+      inputSchema: {
+        agentIds: z.array(z.string()).min(1).describe('The writers to muster, in merge order.'),
+        notes: z.string().optional().describe('Anything Muster should know, e.g. which change wins where two overlap.'),
+      },
+    },
+    ({ agentIds, notes }) => result(() => orch.muster(parent, agentIds, notes)),
+  );
+
+  mcp.registerTool(
+    'list_branches',
+    { description: "The repo's branches a round-up can start from (remote first), and the base branch already chosen, if any." },
+    () => result(() => orch.branches(parent)),
+  );
+
+  mcp.registerTool(
+    'set_base_branch',
+    {
+      description:
+        'Set the branch this round-up starts from, as the person chose it (never pick it yourself). A remote branch is fetched first. ' +
+        'Fixed once a writing agent has started.',
+      inputSchema: { branch: z.string().min(1).describe('A branch from list_branches, e.g. origin/main.') },
+    },
+    ({ branch }) => result(() => orch.setBase(parent, branch)),
   );
 
   return mcp;

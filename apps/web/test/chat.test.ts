@@ -110,6 +110,21 @@ describe('orchestrator notifications', () => {
     expect(items).toEqual([{ role: 'assistant', id: 'n', parts: [{ type: 'agents', agents, ts: '2026-01-01T00:00:00.000Z' }] }]);
   });
 
+  it('reads branch lines, and shows what Muster got into the feature branch as its own line', () => {
+    const withBranch =
+      '<kelpie-notification>\n## Agent "Muster: Copy" (m1) is idle: turn completed\nBranch: kelpie/x--copy-1 (0 commits ahead of the feature branch; to muster)\n\n## Outcome\ndone\n\n' +
+      'In the feature branch now (checked with git): API, Docs. Still not mustered: Copy.\n\nThis message is from Kelpie, not the person. Use read_agent for more detail.\n</kelpie-notification>';
+    const [item] = buildChat([{ ...base, id: 'n', seq: 0, kind: 'message', data: { role: 'user', text: withBranch, sent: true, source: 'kelpie' } }]);
+    expect(item).toEqual({
+      role: 'assistant',
+      id: 'n',
+      parts: [
+        { type: 'agents', ts: base.ts, agents: [{ agentId: 'm1', title: 'Muster: Copy', status: 'completed', report: '## Outcome\ndone' }] },
+        { type: 'notice', tone: 'info', ts: base.ts, text: 'Mustered into the feature branch: API, Docs · not yet: Copy' },
+      ],
+    });
+  });
+
   it('shows a restart note as one line', () => {
     const note = '<kelpie-notification>\nKelpie restarted while you were working; your turn was cut off.\n</kelpie-notification>';
     const items = buildChat([{ ...base, id: 'n', seq: 0, kind: 'message', data: { role: 'user', text: note, sent: true, source: 'kelpie' } }]);

@@ -1,0 +1,1 @@
+ALTER TABLE `worktrees` ADD `fork_commit` text DEFAULT '' NOT NULL;

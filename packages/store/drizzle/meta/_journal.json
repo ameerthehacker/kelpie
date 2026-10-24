@@ -36,6 +36,20 @@
       "when": 1792821827458,
       "tag": "0004_outbox-meta",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792853263527,
+      "tag": "0005_worktrees",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792854654912,
+      "tag": "0006_worktree-fork-commit",
+      "breakpoints": true
     }
   ]
 }

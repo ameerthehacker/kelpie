@@ -1,10 +1,11 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type RunSpec } from '@kelpie/adapters';
 import { Harness, type AgentUpdate, type KelpieEvent } from '@kelpie/protocol';
-import type { Store } from '@kelpie/store';
+import type { Store, WorktreeRow } from '@kelpie/store';
 import type { RunContext, Session, SessionHooks, SessionManager } from '../sessions.js';
 import { logLines, report, type AgentReport, type LogPage } from './digest.js';
-import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_PROMPT, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface } from './prompt.js';
+import { GitError, type Branch, type Worktrees } from '../worktrees.js';
+import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_PROMPT, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, musterPrompt, type WorkPlace } from './prompt.js';
 
 /**
  * The orchestrator's built-in tools: none. Its plan is its agents (list_agents), which the
@@ -19,6 +20,9 @@ const REPORT_CHARS = 2000;
 /** A refusal the orchestrator should read and act on (not a Kelpie bug). */
 export class ToolError extends Error {}
 
+/** The base branch can't change: writers have already started from it. */
+export class BaseFixedError extends ToolError {}
+
 export interface OrchestratorOptions {
   store: Store;
   /** Where harnesses reach the kelpie MCP server, e.g. http://127.0.0.1:7317/mcp. */
@@ -27,13 +31,25 @@ export interface OrchestratorOptions {
   maxAgents?: number;
   /** Idles within this window go to the orchestrator as one notification. */
   notifyDelayMs?: number;
+  /** Git worktrees for writing agents. Without it (or outside a git repo) writers share the round-up's cwd, one at a time. */
+  worktrees?: Worktrees;
 }
+
+const NO_BASE =
+  'No base branch is set for this round-up. Ask the person which branch to start from (list_branches shows the options), call set_base_branch with their answer, then spawn the writer.';
+const MUSTER_BRIEF_CHARS = 1500;
 
 export interface AgentInfo {
   agentId: string;
   title: string;
   harness: string;
   writes: boolean;
+  /** Muster, or ordinary work. */
+  kind: 'worker' | 'muster';
+  /** A writer's own branch, and whether its work is still to be mustered, mustered, or standalone. */
+  branch?: string;
+  deliver?: 'muster' | 'standalone';
+  worktree?: WorktreeRow['state'];
   status: 'working' | 'idle' | 'waiting';
   lastTurn: string | undefined;
   updatedAt: string;
@@ -46,6 +62,17 @@ export interface SpawnInput {
   writes: boolean;
   harness?: string | undefined;
   model?: string | undefined;
+  /** A writer's: merged into the feature branch by Muster (default), or a branch that stands alone. */
+  deliver?: 'muster' | 'standalone' | undefined;
+  /** A read-only agent's: look at this agent's worktree instead of the feature branch. */
+  in?: string | undefined;
+}
+
+export interface AgentList {
+  /** The branch the round-up started from, and its feature branch (home), once they exist. */
+  baseBranch: string | undefined;
+  featureBranch: string | undefined;
+  agents: AgentInfo[];
 }
 
 /**
@@ -73,9 +100,18 @@ export class Orchestrator implements SessionHooks {
    * the cap or the writer guard in that gap.
    */
   private readonly reserved = new Set<string>();
+  /**
+   * Writers a spawn call has cleared but not made yet, per orchestrator: making a worktree takes
+   * a moment, and the cap must count them meanwhile.
+   */
+  private readonly starting = new Map<string, number>();
+  private readonly worktrees: Worktrees | undefined;
 
   constructor(opts: OrchestratorOptions) {
     this.store = opts.store;
+    this.worktrees = opts.worktrees;
+    // A process left running in a worktree that goes would outlive its directory.
+    if (this.worktrees) this.worktrees.beforeRemove = (row) => this.release(row);
     this.mcpUrl = opts.mcpUrl;
     this.maxAgents = opts.maxAgents ?? 4;
     this.notifyDelayMs = opts.notifyDelayMs ?? 1500;
@@ -95,10 +131,11 @@ export class Orchestrator implements SessionHooks {
   specFor(session: Session, run: RunContext): Partial<RunSpec> {
     const preface = run.fresh && run.hadHistory ? freshPreface(session.role, this.store.firstSent(session.id)?.text) : '';
     if (session.role === 'agent') {
+      const place = this.placeOf(session);
       return {
         tools: session.writes ? DEFAULT_TOOLS : READ_ONLY_TOOLS,
         allowedTools: ['Bash'],
-        appendSystemPrompt: agentPrompt(session.writes) + preface,
+        appendSystemPrompt: (session.kind === 'muster' && place ? musterPrompt(place) : agentPrompt(session.writes, place)) + preface,
       };
     }
     const token = randomBytes(32).toString('base64url');
@@ -126,6 +163,28 @@ export class Orchestrator implements SessionHooks {
     }
   }
 
+  /** Before a harness starts: its worktree is on disk, at its one path (a swept one comes back). */
+  async prepare(session: Session): Promise<void> {
+    const row = this.worktreeAt(session);
+    if (!row || !this.worktrees) return;
+    // A reader looking at another agent's worktree must not bring back one whose work was mustered:
+    // that would cut a fresh, empty branch in its place.
+    if (row.kind === 'agent' && row.sessionId !== session.id && row.state === 'mustered') {
+      throw new Error(`the worktree "${session.title}" was reading has been mustered into the feature branch; look there instead`);
+    }
+    await this.worktrees.ensure(row);
+  }
+
+  /**
+   * A round-up (or one agent) is being deleted: its worktrees come off disk, after whatever was
+   * left uncommitted is committed; branches with unmerged work stay.
+   */
+  async removing(session: Session): Promise<void> {
+    if (!this.worktrees) return;
+    const kept = session.parentId ? [await this.worktrees.removeAgent(session.id)].filter((b) => b !== undefined) : await this.worktrees.removeRoundUp(session.id);
+    if (kept.length) console.log(`"${session.title}" deleted; kept branches with unmerged work: ${kept.join(', ')}`);
+  }
+
   /** The orchestrator round-up a bearer token belongs to, while its process runs. */
   authorize(token: string | undefined): Session | undefined {
     const id = token ? this.tokens.get(token) : undefined;
@@ -138,22 +197,180 @@ export class Orchestrator implements SessionHooks {
     const harness = Harness.safeParse(input.harness ?? 'claude-code');
     if (!harness.success) throw new ToolError(`unknown harness "${input.harness}"; available: ${Harness.options.join(', ')}`);
     if (!input.task.trim()) throw new ToolError('task is empty: give the agent a complete brief');
+    // One line: it heads notifications and the UI.
+    const title = input.title.replace(/\s+/g, ' ').trim().slice(0, 120) || 'Agent';
+    const opts = { parentId: parent.id, role: 'agent' as const, writes: input.writes, title, ...(input.model ? { model: input.model } : {}) };
+    const repo = this.worktrees ? await this.worktrees.repoOf(parent.cwd) : undefined;
+    // After the only await before an agent exists or is counted as starting: no second call slips past.
     this.checkCap(parent);
-    if (input.writes) this.checkWriter(parent.cwd);
-    const child = this.manager.create(parent.cwd, {
-      parentId: parent.id,
-      role: 'agent',
-      writes: input.writes,
-      // One line: it heads notifications and the UI.
-      title: input.title.replace(/\s+/g, ' ').trim().slice(0, 120) || 'Agent',
-      ...(input.model ? { model: input.model } : {}),
-    });
-    await this.reserving(child, () => child.send(input.task, 'orchestrator'));
-    return { agentId: child.id, status: 'working' };
+
+    // Outside git (or without worktrees), writers share the round-up's directory, one at a time.
+    if (!repo || !this.worktrees) {
+      if (input.writes) this.checkWriter(parent.cwd);
+      const child = this.manager.create(parent.cwd, opts);
+      await this.reserving(child, () => child.send(input.task, 'orchestrator'));
+      return { agentId: child.id, status: 'working' };
+    }
+
+    if (!input.writes) {
+      // Readers look at the feature branch, or at one agent's worktree.
+      const target = input.in ? this.store.worktreeOf(this.child(parent, input.in).id) : this.store.worktreeOf(parent.id);
+      if (input.in && !target) throw new ToolError(`agent ${input.in} has no worktree of its own: only writing agents do`);
+      if (input.in && target?.state === 'mustered') throw new ToolError(`that agent's work has been mustered into the feature branch: review it there (omit in)`);
+      const child = this.manager.create(target?.path ?? parent.cwd, opts);
+      await this.reserving(child, () => child.send(input.task, 'orchestrator'));
+      return { agentId: child.id, status: 'working' };
+    }
+
+    if (!parent.baseBranch || !parent.baseCommit) throw new ToolError(NO_BASE);
+    const id = randomUUID();
+    // Counted from here: creating the worktree takes a moment, and the cap must count this agent meanwhile.
+    this.starting.set(parent.id, (this.starting.get(parent.id) ?? 0) + 1);
+    try {
+      // Room for the writer's worktree, and for the feature branch's if this is the first writer;
+      // never by sweeping the feature branch it is about to be cut from.
+      const need = this.store.worktreeOf(parent.id) ? 1 : 2;
+      if (!(await this.worktrees.makeRoom((row) => this.inUse(row), need, (row) => row.sessionId === parent.id))) {
+        throw new ToolError(
+          `All ${this.worktrees.max} worktrees are in use or hold uncommitted work, so no new writing agent can start. End your turn; you will be notified as agents finish.`,
+        );
+      }
+      const home = await this.worktrees.ensureHome({ id: parent.id, title: parent.title, baseBranch: parent.baseBranch, baseCommit: parent.baseCommit }, repo);
+      const child = this.manager.create(this.worktrees.agentPath(repo, parent.id, id), { ...opts, id });
+      try {
+        await this.worktrees.createAgent({ id, title }, home, input.deliver ?? 'muster');
+      } catch (err) {
+        await this.manager.delete(child.id);
+        throw new ToolError(`could not make a worktree for the agent: ${(err as Error).message}`);
+      }
+      await this.reserving(child, () => child.send(input.task, 'orchestrator'));
+      return { agentId: child.id, status: 'working' };
+    } finally {
+      const n = (this.starting.get(parent.id) ?? 1) - 1;
+      if (n > 0) this.starting.set(parent.id, n);
+      else this.starting.delete(parent.id);
+    }
   }
 
-  list(parent: Session): AgentInfo[] {
-    return this.manager.children(parent.id).map((c) => this.agentInfo(c));
+  list(parent: Session): AgentList {
+    return {
+      baseBranch: parent.baseBranch,
+      featureBranch: this.store.worktreeOf(parent.id)?.branch,
+      agents: this.manager.children(parent.id).map((c) => this.agentInfo(c)),
+    };
+  }
+
+  /** The branches the person may start this round-up from, and the one chosen, if any. */
+  async branches(parent: Session): Promise<{ baseBranch: string | undefined; branches: Branch[] }> {
+    const branches = await this.branchesAt(parent.cwd);
+    if (!branches) throw new ToolError(`${parent.cwd} is not a git repository: writers share it, and there is no base branch to choose`);
+    return { baseBranch: parent.baseBranch, branches };
+  }
+
+  /** The branches a round-up in `cwd` could start from; undefined outside a git repo. */
+  async branchesAt(cwd: string): Promise<Branch[] | undefined> {
+    const repo = this.worktrees ? await this.worktrees.repoOf(cwd) : undefined;
+    return repo && this.worktrees ? this.worktrees.branches(repo) : undefined;
+  }
+
+  /** Sets the branch the feature starts from (fetched and pinned now). Fixed once a writer has started. */
+  async setBase(parent: Session, branch: string): Promise<{ baseBranch: string; baseCommit: string }> {
+    const repo = this.worktrees ? await this.worktrees.repoOf(parent.cwd) : undefined;
+    if (!repo || !this.worktrees) throw new ToolError(`${parent.cwd} is not a git repository, so there is no base branch to set`);
+    const fixed = () =>
+      new BaseFixedError(`the base branch is already ${parent.baseBranch} and writers have started from it; it can't change now (start a new round-up for another base)`);
+    if (this.store.worktreeOf(parent.id)) throw fixed();
+    let commit: string;
+    try {
+      commit = await this.worktrees.pinBase(repo, branch.trim());
+    } catch (err) {
+      if (err instanceof GitError) throw new ToolError(err.message);
+      throw err;
+    }
+    // A writer may have started from the old base while the fetch ran: then it stands.
+    if (this.store.worktreeOf(parent.id)) throw fixed();
+    parent.setBase(branch.trim(), commit);
+    return { baseBranch: branch.trim(), baseCommit: commit };
+  }
+
+  /**
+   * Brings agents' branches into the feature branch, in order. Kelpie merges what git can merge
+   * cleanly; at the first conflict, the rest go to a Muster agent with every agent's brief and report.
+   */
+  async muster(
+    parent: Session,
+    agentIds: string[],
+    notes?: string,
+  ): Promise<{ merged: string[]; muster?: { agentId: string; branches: string[]; conflicts: string[] }; waiting?: { branches: string[]; conflicts: string[]; reason: string } }> {
+    const home = this.store.worktreeOf(parent.id);
+    if (!this.worktrees || !home) throw new ToolError('nothing to muster: no writing agent has worked on a branch of its own yet');
+    if (this.manager.children(parent.id).some((c) => c.kind === 'muster' && this.isWorking(c))) {
+      throw new ToolError('a Muster agent is already working on the feature branch. End your turn; you will be notified when it finishes.');
+    }
+    const agents = [...new Set(agentIds)].map((id) => this.child(parent, id));
+    const rows: { agent: Session; row: WorktreeRow }[] = [];
+    for (const agent of agents) {
+      const row = this.store.worktreeOf(agent.id);
+      if (this.isWorking(agent)) throw new ToolError(`"${agent.title}" is still working; muster it once it is done`);
+      if (!row) throw new ToolError(`"${agent.title}" is read-only: it has no branch to muster`);
+      if (row.deliver === 'standalone') throw new ToolError(`"${agent.title}" is standalone: its branch ships on its own and is never mustered`);
+      // Whatever it left uncommitted is part of its work.
+      if (row.state === 'active') await this.worktrees.checkpoint(row, agent.title);
+      if ((await this.worktrees.ownCommits(row)) === 0) throw new ToolError(`"${agent.title}" has nothing to muster: no commits on ${row.branch} beyond the feature branch it was cut from`);
+      rows.push({ agent, row });
+    }
+    // Merging changes files under anyone working in the feature branch (readers running tests).
+    if (this.inUse(home)) {
+      throw new ToolError('agents are working in the feature branch right now (read-only agents or Muster). End your turn; muster once they are done.');
+    }
+    const live = await this.worktrees.ensure(home);
+    const merged: string[] = [];
+    for (const [i, { agent, row }] of rows.entries()) {
+      const result = await this.worktrees.merge(live, row.branch, `Muster: ${agent.title} (${row.branch})`);
+      if (result.ok) {
+        await this.worktrees.mustered(row, live);
+        agent.summaryChanged();
+        merged.push(agent.title);
+        continue;
+      }
+      // The rest need judgement: Muster, in the feature branch's worktree.
+      const rest = rows.slice(i);
+      try {
+        this.checkCap(parent);
+        this.checkWriter(live.path);
+      } catch (err) {
+        // What merged stays merged: say so, and what is left, rather than only refusing.
+        if (!(err instanceof ToolError)) throw err;
+        return { merged, waiting: { branches: rest.map((r) => r.row.branch), conflicts: result.conflicts, reason: `${err.message} Muster the rest then.` } };
+      }
+      const muster = this.manager.create(live.path, {
+        parentId: parent.id,
+        role: 'agent',
+        kind: 'muster',
+        writes: true,
+        title: `Muster: ${rest.map((r) => r.agent.title).join(', ')}`.slice(0, 120),
+      });
+      await this.reserving(muster, () => muster.send(this.musterBrief(live, rest, result.conflicts, notes), 'orchestrator'));
+      return { merged, muster: { agentId: muster.id, branches: rest.map((r) => r.row.branch), conflicts: result.conflicts } };
+    }
+    return { merged };
+  }
+
+  private musterBrief(home: WorktreeRow, rest: { agent: Session; row: WorktreeRow }[], conflicts: string[], notes: string | undefined): string {
+    const clip = (t: string) => (t.length > MUSTER_BRIEF_CHARS ? `${t.slice(0, MUSTER_BRIEF_CHARS)}…` : t);
+    const parts = rest.map(({ agent, row }, i) => {
+      const r = report(agent.events());
+      return `## ${i + 1}. ${row.branch}\nAgent: "${agent.title}"\n\n### Its task\n${clip(this.store.firstSent(agent.id)?.text ?? '(unknown)')}\n\n### Its report\n${clip(r.report) || '(no report)'}`;
+    });
+    return [
+      `Merge these branches into the feature branch \`${home.branch}\` (based on \`${home.baseBranch}\`), in this order:`,
+      ...rest.map(({ row }, i) => `${i + 1}. ${row.branch}`),
+      '',
+      `Kelpie's own merge of ${rest[0]!.row.branch} stopped on conflicts in: ${conflicts.join(', ')}.`,
+      ...(notes?.trim() ? ['', `Notes from the orchestrator: ${notes.trim()}`] : []),
+      '',
+      ...parts,
+    ].join('\n');
   }
 
   read(parent: Session, agentId: string, detail: 'report' | 'log' = 'report', after?: number, limit?: number): (AgentInfo & AgentReport) | (AgentInfo & LogPage) {
@@ -246,23 +463,103 @@ export class Orchestrator implements SessionHooks {
       return idle && !idle.event.data.busy && idle.index > c.notifiedIdx ? [{ agent: c, index: idle.index }] : [];
     });
     if (!owed.length) return;
-    const agents = owed.map(({ agent }): AgentUpdate & { report: string } => {
+    const home = this.store.worktreeOf(parentId);
+    const agents: (AgentUpdate & { report: string })[] = [];
+    for (const { agent } of owed) {
       const r = report(agent.events());
-      return {
+      agents.push({
         agentId: agent.id,
         title: agent.title,
         status: r.lastTurn ?? 'not started',
         report: r.report,
         ...(r.error ? { error: r.error } : {}),
         ...(r.filesChanged.length ? { filesChanged: r.filesChanged } : {}),
-      };
-    });
+        ...(await this.branchOf(agent, home)),
+      });
+    }
+    // Muster's outcome is what git says is in the feature branch, not what its report claims.
+    const mustered = owed.some(({ agent }) => agent.kind === 'muster') ? await this.settleMuster(parentId) : undefined;
     // Sent and marked in one transaction: after a crash it is neither lost nor sent twice.
-    await parent.send(notification(agents), 'kelpie', {
+    await parent.send(notification(agents, mustered), 'kelpie', {
       alsoInTx: () => owed.forEach(({ agent, index }) => agent.markNotified(index)),
       // The text has each report already, unless it was cut there.
       meta: { agents: agents.map(({ report, ...a }) => (report.length > REPORT_CHARS ? { ...a, report } : a)) },
     });
+  }
+
+  /**
+   * A writer's branch for its notification: anything it left uncommitted is committed first, so
+   * what the orchestrator reads (and later musters) is all of its work.
+   */
+  private async branchOf(agent: Session, home: WorktreeRow | undefined): Promise<Partial<AgentUpdate>> {
+    const row = this.store.worktreeOf(agent.id);
+    if (!row || !home || !this.worktrees || row.state !== 'active') return {};
+    try {
+      await this.worktrees.checkpoint(row, agent.title);
+      const stats = await this.worktrees.stats(row, home.branch);
+      return { branch: row.branch, ahead: stats.ahead, ...(stats.diffstat ? { diffstat: stats.diffstat } : {}), ...(row.deliver ? { deliver: row.deliver } : {}) };
+    } catch (err) {
+      console.error(`agent ${agent.id}: could not read its branch`, err);
+      return { branch: row.branch };
+    }
+  }
+
+  /** Marks every agent whose work is now in the feature branch as mustered (its worktree and branch go). */
+  private async settleMuster(parentId: string): Promise<{ merged: string[]; pending: string[] }> {
+    const home = this.store.worktreeOf(parentId);
+    const out = { merged: [] as string[], pending: [] as string[] };
+    if (!home || !this.worktrees) return out;
+    for (const row of this.store.worktreesOf(parentId)) {
+      if (row.kind !== 'agent' || row.deliver !== 'muster' || row.state === 'mustered') continue;
+      const agent = this.manager.get(row.sessionId);
+      if (!agent || this.isWorking(agent)) continue;
+      if (await this.worktrees.musteredIn(row, home)) {
+        await this.worktrees.mustered(row, home);
+        agent.summaryChanged();
+        out.merged.push(agent.title);
+      } else if ((await this.worktrees.ownCommits(row)) > 0) out.pending.push(agent.title);
+    }
+    return out;
+  }
+
+  // ── worktree upkeep ──────────────────────────────────────────────────
+
+  /** Removes worktrees left idle (and clean) for a while. Run hourly. */
+  async sweep(): Promise<number> {
+    return this.worktrees ? this.worktrees.sweep((row) => this.inUse(row)) : 0;
+  }
+
+  /**
+   * After a daemon start, before recovery: the disk matches the database again. A merge left
+   * half-done in a feature branch stays only if its Muster agent is about to resume it.
+   */
+  async reconcile(): Promise<void> {
+    if (!this.worktrees) return;
+    await this.worktrees.reconcile((row) => this.manager.children(row.roundUpId).some((c) => c.kind === 'muster' && c.cwd === row.path && c.resumePending));
+  }
+
+  /** Ends the idle harness processes running in a worktree about to be removed. */
+  private async release(row: WorktreeRow): Promise<void> {
+    if (!this.sessions) return;
+    await Promise.all(this.manager.all().filter((s) => s.cwd === row.path && !this.isWorking(s)).map((s) => s.stop()));
+  }
+
+  /** Someone is working in this worktree right now, or about to (its writer, Muster, or a reader). */
+  private inUse(row: WorktreeRow): boolean {
+    return this.manager.all().some((s) => s.cwd === row.path && (this.isWorking(s) || s.launching));
+  }
+
+  /** The worktree a session runs in: its own, or one it was sent to read (or Muster's feature branch). */
+  private worktreeAt(session: Session): WorktreeRow | undefined {
+    const own = this.store.worktreeOf(session.id);
+    if (own && own.path === session.cwd) return own;
+    const roundUp = session.parentId ?? session.id;
+    return this.store.worktreesOf(roundUp).find((r) => r.path === session.cwd);
+  }
+
+  private placeOf(session: Session): WorkPlace | undefined {
+    const row = this.worktreeAt(session);
+    return row && { branch: row.branch, parentBranch: row.parentBranch, baseBranch: row.baseBranch, baseCommit: row.baseCommit, own: row.sessionId === session.id };
   }
 
   // ── rules ────────────────────────────────────────────────────────────
@@ -285,7 +582,7 @@ export class Orchestrator implements SessionHooks {
   }
 
   private checkCap(parent: Session): void {
-    if (this.working(parent) >= this.maxAgents) {
+    if (this.working(parent) + (this.starting.get(parent.id) ?? 0) >= this.maxAgents) {
       throw new ToolError(
         `${this.maxAgents} agents are already working, the most allowed at once. End your turn; you will be notified as they finish.`,
       );
@@ -313,11 +610,14 @@ export class Orchestrator implements SessionHooks {
 
   private agentInfo(c: Session): AgentInfo {
     const info = c.info();
+    const row = this.store.worktreeOf(c.id);
     return {
       agentId: c.id,
       title: c.title,
       harness: info.harness,
       writes: c.writes,
+      kind: c.kind,
+      ...(row ? { branch: row.branch, worktree: row.state, ...(row.deliver ? { deliver: row.deliver } : {}) } : {}),
       status: this.isWorking(c) ? 'working' : this.waiting.has(c.id) ? 'waiting' : 'idle',
       lastTurn: c.lastTurn,
       updatedAt: new Date(info.updatedAt).toISOString(),
@@ -327,12 +627,18 @@ export class Orchestrator implements SessionHooks {
 }
 
 /** What the orchestrator reads; the UI renders the same agents from the echo's `agents` and this text. */
-function notification(agents: (AgentUpdate & { report: string })[]): string {
+function notification(agents: (AgentUpdate & { report: string })[], mustered?: { merged: string[]; pending: string[] }): string {
   const body = agents.map((a) => {
     const text = a.report.length > REPORT_CHARS ? `${a.report.slice(0, REPORT_CHARS)}…\n(report cut; read_agent has all of it)` : a.report;
     const files = a.filesChanged ? `\nFiles changed: ${a.filesChanged.map((f) => `${f.path} (+${f.added} -${f.removed})`).join(', ')}` : '';
     const error = a.error ? `\nError: ${a.error}` : '';
-    return `## Agent "${a.title}" (${a.agentId}) is idle: turn ${a.status}${error}${files}\n\n${text || '(no report)'}`;
+    const branch = a.branch
+      ? `\nBranch: ${a.branch} (${a.ahead ?? 0} commit${a.ahead === 1 ? '' : 's'} ahead of the feature branch${a.diffstat ? `; ${a.diffstat}` : ''}; ${a.deliver === 'standalone' ? 'standalone' : 'to muster'})`
+      : '';
+    return `## Agent "${a.title}" (${a.agentId}) is idle: turn ${a.status}${error}${files}${branch}\n\n${text || '(no report)'}`;
   });
-  return `<${NOTIFICATION_TAG}>\n${body.join('\n\n')}\n\nThis message is from Kelpie, not the person. Use read_agent for more detail.\n</${NOTIFICATION_TAG}>`;
+  const settled = mustered
+    ? `\n\nIn the feature branch now (checked with git): ${mustered.merged.join(', ') || 'nothing new'}.${mustered.pending.length ? ` Still not mustered: ${mustered.pending.join(', ')}.` : ''}`
+    : '';
+  return `<${NOTIFICATION_TAG}>\n${body.join('\n\n')}${settled}\n\nThis message is from Kelpie, not the person. Use read_agent for more detail.\n</${NOTIFICATION_TAG}>`;
 }

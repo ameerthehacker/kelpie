@@ -123,8 +123,8 @@ describe('orchestrator round-ups', () => {
     expect(notes[0]).toContain('turn completed');
 
     const listed = await call('list_agents');
-    expect(listed.data.map((x: { status: string }) => x.status)).toEqual(['idle', 'idle']);
-    expect(listed.data[0].costUsd).toBe(0.0009); // the fixture's one turn, summed in SQL
+    expect(listed.data.agents.map((x: { status: string }) => x.status)).toEqual(['idle', 'idle']);
+    expect(listed.data.agents[0].costUsd).toBe(0.0009); // the fixture's one turn, summed in SQL
 
     // Echoes carry who sent the turn: the brief came from the orchestrator, the notification from Kelpie.
     const sources = (s: Session) => s.events().flatMap((e) => (e.kind === 'message' && e.data.sent ? [e.data.source] : []));

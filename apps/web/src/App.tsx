@@ -15,6 +15,7 @@ import { AppSidebar } from '@/components/shell/sidebar';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useAgents } from '@/hooks/use-agents';
+import { useBranches } from '@/hooks/use-branches';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useNow } from '@/hooks/use-now';
 import { useRoundUps } from '@/hooks/use-round-ups';
@@ -52,6 +53,11 @@ function TitleBlock({ roundUp, agents }: { roundUp: RoundUp; agents: AgentSummar
       <h1 className="font-heading text-[42px] leading-[1.05] font-semibold tracking-[-0.035em] text-balance max-sm:text-[32px]">{titleOf(roundUp)}</h1>
       <div className="text-mu flex flex-wrap items-center gap-2.5 text-[13px]">
         <span className="font-mono text-xs">{shortPath(roundUp.cwd)}</span>
+        {roundUp.baseBranch && (
+          <span title={roundUp.baseCommit ? `at ${roundUp.baseCommit.slice(0, 10)}` : undefined} className="text-mu font-mono text-xs">
+            from {roundUp.baseBranch}
+          </span>
+        )}
         <span aria-hidden="true" className="text-fa">
           ·
         </span>
@@ -81,10 +87,14 @@ export function App() {
   const [navOpen, setNavOpen] = useNavOpen();
   const [mobileNav, setMobileNav] = useState(false);
   const [draftModel, setDraftModel] = useState('');
+  const [draftBase, setDraftBase] = useState('');
   const [modelError, setModelError] = useState<string | undefined>();
   const { roundUps, error: listError, defaultCwd, rename, remove, actionError, clearActionError } = useRoundUps();
   const onCreated = useCallback((id: string) => navigate(roundUpPath(id), { replace: true }), [navigate]);
-  const { items, todos, status, busy, error, send, interrupt } = useSession(roundUpId, onCreated, { model: draftModel || undefined });
+  const { items, todos, status, busy, error, send, interrupt } = useSession(roundUpId, onCreated, {
+    model: draftModel || undefined,
+    baseBranch: draftBase || undefined,
+  });
   // Sub-agents are not in the sidebar list; fetch one directly when it is opened.
   const listed = roundUps?.find((r) => r.id === roundUpId);
   const direct = useQuery({
@@ -103,6 +113,10 @@ export function App() {
   // Steps on a sub-agent's own page are its own; everywhere else they are Kelpie's.
   const actor = current?.role === 'agent' ? titleOf(current) : 'Kelpie';
   const model = roundUpId ? (current?.model ?? '') : draftModel;
+  const branches = useBranches(current?.role === 'agent' ? undefined : cwd);
+  const base = roundUpId ? (current?.baseBranch ?? '') : draftBase;
+  // Once a writer has a branch of its own, it started from the base: that can't change any more.
+  const baseLocked = !!agents?.some((a) => a.branch);
 
   useEffect(() => {
     document.title = roundUpId ? `${titleOf(current)} · kelpie` : 'kelpie';
@@ -117,6 +131,12 @@ export function App() {
       () => queryClient.invalidateQueries({ queryKey: ['round-up', roundUpId] }),
       (err: Error) => setModelError(`Couldn't change the model: ${err.message}`),
     );
+  };
+  const changeBase = (next: string) => {
+    if (!roundUpId) return setDraftBase(next);
+    if (!next) return;
+    setModelError(undefined);
+    api<RoundUp>('PATCH', `/api/sessions/${roundUpId}`, { baseBranch: next }).catch((err: Error) => setModelError(`Couldn't set the base branch: ${err.message}`));
   };
 
   const sidebar = (className?: string) => (
@@ -198,7 +218,18 @@ export function App() {
               {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
               {/* The plan sits outside the chat flow, always in view while agents work. */}
               {agents?.length ? <PlanDock /> : <TodoDock todos={todos} />}
-              <Composer status={status} busy={busy} send={send} interrupt={interrupt} model={model} onModel={changeModel} />
+              <Composer
+                status={status}
+                busy={busy}
+                send={send}
+                interrupt={interrupt}
+                model={model}
+                onModel={changeModel}
+                base={base}
+                onBase={changeBase}
+                branches={branches}
+                baseLocked={baseLocked}
+              />
             </div>
           </main>
           <AgentPaneSlot />

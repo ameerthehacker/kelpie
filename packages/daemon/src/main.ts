@@ -4,7 +4,9 @@
  *   pnpm kelpie:serve [--cwd <repo>] [--port 7317] [--model m]
  *
  * KELPIE_CWD / KELPIE_PORT / KELPIE_MODEL set the same defaults, KELPIE_MAX_AGENTS how many sub-agents
- * one orchestrator may have working at once; `pnpm dev` runs it through turbo,
+ * one orchestrator may have working at once, KELPIE_MAX_WORKTREES how many git worktrees may be on
+ * disk (default 20), and KELPIE_WORKTREE_IDLE_DAYS how long an unused clean one stays (default 3);
+ * `pnpm dev` runs it through turbo,
  * whose working directory is this package, so it passes the repo via KELPIE_CWD.
  * Round-ups and run logs live under KELPIE_HOME (default ~/.kelpie).
  */
@@ -18,6 +20,7 @@ import lockfile from 'proper-lockfile';
 import { Orchestrator } from './orchestrator/orchestrator.js';
 import { createApp } from './server.js';
 import { SessionManager } from './sessions.js';
+import { Worktrees } from './worktrees.js';
 
 const { values: opts } = parseArgs({
   options: {
@@ -47,9 +50,17 @@ const unlock = await lockfile
 
 const store = openStore(join(home, 'kelpie.db'));
 const port = Number(opts.port);
+const DAY = 24 * 60 * 60 * 1000;
+const worktrees = new Worktrees({
+  store,
+  root: join(home, 'worktrees'),
+  ...(process.env.KELPIE_WORKTREE_IDLE_DAYS ? { idleMs: Number(process.env.KELPIE_WORKTREE_IDLE_DAYS) * DAY } : {}),
+  ...(process.env.KELPIE_MAX_WORKTREES ? { max: Number(process.env.KELPIE_MAX_WORKTREES) } : {}),
+});
 const orchestrator = new Orchestrator({
   store,
   mcpUrl: `http://127.0.0.1:${port}/mcp`,
+  worktrees,
   ...(process.env.KELPIE_MAX_AGENTS ? { maxAgents: Number(process.env.KELPIE_MAX_AGENTS) } : {}),
 });
 const sessions = new SessionManager({
@@ -68,9 +79,18 @@ const app = createApp(sessions, { staticDir: join(import.meta.dirname, '../../..
 // Loopback only: sessions can run shell commands.
 const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, () => {
   console.log(`kelpie daemon on http://127.0.0.1:${port} · default cwd ${sessions.defaultCwd} · data ${home}`);
-  // Once the MCP server is up: resume whatever was working when Kelpie last stopped.
-  void orchestrator.recover().catch((err) => console.error('kelpie: recovery failed', err));
+  // Once the MCP server is up: make the worktrees on disk match the database, then resume
+  // whatever was working when Kelpie last stopped.
+  void orchestrator
+    .reconcile()
+    .catch((err) => console.error('kelpie: worktree reconcile failed', err))
+    .then(() => orchestrator.recover())
+    .catch((err) => console.error('kelpie: recovery failed', err))
+    .then(() => orchestrator.sweep())
+    .catch((err) => console.error('kelpie: worktree sweep failed', err));
 });
+// Worktrees left idle (and clean) for days come off disk; their branches stay.
+setInterval(() => void orchestrator.sweep().catch((err) => console.error('kelpie: worktree sweep failed', err)), 60 * 60 * 1000).unref();
 
 let closing = false;
 const shutdown = async () => {

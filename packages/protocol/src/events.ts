@@ -66,6 +66,11 @@ export const AgentUpdate = z.object({
   report: z.string().optional(),
   error: z.string().optional(),
   filesChanged: z.array(z.object({ path: z.string(), added: z.number(), removed: z.number() })).optional(),
+  /** A writing agent's own branch, and how far it is ahead of the feature branch. */
+  branch: z.string().optional(),
+  ahead: z.number().optional(),
+  diffstat: z.string().optional(),
+  deliver: z.enum(['muster', 'standalone']).optional(),
 });
 export type AgentUpdate = z.infer<typeof AgentUpdate>;
 

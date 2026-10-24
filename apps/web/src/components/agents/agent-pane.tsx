@@ -1,5 +1,5 @@
 import { format } from 'date-fns';
-import { ArrowUpIcon, ChevronRightIcon, ExternalLinkIcon, ListIcon, PauseIcon, SearchIcon, XIcon } from 'lucide-react';
+import { ArrowUpIcon, ChevronRightIcon, ExternalLinkIcon, GitBranchIcon, ListIcon, PauseIcon, SearchIcon, XIcon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import type { KelpieEvent } from '@kelpie/protocol';
@@ -18,6 +18,40 @@ import { roundUpPath } from '@/lib/round-ups';
 import { cn } from '@/lib/utils';
 import { StatusDot, TodoList } from './agent-bits';
 import { useAgentPane } from './pane-state';
+
+const DELIVER: Record<string, { label: string; title: string }> = {
+  muster: { label: 'to muster', title: 'Its branch will be brought into the feature branch' },
+  mustered: { label: 'mustered', title: 'Its work is in the feature branch' },
+  standalone: { label: 'standalone', title: 'Its branch ships on its own; it is never merged' },
+};
+
+/** Muster: the agent that brings other agents' branches into the feature branch. */
+function MusterChip({ className }: { className?: string }) {
+  return (
+    <span
+      title="Muster brings other agents' branches into the feature branch"
+      className={cn('bg-acc/15 text-acc inline-flex h-5 items-center rounded-full px-2 font-sans text-[11px] font-medium tracking-normal', className)}
+    >
+      Muster
+    </span>
+  );
+}
+
+/** A writer's own branch, and what becomes of it. */
+function BranchLine({ agent: a }: { agent: AgentSummary }) {
+  const state = a.worktree === 'mustered' ? DELIVER.mustered! : DELIVER[a.deliver ?? 'muster']!;
+  return (
+    <div className="text-mu2 flex min-w-0 items-center gap-1.5 text-xs">
+      <GitBranchIcon aria-hidden="true" className="size-3 shrink-0" />
+      <span className="truncate font-mono" title={a.branch}>
+        {a.branch}
+      </span>
+      <span title={state.title} className={cn('bg-chip shrink-0 rounded-full px-2 py-px text-[11px]', a.worktree === 'mustered' ? 'text-done' : 'text-mu')}>
+        {state.label}
+      </span>
+    </div>
+  );
+}
 
 const iconButton = 'text-mu2 hover:bg-hov hover:text-fg flex size-8 shrink-0 items-center justify-center rounded-full';
 
@@ -187,7 +221,10 @@ function AgentList({ agents }: { agents: AgentSummary[] }) {
                     >
                       <HarnessMark harness={a.harness} />
                       <span className="flex min-w-0 flex-col">
-                        <span className={cn('truncate text-sm', a.status === 'done' || a.status === 'idle' ? 'text-mu' : 'text-fg')}>{a.title}</span>
+                        <span className={cn('truncate text-sm', a.status === 'done' || a.status === 'idle' ? 'text-mu' : 'text-fg')}>
+                          {a.kind === 'muster' && <MusterChip className="mr-1.5" />}
+                          {a.title}
+                        </span>
                         <span className="text-mu truncate text-xs">{a.now || STATUS_LABEL[a.status]}</span>
                       </span>
                       <span className="text-mu2 text-xs">{a.status === 'working' ? elapsed(a, now) : STATUS_LABEL[a.status].toLowerCase()}</span>
@@ -230,7 +267,10 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
         <div className="flex items-start gap-3">
           <HarnessMark harness={a.harness} size="lg" className="mt-0.5" />
           <div className="flex min-w-0 flex-1 flex-col gap-1">
-            <h2 className="font-heading text-2xl leading-[1.1] font-semibold tracking-[-0.03em]">{a.title}</h2>
+            <h2 className="font-heading text-2xl leading-[1.1] font-semibold tracking-[-0.03em]">
+              {a.title}
+              {a.kind === 'muster' && <MusterChip className="ml-2 align-middle" />}
+            </h2>
             <div className="text-mu flex flex-wrap items-center gap-[7px] text-[13px]">
               <StatusDot status={a.status} />
               {STATUS_LABEL[a.status]}
@@ -241,6 +281,7 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
               <span className="text-fa">·</span>
               {elapsed(a, now)}
             </div>
+            {a.branch && <BranchLine agent={a} />}
           </div>
           <div className="flex gap-0.5">
             <button type="button" onClick={pause} disabled={a.status !== 'working'} aria-label="Pause agent" title="Pause" className={cn(iconButton, 'disabled:opacity-40')}>

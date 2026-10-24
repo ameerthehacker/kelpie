@@ -5,7 +5,7 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { streamSSE, type SSEMessage } from 'hono/streaming';
 import { isLocalHost, isLocalOrigin } from './local.js';
 import { handleMcp } from './orchestrator/mcp.js';
-import type { Orchestrator } from './orchestrator/orchestrator.js';
+import { BaseFixedError, type Orchestrator } from './orchestrator/orchestrator.js';
 import type { SessionManager } from './sessions.js';
 
 
@@ -94,13 +94,30 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   );
 
   app.post('/api/sessions', async (c) => {
-    const body = await jsonBody<{ cwd?: unknown; model?: unknown }>(c);
+    const body = await jsonBody<{ cwd?: unknown; model?: unknown; baseBranch?: unknown }>(c);
     if (body.cwd !== undefined && typeof body.cwd !== 'string') return c.json({ error: 'cwd must be a string' }, 400);
     if (body.model !== undefined && !isModel(body.model)) return c.json({ error: MODEL_ERROR }, 400);
+    if (body.baseBranch !== undefined && (typeof body.baseBranch !== 'string' || !orch)) return c.json({ error: 'baseBranch must be a branch name' }, 400);
     // Relative to the daemon's default repo, not its process cwd (a package dir under `pnpm dev`).
     const cwd = resolve(sessions.defaultCwd, body.cwd ?? '.');
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) return c.json({ error: `not a directory: ${cwd}` }, 400);
-    return c.json(sessions.create(cwd, body.model ? { model: body.model } : {}).info(), 201);
+    const session = sessions.create(cwd, body.model ? { model: body.model } : {});
+    if (typeof body.baseBranch === 'string' && orch) {
+      try {
+        await orch.setBase(session, body.baseBranch);
+      } catch (err) {
+        await sessions.delete(session.id);
+        return c.json({ error: (err as Error).message }, 400);
+      }
+    }
+    return c.json(session.info(), 201);
+  });
+
+  // The branches a round-up may start from (remote first), for the composer's base-branch picker.
+  app.get('/api/repo/branches', async (c) => {
+    const cwd = resolve(sessions.defaultCwd, c.req.query('cwd') ?? '.');
+    const branches = orch ? await orch.branchesAt(cwd) : undefined;
+    return branches ? c.json({ cwd, branches }) : c.json({ error: `not a git repository: ${cwd}` }, 404);
   });
 
   app.get('/api/sessions/:id', (c) => {
@@ -118,15 +135,25 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   app.patch('/api/sessions/:id', async (c) => {
     const s = sessions.get(c.req.param('id'));
     if (!s) return c.json({ error: 'no such session' }, 404);
-    const body = await jsonBody<{ title?: unknown; model?: unknown }>(c);
-    if (body.title === undefined && body.model === undefined) return c.json({ error: 'nothing to change: send title or model' }, 400);
+    const body = await jsonBody<{ title?: unknown; model?: unknown; baseBranch?: unknown }>(c);
+    if (body.title === undefined && body.model === undefined && body.baseBranch === undefined) {
+      return c.json({ error: 'nothing to change: send title, model or baseBranch' }, 400);
+    }
+    // Everything is checked before anything is saved: a bad field changes nothing.
     // Null puts the harness's default model back.
     if (body.model !== undefined && body.model !== null && !isModel(body.model)) return c.json({ error: MODEL_ERROR }, 400);
-    if (body.title !== undefined) {
-      const title = typeof body.title === 'string' ? body.title.trim().replace(/\s+/g, ' ') : '';
-      if (!title || title.length > 200) return c.json({ error: 'title must be 1-200 characters' }, 400);
-      s.rename(title);
+    const title = typeof body.title === 'string' ? body.title.trim().replace(/\s+/g, ' ') : '';
+    if (body.title !== undefined && (!title || title.length > 200)) return c.json({ error: 'title must be 1-200 characters' }, 400);
+    if (body.baseBranch !== undefined && (typeof body.baseBranch !== 'string' || !orch)) return c.json({ error: 'baseBranch must be a branch name' }, 400);
+    if (typeof body.baseBranch === 'string' && orch) {
+      try {
+        await orch.setBase(s, body.baseBranch);
+      } catch (err) {
+        // Fixed once writers started from it (409); a bad or unknown branch is the request's fault (400).
+        return c.json({ error: (err as Error).message }, err instanceof BaseFixedError ? 409 : 400);
+      }
     }
+    if (body.title !== undefined) s.rename(title);
     if (body.model !== undefined) s.setModel(body.model ?? undefined);
     return c.json(s.info());
   });

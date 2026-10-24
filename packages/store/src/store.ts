@@ -9,7 +9,10 @@ import * as schema from './schema.js';
 
 export type SessionRow = typeof schema.sessions.$inferSelect;
 export type NewSession = Omit<typeof schema.sessions.$inferInsert, 'createdAt' | 'updatedAt'>;
-export type SessionPatch = Partial<Pick<SessionRow, 'title' | 'model' | 'harnessSessionId' | 'resumePending' | 'notifiedIdx'>>;
+export type SessionPatch = Partial<Pick<SessionRow, 'title' | 'model' | 'harnessSessionId' | 'resumePending' | 'notifiedIdx' | 'baseBranch' | 'baseCommit'>>;
+export type WorktreeRow = typeof schema.worktrees.$inferSelect;
+export type NewWorktree = Omit<typeof schema.worktrees.$inferInsert, 'id' | 'createdAt' | 'lastUsedAt' | 'state'>;
+export type WorktreePatch = Partial<Pick<WorktreeRow, 'state' | 'lastUsedAt' | 'removedAt' | 'forkCommit'>>;
 export type OutboxRow = typeof schema.outbox.$inferSelect;
 export type OutboxSource = OutboxRow['source'];
 
@@ -195,6 +198,40 @@ export class Store {
         const parsed = HarnessUsage.safeParse({ harness: r.harness, usage, updatedAt: r.updatedAt });
         return parsed.success ? [parsed.data] : [];
       });
+  }
+
+  /** Records a worktree about to be made (state `creating`); `git worktree add` runs after. */
+  createWorktree(w: NewWorktree, now = Date.now()): WorktreeRow {
+    return this.db.insert(schema.worktrees).values({ ...w, state: 'creating', createdAt: now, lastUsedAt: now }).returning().get();
+  }
+
+  updateWorktree(id: number, patch: WorktreePatch): WorktreeRow | undefined {
+    return this.db.update(schema.worktrees).set(patch).where(eq(schema.worktrees.id, id)).returning().get();
+  }
+
+  /** The worktree a session works in, if it has one. */
+  worktreeOf(sessionId: string): WorktreeRow | undefined {
+    return this.db.select().from(schema.worktrees).where(eq(schema.worktrees.sessionId, sessionId)).get();
+  }
+
+  /** Every worktree of a round-up (its home and its agents'), oldest first. */
+  worktreesOf(roundUpId: string): WorktreeRow[] {
+    return this.db.select().from(schema.worktrees).where(eq(schema.worktrees.roundUpId, roundUpId)).orderBy(asc(schema.worktrees.id)).all();
+  }
+
+  /** Worktrees that may be on disk: every one not yet removed. */
+  liveWorktrees(): WorktreeRow[] {
+    return this.db
+      .select()
+      .from(schema.worktrees)
+      .where(inArray(schema.worktrees.state, ['creating', 'active']))
+      .orderBy(asc(schema.worktrees.lastUsedAt))
+      .all();
+  }
+
+  /** Every worktree row, removed ones included: the repos Kelpie has ever worked in. */
+  allWorktrees(): WorktreeRow[] {
+    return this.db.select().from(schema.worktrees).orderBy(asc(schema.worktrees.id)).all();
   }
 
   close(): void {

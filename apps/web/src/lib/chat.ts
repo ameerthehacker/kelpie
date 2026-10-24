@@ -54,14 +54,17 @@ const AGENT_HEADER = /^## Agent "(.*)" \(([^)]*)\) is idle: turn (.+)$/gm;
  * `agents` (and `source`); the daemon now attaches both.
  */
 export function agentsFromText(text: string): AgentUpdate[] {
-  const body = text.replace(/\n*This message is from Kelpie[^]*$/, '').replace(/\n*<\/kelpie-notification>\s*$/, '');
+  const body = text
+    .replace(/\n*This message is from Kelpie[^]*$/, '')
+    .replace(/\n*<\/kelpie-notification>\s*$/, '')
+    .replace(MUSTERED, '');
   const headers = [...body.matchAll(AGENT_HEADER)];
   return headers.map((m, i) => {
     const end = headers[i + 1]?.index ?? body.length;
     let rest = body.slice(m.index + m[0].length, end).replace(/^\n/, '');
     let error: string | undefined;
     for (;;) {
-      const line = /^(Error|Files changed): (.*)\n?/.exec(rest);
+      const line = /^(Error|Files changed|Branch): (.*)\n?/.exec(rest);
       if (!line) break;
       if (line[1] === 'Error') error = line[2];
       rest = rest.slice(line[0].length);
@@ -71,16 +74,26 @@ export function agentsFromText(text: string): AgentUpdate[] {
   });
 }
 
+/** The line a notification ends with after Muster: what git says is in the feature branch now. */
+const MUSTERED = /\n*In the feature branch now \(checked with git\): (.*?)\.(?: Still not mustered: (.*?)\.)?(?=\n|$)/;
+
 /**
- * A turn Kelpie sent the orchestrator itself: agent updates, or a note (a restart) as one line.
- * The echo's `agents` leave out a report the text already carries in full.
+ * A turn Kelpie sent the orchestrator itself: agent updates (and, after Muster, what reached the
+ * feature branch), or a note (a restart) as one line. The echo's `agents` leave out a report the
+ * text already carries in full.
  */
-function kelpieTurn(data: EventOf<'message'>['data'], ts: string): AssistantPart {
+function kelpieTurn(data: EventOf<'message'>['data'], ts: string): AssistantPart[] {
   const parsed = agentsFromText(data.text);
   const agents = data.agents?.map((a) => ({ ...a, report: a.report ?? parsed.find((p) => p.agentId === a.agentId)?.report ?? '' })) ?? parsed;
-  if (agents.length) return { type: 'agents', agents, ts };
+  if (agents.length) {
+    const m = MUSTERED.exec(data.text);
+    const mustered: AssistantPart[] = m
+      ? [{ type: 'notice', tone: 'info', ts, text: `Mustered into the feature branch: ${m[1]}${m[2] ? ` · not yet: ${m[2]}` : ''}` }]
+      : [];
+    return [{ type: 'agents', agents, ts }, ...mustered];
+  }
   const note = data.text.replace(NOTIFICATION_OPEN, '').trim().split('\n')[0] ?? '';
-  return { type: 'notice', tone: 'info', text: note, ts };
+  return [{ type: 'notice', tone: 'info', text: note, ts }];
 }
 
 /** Kelpie's own turns. Logs from before echoes carried `source` only have the tag to go by. */
@@ -113,7 +126,7 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
     switch (ev.kind) {
       case 'message':
         // Turns Kelpie sent itself (notifications, restarts) are not the person speaking.
-        if (ev.data.role === 'user' && fromKelpie(ev.data)) assistant(ev.id).push(kelpieTurn(ev.data, ev.ts));
+        if (ev.data.role === 'user' && fromKelpie(ev.data)) assistant(ev.id).push(...kelpieTurn(ev.data, ev.ts));
         else if (ev.data.role === 'user')
           items.push({ role: 'user', id: ev.id, text: ev.data.text, ts: ev.ts, ...(ev.data.source ? { source: ev.data.source } : {}) });
         else assistant(ev.id).push({ type: 'text', text: ev.data.text, ts: ev.ts });

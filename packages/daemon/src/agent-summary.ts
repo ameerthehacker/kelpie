@@ -17,6 +17,12 @@ export interface AgentSummary {
   now: string;
   /** Its own todo list, from its own session. */
   todos: TodoItem[];
+  /** Ordinary work, or Muster. */
+  kind: 'worker' | 'muster';
+  /** A writer's own branch; whether its work is to be mustered (or is standalone); and whether its worktree is on disk or mustered. */
+  branch?: string;
+  deliver?: 'muster' | 'standalone';
+  worktree?: 'creating' | 'active' | 'mustered' | 'removed';
   /** Epoch ms. */
   createdAt: number;
   updatedAt: number;
