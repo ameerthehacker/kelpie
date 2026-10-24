@@ -1,4 +1,4 @@
-import type { EventData, EventKind, KelpieEvent, TodoItem } from '@kelpie/protocol';
+import type { EventData, EventKind, KelpieEvent, TodoItem, UsageWindow } from '@kelpie/protocol';
 import { applyTodoTool, fileDelta, flattenContent, toolCategory, toolTitle } from './tools.js';
 
 type Obj = Record<string, any>;
@@ -275,18 +275,27 @@ export class ClaudeCodeParser {
     const info: Obj = o.rate_limit_info ?? {};
     const window: string | undefined = info.rateLimitType;
     const util = window ? info.unifiedWindows?.[window]?.utilization : undefined;
+    const windows: Record<string, UsageWindow> = {};
+    for (const [name, w] of Object.entries<Obj>(info.unifiedWindows ?? {})) {
+      if (typeof w?.utilization === 'number' && typeof w.resetsAt === 'number') {
+        windows[name] = { utilization: w.utilization, resetsAt: epochToIso(w.resetsAt) };
+      }
+    }
     return this.emit(
       'rate_limit',
       {
         status: String(info.status ?? 'unknown'),
         ...(window ? { window } : {}),
-        ...(typeof info.resetsAt === 'number' ? { resetsAt: new Date(info.resetsAt * 1000).toISOString() } : {}),
+        ...(typeof info.resetsAt === 'number' ? { resetsAt: epochToIso(info.resetsAt) } : {}),
         ...(typeof util === 'number' ? { utilization: util } : {}),
+        ...(Object.keys(windows).length ? { windows } : {}),
       },
       x,
     );
   }
 }
+
+const epochToIso = (seconds: number) => new Date(seconds * 1000).toISOString();
 
 function blocks(content: unknown): Obj[] {
   if (typeof content === 'string') return [{ type: 'text', text: content }];

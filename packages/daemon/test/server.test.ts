@@ -142,6 +142,10 @@ describe('round-up API', () => {
     expect(text).toMatch(new RegExp(`event: sessions\ndata: \\[\\{"id":"${first}"`));
     expect(text).toContain('"title":"What is 2+2?"');
     expect(text).toContain(`event: deleted\ndata: {"id":"${first}"}`);
+    expect(text).toMatch(/^event: usage\ndata: \[\]$/m); // nothing reported yet on connect
+    expect(text).toMatch(/^event: usage\ndata: \[\{"harness":"claude-code","usage":\{"status":"allowed".*"seven_day":\{"utilization":/m);
+    const usage = (await (await app.request('/api/usage', { headers: { host: local.host } })).json()) as { harness: string }[];
+    expect(usage.map((u) => u.harness)).toEqual(['claude-code']);
   });
 });
 

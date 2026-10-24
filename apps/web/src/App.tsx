@@ -22,6 +22,7 @@ import {
 import { Shimmer } from '@/components/ai-elements/shimmer';
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { LimitHint } from '@/components/chat/limit-hint';
 import { useRoundUps } from '@/hooks/use-round-ups';
 import { useSession, type ChatStatus } from '@/hooks/use-session';
 import { ROUND_UP_ROUTE, roundUpPath, shortPath, titleOf } from '@/lib/round-ups';
@@ -132,6 +133,8 @@ export function App() {
             <PromptInputProvider>
               <Composer status={status} send={send} interrupt={interrupt} />
             </PromptInputProvider>
+            {/* Every round-up runs on Claude Code for now. */}
+            <LimitHint harness="claude-code" />
           </div>
         </SidebarInset>
       </SidebarProvider>

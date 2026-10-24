@@ -160,6 +160,32 @@ describe('persistent round-ups', () => {
     expect((await until(session, 'process.exited')).length).toBe(store.eventCount(session.id)); // reloads from the store intact
   });
 
+  it('keeps usage across restarts, and a failing usage write never stops the run', async () => {
+    const store = openStore(':memory:');
+    const sessions = manager(store);
+    store.setUsage = () => {
+      throw new Error('disk full');
+    };
+    const errors = console.error;
+    console.error = () => {};
+    try {
+      const session = sessions.create();
+      await session.send('What is 2+2?');
+      const log = await until(session, 'turn.ended');
+      expect(log.some((e) => e.kind === 'message' && e.data.role === 'assistant')).toBe(true); // the run went on
+      expect(sessions.usage()[0]?.usage.windows?.seven_day).toBeDefined(); // and usage is still served
+      await sessions.stopAll();
+    } finally {
+      console.error = errors;
+    }
+
+    const persisted = openStore(':memory:');
+    persisted.setUsage('claude-code', { status: 'allowed', windows: { seven_day: { utilization: 0.5, resetsAt: '2026-01-01T00:00:00.000Z' } } }, 1000);
+    expect(manager(persisted).usage()).toEqual([
+      { harness: 'claude-code', usage: { status: 'allowed', windows: { seven_day: { utilization: 0.5, resetsAt: '2026-01-01T00:00:00.000Z' } } }, updatedAt: 1000 },
+    ]);
+  });
+
   it('titles a round-up from the first line of its first message', () => {
     expect(titleFrom('  Fix   the build\nmore detail')).toBe('Fix the build');
     expect(titleFrom('x'.repeat(80))).toHaveLength(60);

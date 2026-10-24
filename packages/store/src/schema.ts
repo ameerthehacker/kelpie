@@ -27,3 +27,11 @@ export const events = sqliteTable(
   },
   (t) => [primaryKey({ columns: [t.sessionId, t.idx] }), index('events_kind_idx').on(t.sessionId, t.kind, t.idx)],
 );
+
+/** Each harness's latest subscription usage, as it last reported it. Harnesses only report during a turn. */
+export const harnessUsage = sqliteTable('harness_usage', {
+  harness: text('harness').primaryKey(),
+  /** The `rate_limit` event's data, as JSON. */
+  usage: text('usage').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});

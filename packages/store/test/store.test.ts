@@ -49,4 +49,21 @@ describe('store', () => {
     expect(store.eventCount('s')).toBe(0);
     expect(store.deleteSession('s')).toBe(false);
   });
+
+  it('keeps the latest usage report per harness', () => {
+    const store = openStore(':memory:');
+    const first = { status: 'allowed', windows: { five_hour: { utilization: 0.3, resetsAt: '2026-01-01T05:00:00.000Z' } } };
+    store.setUsage('claude-code', first, 1000);
+    store.setUsage('claude-code', { ...first, status: 'allowed_warning' }, 2000);
+    expect(store.listUsage()).toEqual([{ harness: 'claude-code', usage: { ...first, status: 'allowed_warning' }, updatedAt: 2000 }]);
+  });
+
+  it('skips usage rows it cannot read rather than failing', () => {
+    const store = openStore(':memory:');
+    store.setUsage('claude-code', { status: 'allowed' }, 1000);
+    const raw = (store as unknown as { sqlite: { prepare(sql: string): { run(...a: unknown[]): void } } }).sqlite;
+    raw.prepare('insert into harness_usage values (?, ?, ?)').run('codex', '{not json', 1);
+    raw.prepare('insert into harness_usage values (?, ?, ?)').run('mystery', '{"status":"allowed"}', 1);
+    expect(store.listUsage().map((u) => u.harness)).toEqual(['claude-code']);
+  });
 });

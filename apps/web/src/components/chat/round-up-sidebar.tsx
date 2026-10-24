@@ -7,6 +7,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupLabel,
   SidebarHeader,
@@ -17,6 +18,8 @@ import {
   SidebarMenuSkeleton,
   useSidebar,
 } from '@/components/ui/sidebar';
+import { UsagePanel } from '@/components/chat/usage-panel';
+import { useNow } from '@/hooks/use-now';
 import { roundUpPath, statusLine, titleOf, type RoundUp } from '@/lib/round-ups';
 import { cn } from '@/lib/utils';
 
@@ -31,16 +34,6 @@ export function KelpieMark({ className }: { className?: string }) {
       <circle cx="24" cy="29.5" r="3" fill="currentColor" />
     </svg>
   );
-}
-
-// Re-render once a minute so "5m ago" keeps moving.
-function useNow(every = 60_000) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), every);
-    return () => clearInterval(t);
-  }, [every]);
-  return now;
 }
 
 interface RowProps {
@@ -181,6 +174,9 @@ export function RoundUpSidebar({ roundUps, currentId, onNavigate, onRename, onDe
           </SidebarMenu>
         </SidebarGroup>
       </SidebarContent>
+      <SidebarFooter className="px-2.5 pb-3">
+        <UsagePanel now={now} />
+      </SidebarFooter>
 
       <Dialog open={!!confirming} onOpenChange={(open) => !open && setConfirming(undefined)}>
         <DialogContent>

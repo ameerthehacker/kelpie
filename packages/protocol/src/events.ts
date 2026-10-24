@@ -120,6 +120,18 @@ export const Usage = ev(
 );
 
 /** Subscription / plan rate-limit state, so schedulers can back off before hitting a wall. */
+export const UsageWindow = z.object({
+  /** Fraction of the window's allowance used, 0..1. */
+  utilization: z.number(),
+  resetsAt: z.string(),
+});
+export type UsageWindow = z.infer<typeof UsageWindow>;
+
+/**
+ * The harness's subscription usage. `window`/`resetsAt`/`utilization` describe the window
+ * this report is about; `windows` has every window the harness reported (Claude Code:
+ * `five_hour`, `seven_day`).
+ */
 export const RateLimit = ev(
   'rate_limit',
   z.object({
@@ -127,6 +139,7 @@ export const RateLimit = ev(
     window: z.string().optional(),
     resetsAt: z.string().optional(),
     utilization: z.number().optional(),
+    windows: z.record(z.string(), UsageWindow).optional(),
   }),
 );
 
@@ -181,3 +194,21 @@ export type KelpieEvent = z.infer<typeof KelpieEvent>;
 export type EventKind = KelpieEvent['kind'];
 export type EventOf<K extends EventKind> = Extract<KelpieEvent, { kind: K }>;
 export type EventData<K extends EventKind> = EventOf<K>['data'];
+
+/** A harness's latest subscription usage, as Kelpie keeps and serves it. */
+export const HarnessUsage = z.object({
+  harness: Harness,
+  usage: RateLimit.shape.data,
+  /** Epoch ms of the latest report. */
+  updatedAt: z.number(),
+});
+export type HarnessUsage = z.infer<typeof HarnessUsage>;
+
+/**
+ * Folds a new usage report into the previous one: the status (and the window it is about)
+ * come from the new report, and windows it does not mention keep their last known figures.
+ */
+export function mergeUsage(prev: EventData<'rate_limit'> | undefined, next: EventData<'rate_limit'>): EventData<'rate_limit'> {
+  const windows = { ...prev?.windows, ...next.windows };
+  return { ...next, ...(Object.keys(windows).length ? { windows } : {}) };
+}

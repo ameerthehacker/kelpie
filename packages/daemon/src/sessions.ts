@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { EventData, EventKind, KelpieEvent } from '@kelpie/protocol';
+import { mergeUsage, type EventData, type EventKind, type HarnessUsage, type KelpieEvent } from '@kelpie/protocol';
 import { claudeCode, type Adapter, type Run, type RunSpec } from '@kelpie/adapters';
 import type { SessionPatch, SessionRow, Store } from '@kelpie/store';
 
@@ -28,7 +28,10 @@ export interface SessionUpdate {
 }
 
 /** What the round-up list stream carries. */
-export type ManagerUpdate = { type: 'session'; session: SessionInfo } | { type: 'deleted'; id: string };
+export type ManagerUpdate =
+  | { type: 'session'; session: SessionInfo }
+  | { type: 'deleted'; id: string }
+  | { type: 'usage'; usage: HarnessUsage[] };
 
 export type SessionDefaults = Omit<RunSpec, 'cwd' | 'prompt' | 'resume' | 'runId' | 'runDir'>;
 
@@ -50,6 +53,7 @@ interface SessionContext {
   runsDir: string | undefined;
   idleMs: number;
   changed: (s: Session) => void;
+  reportUsage: (harness: string, usage: EventData<'rate_limit'>) => void;
 }
 
 const STOPPED = 'Kelpie stopped while this run was active.';
@@ -236,6 +240,8 @@ export class Session {
           if (event.data.busy) clearTimeout(this.idleTimer);
           else this.armIdle(run);
           changed = true;
+        } else if (event.kind === 'rate_limit') {
+          this.ctx.reportUsage(event.harness, event.data);
         } else if (event.kind === 'turn.ended') {
           this.lastTurnState = event.data.status;
           changed = true;
@@ -279,6 +285,8 @@ export class SessionManager {
   private readonly sessions = new Map<string, Session>();
   private readonly watchers = new Set<(u: ManagerUpdate) => void>();
   private readonly ctx: SessionContext;
+  /** Each harness's usage, served from memory; the store only keeps it across restarts. */
+  private readonly usageByHarness = new Map<string, HarnessUsage>();
 
   constructor(opts: SessionManagerOptions) {
     this.store = opts.store;
@@ -290,7 +298,20 @@ export class SessionManager {
       runsDir: opts.runsDir,
       idleMs: opts.idleMs ?? 10 * 60_000,
       changed: (s) => this.notify({ type: 'session', session: s.info() }),
+      // Usage is advisory: nothing about it may disturb the run that reported it.
+      reportUsage: (harness, report) => {
+        const now = Date.now();
+        const usage = mergeUsage(this.usageByHarness.get(harness)?.usage, report);
+        this.usageByHarness.set(harness, { harness: harness as HarnessUsage['harness'], usage, updatedAt: now });
+        try {
+          this.store.setUsage(harness, usage, now);
+        } catch (err) {
+          console.error(`could not store ${harness} usage`, err);
+        }
+        this.notify({ type: 'usage', usage: this.usage() });
+      },
     };
+    for (const u of this.store.listUsage()) this.usageByHarness.set(u.harness, u);
     for (const row of this.store.listSessions()) {
       const session = new Session(row, this.ctx);
       session.repair();
@@ -324,7 +345,12 @@ export class SessionManager {
     return true;
   }
 
-  /** Round-up list changes: creations, renames, busy flips, finished turns, deletions. */
+  /** Each harness's latest subscription usage. */
+  usage(): HarnessUsage[] {
+    return [...this.usageByHarness.values()];
+  }
+
+  /** Round-up list changes: creations, renames, busy flips, finished turns, deletions; and usage reports. */
   watch(listener: (u: ManagerUpdate) => void): () => void {
     this.watchers.add(listener);
     return () => this.watchers.delete(listener);

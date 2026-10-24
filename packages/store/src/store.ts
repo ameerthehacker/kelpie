@@ -4,12 +4,13 @@ import Database from 'better-sqlite3';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { KelpieEvent, type EventKind, type EventOf } from '@kelpie/protocol';
+import { HarnessUsage, KelpieEvent, type EventData, type EventKind, type EventOf } from '@kelpie/protocol';
 import * as schema from './schema.js';
 
 export type SessionRow = typeof schema.sessions.$inferSelect;
 export type NewSession = Omit<typeof schema.sessions.$inferInsert, 'createdAt' | 'updatedAt'>;
 export type SessionPatch = Partial<Pick<SessionRow, 'title' | 'model' | 'harnessSessionId'>>;
+
 
 const MIGRATIONS = join(import.meta.dirname, '../drizzle');
 
@@ -85,6 +86,30 @@ export class Store {
 
   eventCount(sessionId: string): number {
     return this.db.select({ n: sql<number>`count(*)` }).from(schema.events).where(eq(schema.events.sessionId, sessionId)).get()?.n ?? 0;
+  }
+
+  /** Keeps a harness's latest usage (the caller merges reports; see `mergeUsage`). */
+  setUsage(harness: string, usage: EventData<'rate_limit'>, now = Date.now()): void {
+    const row = { harness, usage: JSON.stringify(usage), updatedAt: now };
+    this.db.insert(schema.harnessUsage).values(row).onConflictDoUpdate({ target: schema.harnessUsage.harness, set: row }).run();
+  }
+
+  /** Rows that no longer parse (written by another version) are skipped: usage is advisory. */
+  listUsage(): HarnessUsage[] {
+    return this.db
+      .select()
+      .from(schema.harnessUsage)
+      .all()
+      .flatMap((r) => {
+        let usage: unknown;
+        try {
+          usage = JSON.parse(r.usage);
+        } catch {
+          return [];
+        }
+        const parsed = HarnessUsage.safeParse({ harness: r.harness, usage, updatedAt: r.updatedAt });
+        return parsed.success ? [parsed.data] : [];
+      });
   }
 
   close(): void {

@@ -3,12 +3,17 @@ import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { liveStream } from '@/lib/live-stream';
 import { byRecent, type RoundUp } from '@/lib/round-ups';
+import type { HarnessUsage } from '@/lib/usage';
+import { USAGE } from './use-usage';
 
 const ROUND_UPS = ['round-ups'] as const;
 
 const upsert = (list: RoundUp[] = [], next: RoundUp) => [next, ...list.filter((r) => r.id !== next.id)].sort(byRecent);
 
-/** The daemon's round-ups: fetched once, then kept live by its event stream; plus rename and delete. */
+/**
+ * The daemon's round-ups: fetched once, then kept live by its event stream; plus rename and
+ * delete. The same stream keeps harness usage (use-usage) current.
+ */
 export function useRoundUps() {
   const queryClient = useQueryClient();
   const [streamError, setStreamError] = useState<string | undefined>();
@@ -27,6 +32,7 @@ export function useRoundUps() {
         on: {
           sessions: (msg) => queryClient.setQueryData(ROUND_UPS, JSON.parse(msg.data) as RoundUp[]),
           session: (msg) => queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => upsert(rows, JSON.parse(msg.data) as RoundUp)),
+          usage: (msg) => queryClient.setQueryData(USAGE, JSON.parse(msg.data) as HarnessUsage[]),
           deleted: (msg) => {
             const { id } = JSON.parse(msg.data) as { id: string };
             queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => rows?.filter((r) => r.id !== id));

@@ -174,6 +174,16 @@ Do NOT Read or tail this file via the shell tool — it is the full subagent JSO
       "status": "allowed",
       "utilization": 0.33,
       "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-23T09:40:00.000Z",
+          "utilization": 0.33,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.05,
+        },
+      },
     },
     "harness": "claude-code",
     "id": "run:8",
@@ -548,6 +558,16 @@ exports[`fixture bash-fail > matches the golden snapshot 1`] = `
       "status": "allowed",
       "utilization": 0.33,
       "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-23T09:40:00.000Z",
+          "utilization": 0.33,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.05,
+        },
+      },
     },
     "harness": "claude-code",
     "id": "run:4",
@@ -766,6 +786,16 @@ exports[`fixture edit-bash > matches the golden snapshot 1`] = `
       "status": "allowed",
       "utilization": 0.33,
       "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-23T09:40:00.000Z",
+          "utilization": 0.33,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.05,
+        },
+      },
     },
     "harness": "claude-code",
     "id": "run:7",
@@ -1287,6 +1317,16 @@ exports[`fixture multi-turn > matches the golden snapshot 1`] = `
       "status": "allowed",
       "utilization": 0.34,
       "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-23T09:40:00.000Z",
+          "utilization": 0.34,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.05,
+        },
+      },
     },
     "harness": "claude-code",
     "id": "run:4",
@@ -1383,6 +1423,16 @@ exports[`fixture multi-turn > matches the golden snapshot 1`] = `
       "status": "allowed",
       "utilization": 0.33,
       "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-23T09:40:00.000Z",
+          "utilization": 0.33,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.05,
+        },
+      },
     },
     "harness": "claude-code",
     "id": "run:11",
@@ -1516,6 +1566,16 @@ exports[`fixture plain > matches the golden snapshot 1`] = `
       "status": "allowed",
       "utilization": 0.32,
       "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-23T09:40:00.000Z",
+          "utilization": 0.32,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.05,
+        },
+      },
     },
     "harness": "claude-code",
     "id": "run:4",
@@ -1655,6 +1715,16 @@ exports[`fixture queued > matches the golden snapshot 1`] = `
       "status": "allowed",
       "utilization": 0.34,
       "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-23T09:40:00.000Z",
+          "utilization": 0.34,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.05,
+        },
+      },
     },
     "harness": "claude-code",
     "id": "run:4",
@@ -1788,6 +1858,16 @@ third",
       "status": "allowed",
       "utilization": 0.33,
       "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-23T09:40:00.000Z",
+          "utilization": 0.33,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.05,
+        },
+      },
     },
     "harness": "claude-code",
     "id": "run:12",
@@ -1931,6 +2011,16 @@ exports[`fixture read-search > matches the golden snapshot 1`] = `
       "status": "allowed",
       "utilization": 0.33,
       "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-23T09:40:00.000Z",
+          "utilization": 0.33,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.05,
+        },
+      },
     },
     "harness": "claude-code",
     "id": "run:4",
@@ -2130,6 +2220,16 @@ exports[`fixture resume > matches the golden snapshot 1`] = `
       "status": "allowed",
       "utilization": 0.33,
       "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-23T09:40:00.000Z",
+          "utilization": 0.33,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.05,
+        },
+      },
     },
     "harness": "claude-code",
     "id": "run:4",
@@ -2345,6 +2445,16 @@ Do NOT Read or tail this file via the shell tool — it is the full subagent JSO
       "status": "allowed",
       "utilization": 0.33,
       "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-23T09:40:00.000Z",
+          "utilization": 0.33,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.05,
+        },
+      },
     },
     "harness": "claude-code",
     "id": "run:7",
@@ -2824,6 +2934,16 @@ exports[`fixture todos > matches the golden snapshot 1`] = `
       "status": "allowed",
       "utilization": 0.33,
       "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-23T09:40:00.000Z",
+          "utilization": 0.33,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.05,
+        },
+      },
     },
     "harness": "claude-code",
     "id": "run:9",

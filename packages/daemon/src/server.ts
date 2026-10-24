@@ -77,13 +77,18 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
 
   app.get('/api/sessions', (c) => c.json(sessions.list()));
 
-  // Round-up list: a snapshot, then every change.
+  app.get('/api/usage', (c) => c.json(sessions.usage()));
+
+  // Round-up list and harness usage: snapshots, then every change.
   app.get('/api/events', (c) =>
     sse(c, (send) => {
       send({ event: 'sessions', data: JSON.stringify(sessions.list()) });
-      return sessions.watch((u) =>
-        send(u.type === 'session' ? { event: 'session', data: JSON.stringify(u.session) } : { event: 'deleted', data: JSON.stringify({ id: u.id }) }),
-      );
+      send({ event: 'usage', data: JSON.stringify(sessions.usage()) });
+      return sessions.watch((u) => {
+        if (u.type === 'session') send({ event: 'session', data: JSON.stringify(u.session) });
+        else if (u.type === 'deleted') send({ event: 'deleted', data: JSON.stringify({ id: u.id }) });
+        else send({ event: 'usage', data: JSON.stringify(u.usage) });
+      });
     }),
   );
 
