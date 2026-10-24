@@ -14,6 +14,9 @@ export interface RoundUp {
   busy: boolean;
   lastTurn?: 'completed' | 'failed' | 'interrupted';
   harnessSessionId?: string;
+  /** Set on a sub-agent: the orchestrator round-up that spawned it. */
+  parentId?: string;
+  role?: 'orchestrator' | 'agent';
 }
 
 export const NEW_TITLE = 'New round-up';

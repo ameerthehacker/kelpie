@@ -1,0 +1,177 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`agent digests > bash-fail report and log match the golden snapshot > log 1`] = `
+[
+  "#1 sent: Run exactly this with Bash: \`node -e "process.exit(3)"\`. Do not retry. Tell me the exit code.",
+  "#3 > Bash: node -e "process.exit(3)"",
+  "#5 x Bash failed: Exit code 3",
+  "#6 agent: The exit code is **3**.",
+  "#8 -- turn completed",
+]
+`;
+
+exports[`agent digests > bash-fail report and log match the golden snapshot > report 1`] = `
+{
+  "costUsd": 0.0012,
+  "error": undefined,
+  "filesChanged": [],
+  "lastTurn": "completed",
+  "report": "The exit code is **3**.",
+  "todos": [],
+  "turns": 1,
+}
+`;
+
+exports[`agent digests > edit-bash report and log match the golden snapshot > log 1`] = `
+[
+  "#1 sent: Add an exported \`sub(a, b)\` function to src/math.js using Edit, create test/sub.test.js (node:test + node:assert) with Write, then run \`node --test\` with Bash and report the result in one line.",
+  "#4 > Read: src/math.js",
+  "#6 > Bash: ls -la /work/repo/test /work/repo/src 2>&1",
+  "#9 > Read: test/add.test.js",
+  "#11 > Edit: src/math.js",
+  "#13 ~ edit /work/repo/src/math.js +4 -0",
+  "#14 > Write: test/sub.test.js",
+  "#16 ~ write /work/repo/test/sub.test.js +5 -0",
+  "#17 > Bash: node --test 2>&1 | tail -n 12",
+  "#19 agent: \`node --test\` passes: 2 tests, 0 failures. I added \`export function sub(a, b)\` to \`src/math.js\`, and created \`test/sub.test.js\` with one test asserting \`sub(5, 3) === 2\`.",
+  "#21 -- turn completed",
+]
+`;
+
+exports[`agent digests > edit-bash report and log match the golden snapshot > report 1`] = `
+{
+  "costUsd": 0.0023,
+  "error": undefined,
+  "filesChanged": [
+    {
+      "added": 4,
+      "path": "/work/repo/src/math.js",
+      "removed": 0,
+    },
+    {
+      "added": 5,
+      "path": "/work/repo/test/sub.test.js",
+      "removed": 0,
+    },
+  ],
+  "lastTurn": "completed",
+  "report": "\`node --test\` passes: 2 tests, 0 failures.
+
+I added \`export function sub(a, b)\` to \`src/math.js\`, and created \`test/sub.test.js\` with one test asserting \`sub(5, 3) === 2\`.",
+  "todos": [],
+  "turns": 1,
+}
+`;
+
+exports[`agent digests > multi-turn report and log match the golden snapshot > log 1`] = `
+[
+  "#1 sent: Remember the word "kelpie". Reply with just OK.",
+  "#3 agent: OK",
+  "#6 -- turn completed",
+  "#8 sent: What word did I ask you to remember? Just the word.",
+  "#10 agent: kelpie",
+  "#13 -- turn completed",
+]
+`;
+
+exports[`agent digests > multi-turn report and log match the golden snapshot > report 1`] = `
+{
+  "costUsd": 0.0013,
+  "error": undefined,
+  "filesChanged": [],
+  "lastTurn": "completed",
+  "report": "kelpie",
+  "todos": [],
+  "turns": 2,
+}
+`;
+
+exports[`agent digests > plain report and log match the golden snapshot > log 1`] = `
+[
+  "#1 sent: What is 2+2? Answer with just the number.",
+  "#3 agent: 4",
+  "#6 -- turn completed",
+]
+`;
+
+exports[`agent digests > plain report and log match the golden snapshot > report 1`] = `
+{
+  "costUsd": 0.0009,
+  "error": undefined,
+  "filesChanged": [],
+  "lastTurn": "completed",
+  "report": "4",
+  "todos": [],
+  "turns": 1,
+}
+`;
+
+exports[`agent digests > subagent report and log match the golden snapshot > log 1`] = `
+[
+  "#1 sent: Use the Task tool with subagent_type "general-purpose" to read src/math.js and report the exported function names. Do not read it yourself. Then repeat its answer in one line.",
+  "#3 > Agent: Report exports of src/math.js",
+  "#8 agent: The agent is still running, so I don't have the exported function names yet. I'll repeat the answer in one line once the agent reports back.",
+  "#10 -- turn completed",
+  "#12   > Read: src/math.js",
+  "#16   agent: add",
+  "#21 agent: Exported function from src/math.js: add",
+  "#23 -- turn completed",
+]
+`;
+
+exports[`agent digests > subagent report and log match the golden snapshot > report 1`] = `
+{
+  "costUsd": 0.003,
+  "error": undefined,
+  "filesChanged": [],
+  "lastTurn": "completed",
+  "report": "Exported function from src/math.js: add",
+  "todos": [],
+  "turns": 2,
+}
+`;
+
+exports[`agent digests > todos report and log match the golden snapshot > log 1`] = `
+[
+  "#1 sent: Use TaskCreate to create two tasks: "Count lines" and "Report". Mark "Count lines" in_progress with TaskUpdate, run \`wc -l src/math.js\` with Bash, mark it completed, then mark "Report" in_progress, tell me the count, and mark "Report" completed.",
+  "#3 > TaskCreate: Count lines",
+  "#4 > TaskCreate: Report",
+  "#6 todos: 0/1 done",
+  "#8 todos: 0/2 done",
+  "#10 > TaskUpdate: #1 → in_progress",
+  "#12 todos: 0/2 done",
+  "#13 > Bash: wc -l src/math.js",
+  "#15 > TaskUpdate: #1 → completed",
+  "#17 todos: 1/2 done",
+  "#18 > TaskUpdate: #2 → in_progress",
+  "#20 todos: 1/2 done",
+  "#21 agent: \`src/math.js\` has 3 lines.",
+  "#22 > TaskUpdate: #2 → completed",
+  "#24 todos: 2/2 done",
+  "#25 agent: \`src/math.js\` has 3 lines. Both tasks are marked completed.",
+  "#27 -- turn completed",
+]
+`;
+
+exports[`agent digests > todos report and log match the golden snapshot > report 1`] = `
+{
+  "costUsd": 0.0022,
+  "error": undefined,
+  "filesChanged": [],
+  "lastTurn": "completed",
+  "report": "\`src/math.js\` has 3 lines. Both tasks are marked completed.",
+  "todos": [
+    {
+      "id": "1",
+      "status": "completed",
+      "text": "Count lines",
+    },
+    {
+      "id": "2",
+      "status": "completed",
+      "text": "Report",
+    },
+  ],
+  "turns": 1,
+}
+`;

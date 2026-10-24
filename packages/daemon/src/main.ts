@@ -3,7 +3,8 @@
  *
  *   pnpm kelpie:serve [--cwd <repo>] [--port 7317] [--model m]
  *
- * KELPIE_CWD / KELPIE_PORT / KELPIE_MODEL set the same defaults; `pnpm dev` runs it through turbo,
+ * KELPIE_CWD / KELPIE_PORT / KELPIE_MODEL set the same defaults, KELPIE_MAX_AGENTS how many sub-agents
+ * one orchestrator may have working at once; `pnpm dev` runs it through turbo,
  * whose working directory is this package, so it passes the repo via KELPIE_CWD.
  * Round-ups and run logs live under KELPIE_HOME (default ~/.kelpie).
  */
@@ -14,6 +15,7 @@ import { parseArgs } from 'node:util';
 import { serve } from '@hono/node-server';
 import { openStore } from '@kelpie/store';
 import lockfile from 'proper-lockfile';
+import { Orchestrator } from './orchestrator/orchestrator.js';
 import { createApp } from './server.js';
 import { SessionManager } from './sessions.js';
 
@@ -44,7 +46,14 @@ const unlock = await lockfile
   });
 
 const store = openStore(join(home, 'kelpie.db'));
+const port = Number(opts.port);
+const orchestrator = new Orchestrator({
+  store,
+  mcpUrl: `http://127.0.0.1:${port}/mcp`,
+  ...(process.env.KELPIE_MAX_AGENTS ? { maxAgents: Number(process.env.KELPIE_MAX_AGENTS) } : {}),
+});
 const sessions = new SessionManager({
+  hooks: orchestrator,
   store,
   defaultCwd: resolve(opts.cwd),
   runsDir: join(home, 'runs'),
@@ -54,18 +63,21 @@ const sessions = new SessionManager({
     allowedTools: ['Bash'],
   },
 });
-const app = createApp(sessions, { staticDir: join(import.meta.dirname, '../../../apps/web/dist') });
-const port = Number(opts.port);
+orchestrator.attach(sessions);
+const app = createApp(sessions, { staticDir: join(import.meta.dirname, '../../../apps/web/dist'), orchestrator });
 // Loopback only: sessions can run shell commands.
 const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, () => {
   console.log(`kelpie daemon on http://127.0.0.1:${port} · default cwd ${sessions.defaultCwd} · data ${home}`);
+  // Once the MCP server is up: resume whatever was working when Kelpie last stopped.
+  void orchestrator.recover().catch((err) => console.error('kelpie: recovery failed', err));
 });
 
 let closing = false;
 const shutdown = async () => {
   if (closing) process.exit(1);
   closing = true;
-  // Let each run's closing events reach the store before it closes.
+  // Whatever is still working resumes on the next start; let each run's closing events reach the store before it closes.
+  sessions.prepareShutdown();
   await sessions.stopAll();
   store.close();
   await unlock();

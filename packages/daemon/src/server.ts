@@ -3,33 +3,26 @@ import { relative, resolve } from 'node:path';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { streamSSE, type SSEMessage } from 'hono/streaming';
+import { isLocalHost, isLocalOrigin } from './local.js';
+import { handleMcp } from './orchestrator/mcp.js';
+import type { Orchestrator } from './orchestrator/orchestrator.js';
 import type { SessionManager } from './sessions.js';
 
 export interface AppOptions {
   /** Built web UI to serve at `/`. */
   staticDir?: string;
+  /** Serves the kelpie MCP server (the orchestrator's tools) at `/mcp`. */
+  orchestrator?: Orchestrator;
 }
 
-const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
-
-const hostnameOf = (hostHeader: string) => hostHeader.replace(/:\d+$/, '');
-
 /**
- * Sessions run a coding agent that can execute shell commands, so only local
- * pages may drive it: the Host must be a loopback name (defeats DNS
- * rebinding), any Origin must be local (defeats cross-site requests), and
- * writes must be JSON (forces a CORS preflight, which we never grant).
+ * Only local pages may drive the API (see local.ts), and writes must be JSON (forces a
+ * CORS preflight, which we never grant).
  */
 export const localOnly: MiddlewareHandler = async (c, next) => {
-  if (!LOCAL_HOSTS.has(hostnameOf(c.req.header('host') ?? ''))) return c.text('forbidden host', 403);
+  if (!isLocalHost(c.req.header('host'))) return c.text('forbidden host', 403);
   const origin = c.req.header('origin');
-  if (origin) {
-    let ok = false;
-    try {
-      ok = LOCAL_HOSTS.has(new URL(origin).hostname);
-    } catch {}
-    if (!ok) return c.text('forbidden origin', 403);
-  }
+  if (origin && !isLocalOrigin(origin)) return c.text('forbidden origin', 403);
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD' && !c.req.header('content-type')?.startsWith('application/json')) {
     return c.text('expected application/json', 415);
   }
@@ -72,6 +65,8 @@ const jsonBody = <T>(c: Context) => c.req.json<T>().catch(() => ({}) as T);
 export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono {
   const app = new Hono();
   app.use('/api/*', localOnly);
+  const orch = opts.orchestrator;
+  if (orch) app.all('/mcp', (c) => handleMcp(c, orch));
 
   app.get('/api/health', (c) => c.json({ ok: true, defaultCwd: sessions.defaultCwd }));
 
@@ -104,6 +99,12 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   app.get('/api/sessions/:id', (c) => {
     const s = sessions.get(c.req.param('id'));
     return s ? c.json(s.info()) : c.json({ error: 'no such session' }, 404);
+  });
+
+  // A round-up's sub-agents (their own logs are at /api/sessions/:agentId/events).
+  app.get('/api/sessions/:id/agents', (c) => {
+    if (!sessions.get(c.req.param('id'))) return c.json({ error: 'no such session' }, 404);
+    return c.json(sessions.children(c.req.param('id')).map((s) => s.info()));
   });
 
   app.patch('/api/sessions/:id', async (c) => {

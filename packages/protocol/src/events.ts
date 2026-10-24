@@ -58,6 +58,13 @@ export const Message = ev(
   z.object({
     role: z.enum(['assistant', 'user']),
     text: z.string(),
+    /** A turn Kelpie sent, as the harness echoed it on taking it in. */
+    sent: z.boolean().optional(),
+    /**
+     * Who a sent turn came from: the person, the orchestrator (to its sub-agent), or Kelpie
+     * itself (notifications, restarts). Set by the daemon from its outbox.
+     */
+    source: z.enum(['user', 'orchestrator', 'kelpie']).optional(),
   }),
 );
 

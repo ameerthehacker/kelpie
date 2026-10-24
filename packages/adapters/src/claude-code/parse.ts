@@ -197,7 +197,7 @@ export class ClaudeCodeParser {
           this.interrupted = true;
           continue;
         }
-        if (text) out.push(this.emit('message', { role: 'user', text }, x));
+        if (text) out.push(this.emit('message', { role: 'user', text, ...(o.isReplay ? { sent: true } : {}) }, x));
       } else {
         out.push(this.emit('other', { type: `user.${block.type}`, raw: block }, x));
       }

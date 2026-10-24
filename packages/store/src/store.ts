@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { HarnessUsage, KelpieEvent, type EventData, type EventKind, type EventOf } from '@kelpie/protocol';
@@ -9,8 +9,9 @@ import * as schema from './schema.js';
 
 export type SessionRow = typeof schema.sessions.$inferSelect;
 export type NewSession = Omit<typeof schema.sessions.$inferInsert, 'createdAt' | 'updatedAt'>;
-export type SessionPatch = Partial<Pick<SessionRow, 'title' | 'model' | 'harnessSessionId'>>;
-
+export type SessionPatch = Partial<Pick<SessionRow, 'title' | 'model' | 'harnessSessionId' | 'resumePending' | 'notifiedIdx'>>;
+export type OutboxRow = typeof schema.outbox.$inferSelect;
+export type OutboxSource = OutboxRow['source'];
 
 const MIGRATIONS = join(import.meta.dirname, '../drizzle');
 
@@ -44,6 +45,11 @@ export class Store {
     return this.db.select().from(schema.sessions).orderBy(desc(schema.sessions.updatedAt), desc(schema.sessions.createdAt)).all();
   }
 
+  /** An orchestrator's sub-agents, oldest first. */
+  listChildren(parentId: string): SessionRow[] {
+    return this.db.select().from(schema.sessions).where(eq(schema.sessions.parentId, parentId)).orderBy(asc(schema.sessions.createdAt)).all();
+  }
+
   updateSession(id: string, patch: SessionPatch): SessionRow | undefined {
     return this.db.update(schema.sessions).set(patch).where(eq(schema.sessions.id, id)).returning().get();
   }
@@ -53,11 +59,57 @@ export class Store {
     return this.db.delete(schema.sessions).where(eq(schema.sessions.id, id)).run().changes > 0;
   }
 
-  appendEvent(sessionId: string, idx: number, event: KelpieEvent, now = Date.now()): void {
+  /**
+   * Logs an event. With `deliveredId`, the event is the harness echoing that outbox row: it is
+   * marked delivered in the same transaction, so a turn is never both logged and sent again
+   * after a crash.
+   */
+  appendEvent(sessionId: string, idx: number, event: KelpieEvent, now = Date.now(), deliveredId?: number): void {
     this.db.transaction((tx) => {
       tx.insert(schema.events).values({ sessionId, idx, kind: event.kind, event: JSON.stringify(event) }).run();
       tx.update(schema.sessions).set({ updatedAt: now }).where(eq(schema.sessions.id, sessionId)).run();
+      if (deliveredId !== undefined) tx.update(schema.outbox).set({ deliveredAt: now }).where(eq(schema.outbox.id, deliveredId)).run();
     });
+  }
+
+  /** Records a turn about to be sent to a round-up. */
+  enqueue(sessionId: string, text: string, source: OutboxSource, now = Date.now()): OutboxRow {
+    return this.db.insert(schema.outbox).values({ sessionId, text, source, createdAt: now }).returning().get();
+  }
+
+  /** Turns sent (or about to be) that the harness has not taken in yet, oldest first. */
+  undelivered(sessionId: string): OutboxRow[] {
+    return this.db
+      .select()
+      .from(schema.outbox)
+      .where(and(eq(schema.outbox.sessionId, sessionId), isNull(schema.outbox.deliveredAt)))
+      .orderBy(asc(schema.outbox.id))
+      .all();
+  }
+
+  /** Sum of the per-turn costs in a round-up's log. */
+  costOf(sessionId: string): number {
+    return (
+      this.db
+        .select({ cost: sql<number | null>`sum(json_extract(${schema.events.event}, '$.data.costUsd'))` })
+        .from(schema.events)
+        .where(and(eq(schema.events.sessionId, sessionId), eq(schema.events.kind, 'usage')))
+        .get()?.cost ?? 0
+    );
+  }
+
+  /** Drops turns that will never be taken in (their process died before it read them). */
+  discardUndelivered(sessionId: string, now = Date.now()): void {
+    this.db
+      .update(schema.outbox)
+      .set({ deliveredAt: now })
+      .where(and(eq(schema.outbox.sessionId, sessionId), isNull(schema.outbox.deliveredAt)))
+      .run();
+  }
+
+  /** The first turn a round-up was sent (a sub-agent's task brief). */
+  firstSent(sessionId: string): OutboxRow | undefined {
+    return this.db.select().from(schema.outbox).where(eq(schema.outbox.sessionId, sessionId)).orderBy(asc(schema.outbox.id)).limit(1).get();
   }
 
   loadEvents(sessionId: string): KelpieEvent[] {
@@ -82,6 +134,23 @@ export class Store {
       .limit(1)
       .get();
     return row ? KelpieEvent.parse(JSON.parse(row.event)) : undefined;
+  }
+
+  /** Like `lastEvent`, with the event's index in the log. */
+  lastEventAt<K extends EventKind>(sessionId: string, kind: K): { index: number; event: EventOf<K> } | undefined {
+    const row = this.db
+      .select({ idx: schema.events.idx, event: schema.events.event })
+      .from(schema.events)
+      .where(and(eq(schema.events.sessionId, sessionId), eq(schema.events.kind, kind)))
+      .orderBy(desc(schema.events.idx))
+      .limit(1)
+      .get();
+    return row ? { index: row.idx, event: KelpieEvent.parse(JSON.parse(row.event)) as EventOf<K> } : undefined;
+  }
+
+  /** Runs `fn` in one transaction: every write in it lands, or none does. */
+  atomically<T>(fn: () => T): T {
+    return this.sqlite.transaction(fn)();
   }
 
   eventCount(sessionId: string): number {

@@ -5,7 +5,9 @@
 // finishes it, and ignores interrupts (a wedged CLI). FAKE_ARGS_FILE gets one
 // line of JSON argv per start; FAKE_RESUME_FAIL=1 makes `--resume` fail the
 // way the real CLI does for an unknown session; FAKE_EXIT_DELAY (ms) keeps it
-// alive that long after stdin closes, like a slow shutdown.
+// alive that long after stdin closes, like a slow shutdown. FAKE_EVERY_TURN=1 answers
+// each later turn too (echo, "ok", result), and FAKE_STDIN_FILE gets a line of JSON
+// { resume, text } per user turn received.
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -28,6 +30,14 @@ for await (const line of createInterface({ input: process.stdin })) {
   const msg = JSON.parse(line);
   if (msg.type === 'control_request') {
     if (!hang) out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } });
+  } else if (msg.type === 'user' && process.env.FAKE_STDIN_FILE) {
+    appendFileSync(process.env.FAKE_STDIN_FILE, JSON.stringify({ resume: args.includes('--resume') ? resume : null, text: msg.message.content[0].text }) + '\n');
+  }
+  if (msg.type === 'user' && printed && process.env.FAKE_EVERY_TURN === '1' && !hang) {
+    const session_id = JSON.parse(lines[0]).session_id;
+    out({ type: 'user', message: msg.message, session_id, parent_tool_use_id: null, isReplay: true });
+    out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }, session_id, parent_tool_use_id: null });
+    out({ type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id, total_cost_usd: 0, usage: {} });
   } else if (msg.type === 'user' && !printed) {
     printed = true;
     if (hang) {

@@ -26,6 +26,18 @@ export type ChatItem =
   | { role: 'assistant'; id: string; parts: AssistantPart[] };
 
 /**
+ * A one-line-per-agent summary of a turn Kelpie sent (a sub-agent notification), or else its
+ * first line of text (e.g. a restart note).
+ */
+export function notificationSummary(text: string): string {
+  const agents = [...text.matchAll(/^## Agent "(.*)" \([^)]*\) is idle: turn (\w[\w ]*)/gm)].map(([, title, status]) =>
+    status === 'completed' ? `Agent “${title}” finished` : `Agent “${title}” stopped: turn ${status}`,
+  );
+  if (agents.length) return agents.join('\n');
+  return text.replace(/^<[\w-]+>\s*/, '').split('\n')[0] ?? '';
+}
+
+/**
  * Folds a session's KEF events into chat items: user turns, and one
  * assistant item per stretch of agent activity between them. Pure, so the
  * UI can recompute it from the event log on every update.
@@ -49,7 +61,9 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
     }
     switch (ev.kind) {
       case 'message':
-        if (ev.data.role === 'user') items.push({ role: 'user', id: ev.id, text: ev.data.text });
+        // Turns Kelpie sent itself (notifications, restarts) are not the person speaking.
+        if (ev.data.role === 'user' && ev.data.source === 'kelpie') assistant(ev.id).push({ type: 'notice', tone: 'info', text: notificationSummary(ev.data.text) });
+        else if (ev.data.role === 'user') items.push({ role: 'user', id: ev.id, text: ev.data.text });
         else assistant(ev.id).push({ type: 'text', text: ev.data.text });
         break;
       case 'thinking':

@@ -37,6 +37,7 @@ exports[`fixture background-agent > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "Use the Agent tool with subagent_type "general-purpose" and run_in_background true, prompt: "Read src/math.js and reply with the exported function names." Do not wait for it or read the file yourself; end your turn right after launching it. When its report arrives, repeat it in one line.",
     },
     "harness": "claude-code",
@@ -511,6 +512,7 @@ exports[`fixture bash-fail > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "Run exactly this with Bash: \`node -e "process.exit(3)"\`. Do not retry. Tell me the exit code.",
     },
     "harness": "claude-code",
@@ -689,6 +691,7 @@ exports[`fixture edit-bash > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "Add an exported \`sub(a, b)\` function to src/math.js using Edit, create test/sub.test.js (node:test + node:assert) with Write, then run \`node --test\` with Bash and report the result in one line.",
     },
     "harness": "claude-code",
@@ -1135,6 +1138,7 @@ exports[`fixture interrupt > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "Run exactly \`node -e "setTimeout(()=>{},30000)"\` with Bash, then say done.",
     },
     "harness": "claude-code",
@@ -1276,6 +1280,7 @@ exports[`fixture multi-turn > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "Remember the word "kelpie". Reply with just OK.",
     },
     "harness": "claude-code",
@@ -1382,6 +1387,7 @@ exports[`fixture multi-turn > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "What word did I ask you to remember? Just the word.",
     },
     "harness": "claude-code",
@@ -1525,6 +1531,7 @@ exports[`fixture plain > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "What is 2+2? Answer with just the number.",
     },
     "harness": "claude-code",
@@ -1668,6 +1675,7 @@ exports[`fixture queued > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "Run exactly \`node -e "setTimeout(()=>{},4000)"\` with Bash, then reply "first".",
     },
     "harness": "claude-code",
@@ -1801,6 +1809,7 @@ exports[`fixture queued > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "Also reply with the word "second".",
     },
     "harness": "claude-code",
@@ -1814,6 +1823,7 @@ exports[`fixture queued > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "And reply with the word "third".",
     },
     "harness": "claude-code",
@@ -1962,6 +1972,7 @@ exports[`fixture read-search > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "Use Grep to find where \`add\` is defined, Read that file, then tell me its signature in one line.",
     },
     "harness": "claude-code",
@@ -2179,6 +2190,7 @@ exports[`fixture resume > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "What word did I ask you to remember earlier in this conversation? Just the word.",
     },
     "harness": "claude-code",
@@ -2322,6 +2334,7 @@ exports[`fixture subagent > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "Use the Task tool with subagent_type "general-purpose" to read src/math.js and report the exported function names. Do not read it yourself. Then repeat its answer in one line.",
     },
     "harness": "claude-code",
@@ -2795,6 +2808,7 @@ exports[`fixture todos > matches the golden snapshot 1`] = `
   {
     "data": {
       "role": "user",
+      "sent": true,
       "text": "Use TaskCreate to create two tasks: "Count lines" and "Report". Mark "Count lines" in_progress with TaskUpdate, run \`wc -l src/math.js\` with Bash, mark it completed, then mark "Report" in_progress, tell me the count, and mark "Report" completed.",
     },
     "harness": "claude-code",

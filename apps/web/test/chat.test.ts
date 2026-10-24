@@ -67,3 +67,18 @@ describe('buildChat', () => {
     expect(buildChat(events('queued')).map((i) => i.role)).toEqual(['user', 'assistant', 'user', 'user', 'assistant']);
   });
 });
+
+describe('orchestrator notifications', () => {
+  it('shows a notification as a notice, not as the person speaking', () => {
+    const base = { runId: 'r', ts: '2026-01-01T00:00:00.000Z', harness: 'claude-code' as const };
+    const text = '<kelpie-notification>\n## Agent "Count A" (a1) is idle: turn completed\n\n4\n\n## Agent "Count B" (b1) is idle: turn failed\nError: x\n\nThis message is from Kelpie.\n</kelpie-notification>';
+    const items = buildChat([{ ...base, id: 'n', seq: 0, kind: 'message', data: { role: 'user', text, sent: true, source: 'kelpie' } }]);
+    expect(items).toEqual([{ role: 'assistant', id: 'n', parts: [{ type: 'notice', tone: 'info', text: 'Agent “Count A” finished\nAgent “Count B” stopped: turn failed' }] }]);
+  });
+
+  it('keeps the person’s words as theirs, whatever they look like', () => {
+    const base = { runId: 'r', ts: '2026-01-01T00:00:00.000Z', harness: 'claude-code' as const };
+    const text = '<kelpie-notification> not really';
+    expect(buildChat([{ ...base, id: 'u', seq: 0, kind: 'message', data: { role: 'user', text, sent: true, source: 'user' } }])).toEqual([{ role: 'user', id: 'u', text }]);
+  });
+});

@@ -11,6 +11,12 @@ describe('settlePending', () => {
     expect(settlePending(pending('yes', 'yes', 'no'), [echo('yes')])).toEqual([{ id: 1, text: 'yes' }, { id: 2, text: 'no' }]);
   });
 
+  it('is not settled by turns Kelpie sent itself', () => {
+    const p = pending('mine');
+    expect(settlePending(p, [ev('message', { role: 'user', text: '<kelpie-notification>…', source: 'kelpie' })])).toBe(p);
+    expect(settlePending(p, [ev('message', { role: 'user', text: 'mine', source: 'user' })])).toEqual([]);
+  });
+
   it('ignores sub-agent prompts and assistant messages', () => {
     const p = pending('a');
     expect(settlePending(p, [echo('task', 'call-1'), ev('message', { role: 'assistant', text: 'hi' })])).toBe(p);

@@ -11,9 +11,9 @@ Every harness stream is normalized into the **Kelpie Event Format (KEF)**. The U
 | 1 | Protocol (KEF) + Claude Code adapter + dev runner | done |
 | 2 | Codex adapter | |
 | 3 | SQLite store, agent digests (orchestrator memory) | partial: round-ups + KEF logs (`packages/store`, Drizzle) |
-| 4 | Supervisor: scheduling, dependencies, worktrees, questions | |
-| 5 | Kelpie MCP server (orchestrator + sub-agent tools) | |
-| 6 | Orchestrator runner | |
+| 4 | Supervisor: scheduling, dependencies, worktrees, questions | partial: concurrency cap, one writer per repo, crash recovery |
+| 5 | Kelpie MCP server (orchestrator + sub-agent tools) | partial: orchestrator tools (`packages/daemon/src/orchestrator`) |
+| 6 | Orchestrator runner | basic: every top-level round-up is an orchestrator |
 | 7 | HTTP API | basic: persistent round-ups + SSE (`packages/daemon`) |
 | 8 | Web UI (design canvas "Kelpie") | basic: round-up sidebar + chat (`apps/web`) |
 
@@ -23,7 +23,7 @@ Every harness stream is normalized into the **Kelpie Event Format (KEF)**. The U
 packages/protocol   KEF types + zod schemas
 packages/adapters   harness adapters: spawn, parse, fixtures, golden tests
 packages/store      SQLite via Drizzle ORM (better-sqlite3): round-ups and their KEF logs
-packages/daemon     HTTP API: round-ups over the adapter, KEF over SSE
+packages/daemon     HTTP API: round-ups over the adapter, KEF over SSE; the orchestrator and its MCP server
 apps/web            chat UI: Vite + React + shadcn/ui + AI Elements
 scripts/            capture-claude.ts (fixtures), run.ts (dev runner)
 ```
@@ -75,7 +75,7 @@ Every run writes `~/.kelpie/runs/<runId>/run.json` (argv, cwd) and `raw.jsonl` (
 - **One daemon per data directory.** It holds `$KELPIE_HOME/daemon.lock` (proper-lockfile). A daemon that starts while its predecessor is still shutting down waits for the lock rather than repairing runs that are still being written. A lock left by a killed daemon goes stale after 5 seconds.
 - **Restarts.** On shutdown the daemon stops every process and logs its closing events. If it was killed instead, startup closes out any run left open (`turn.ended` interrupted, `activity` idle, `process.exited`), so nothing stays "working".
 - **Deletes** end the round-up's open event streams, so other tabs find out. A log stays in daemon memory only while a page watches it or a run writes to it.
-- **Known gap.** A message is logged when the harness echoes it back. If the daemon is killed in the second or so before that, the message is lost.
+- **Outbox.** Every turn sent to a round-up (the person's messages, a sub-agent's brief and follow-ups, Kelpie's notifications) is written to the `outbox` table before it goes to stdin. The harness echoes sent turns in order, and the parser marks those echoes `sent: true`. Each echo marks the oldest undelivered row delivered, in the same transaction that logs it, and the logged `message` gets that row's `source` (`user`, `orchestrator` or `kelpie`). That is how the UI tells notifications from the person's words. Turns still undelivered when Kelpie stops are re-sent by the next start, so a crash loses nothing and nothing is sent twice. Turns a harness process died before reading are dropped instead, so a turn that kills the CLI is never retried forever: the failed turn shows in the log and can be sent again. A resume failure is the exception: those turns are retried once, in a fresh session.
 - **Usage limits.** Claude Code reports its subscription windows (`five_hour`, `seven_day`: utilization and reset time) in `rate_limit_event`s, which become KEF `rate_limit` events with `windows`. The daemon keeps each harness's latest report in `harness_usage`, because a harness only reports during a turn. The sidebar shows them as the design's Usage limit and Weekly limit meters, amber from 80%, and the composer warns when the fullest window passes 80%. A window whose reset time has passed shows 0% until the next turn reports again. Plan names aren't reported, so they aren't shown.
 - **API.** `GET`/`POST /api/sessions`, `GET`/`PATCH {title}`/`DELETE /api/sessions/:id`, `POST /api/sessions/:id/messages {text}`, `POST /api/sessions/:id/interrupt`, `GET /api/health` (includes `defaultCwd`), `GET /api/usage`.
 - **Event streams** (SSE, with a ping every 15s). `GET /api/sessions/:id/events` carries `kef` events; `Last-Event-ID` (or `?after=`) resumes exactly where a connection left off. `GET /api/events` carries the round-up list and usage: `sessions` and `usage` snapshots, then `session` on create, rename, busy flip or turn end, `deleted`, and `usage` whenever a harness reports.
@@ -101,3 +101,19 @@ pnpm kelpie:serve --cwd <repo> [--model m]   # daemon only; serves apps/web/dist
 The daemon restarts whenever its own source or an adapter's source changes. Round-ups survive the restart, but a turn in progress is interrupted.
 
 In the dev runner: type a line to send another turn, Ctrl-C to interrupt the turn, and Ctrl-C again (or `/exit`) to end the session.
+
+## Orchestrator
+
+Every top-level round-up is an **orchestrator**: a Claude Code session that tracks tasks and delegates, and never does repo work itself. The sub-agents it starts are child round-ups (`parentId`, `role: 'agent'`, `writes`). They are ordinary sessions with their own logs, kept out of the sidebar list. `GET /api/sessions/:id/agents` lists them, and `/r/:agentId` opens one.
+
+- **The tool set enforces the role.** The orchestrator runs with `--tools TaskCreate,TaskUpdate,TaskList,TaskGet` and the kelpie MCP server (`--allowedTools mcp__kelpie`), and nothing else: no Read, Bash, Edit or Agent. The appended prompt (`orchestrator/prompt.ts`) only says how to use those tools. Sub-agents get the default tools minus Edit/Write/NotebookEdit when `writes` is false (Bash stays for inspection), and never the kelpie server, so they can't spawn agents.
+- **MCP server.** It lives inside the daemon at `/mcp` (Streamable HTTP, stateless, `@modelcontextprotocol/sdk`), so its tools call `SessionManager` directly. Each orchestrator *process* gets a fresh bearer token in its `--mcp-config`, revoked when the process exits. The token tells a call which orchestrator is calling; tools only reach that orchestrator's own children. Loopback Host only, no Origin.
+- **Tools.** `spawn_agent {title, task, writes, harness?, model?}` returns at once. `list_agents`. `read_agent {agentId, detail: report|log, after?, limit?}` returns either the agent's final report, files changed, todos, cost and last error, or compact numbered log lines with a cursor (`orchestrator/digest.ts`). `message_agent {agentId, text}`. `interrupt_agent {agentId}`.
+- **Rules.** At most `KELPIE_MAX_AGENTS` (default 4) of an orchestrator's agents work at once, and only one `writes` agent may be working per cwd. Refusals come back as tool errors that tell the orchestrator to end its turn and wait. (Git worktrees per writer are next; see TODO.md.)
+- **Push, not poll.** When a sub-agent goes idle (`activity` busy → false), its orchestrator gets a `<kelpie-notification>` turn with each agent's report. Idles within 1.5s are batched into one turn. Each agent's `notifiedIdx` records which idle it was last told about, and is updated in the same transaction as the outbox write. Sub-agents follow a fixed report shape (Outcome / Details / Files changed / Questions), so notifications stay small. The web chat shows a `source: kelpie` turn as a notice, not as the person speaking.
+- **Crash recovery.** The database holds everything needed to carry on: the agent tree, each harness session id, every event, every sent turn (the outbox), `resumePending` and `notifiedIdx`.
+  - **Marking.** A graceful shutdown marks every working round-up `resumePending` before stopping the processes, and refuses new sends from then on. After a kill, startup `repair()` marks any round-up whose log ends mid-work.
+  - **Resuming.** `Orchestrator.recover()` resumes those round-ups and any with undelivered turns, with `--resume`. Sub-agents go first, within the cap and the writer guard; the rest wait until a slot frees. Each one is re-sent its undelivered turns, or else asked to continue where it left off; orchestrators are also told to re-read `list_agents` and `TaskList`. Then any notification still owed (an idle past `notifiedIdx`) is sent.
+  - **Lost transcripts.** If a harness session can't be resumed, a fresh one starts. Its system prompt says context was lost and, for an agent, repeats the original brief.
+  - **Not exactly-once.** A tool call cut off mid-way may run again on resume.
+

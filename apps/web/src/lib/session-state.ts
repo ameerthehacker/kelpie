@@ -9,15 +9,16 @@ export interface PendingMessage {
 }
 
 /**
- * Drops pending messages as a batch of new log events settles them: each
- * top-level user echo takes the oldest one, and a process exit takes them all
- * (whatever it had not read from stdin yet is gone).
+ * Drops pending messages as a batch of new log events settles them: each echo of
+ * a turn the person sent takes the oldest one (Kelpie's own turns, like
+ * notifications, settle nothing), and a process exit takes them all (the daemon
+ * drops what it had not read; anything re-sent later shows up as its echo).
  */
 export function settlePending<P extends PendingMessage>(pending: P[], batch: readonly KelpieEvent[]): P[] {
   let next = pending;
   for (const ev of batch) {
     if (ev.kind === 'process.exited') next = [];
-    else if (ev.kind === 'message' && ev.data.role === 'user' && !ev.parentCallId) next = next.slice(1);
+    else if (ev.kind === 'message' && ev.data.role === 'user' && !ev.parentCallId && (ev.data.source ?? 'user') === 'user') next = next.slice(1);
   }
   return next;
 }

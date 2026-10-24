@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { mergeUsage, type EventData, type EventKind, type HarnessUsage, type KelpieEvent } from '@kelpie/protocol';
 import { claudeCode, type Adapter, type Run, type RunSpec } from '@kelpie/adapters';
-import type { SessionPatch, SessionRow, Store } from '@kelpie/store';
+import type { OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
 
 export type TurnStatus = EventData<'turn.ended'>['status'];
 
@@ -19,6 +19,12 @@ export interface SessionInfo {
   lastTurn: TurnStatus | undefined;
   /** The harness's own session id, once known; reused to resume after the process exits. */
   harnessSessionId: string | undefined;
+  harness: string;
+  /** The orchestrator that spawned this sub-agent; undefined for a top-level round-up. */
+  parentId: string | undefined;
+  role: 'orchestrator' | 'agent';
+  /** A sub-agent allowed to change files. */
+  writes: boolean;
 }
 
 /** What subscribers receive. `index` is the event's position in the session log (stable across runs and restarts). */
@@ -35,6 +41,30 @@ export type ManagerUpdate =
 
 export type SessionDefaults = Omit<RunSpec, 'cwd' | 'prompt' | 'resume' | 'runId' | 'runDir'>;
 
+export interface RunContext {
+  runId: string;
+  /** No harness session to resume: the harness starts without any earlier context. */
+  fresh: boolean;
+  /** The round-up has been sent turns before, so a fresh start has lost context it had. */
+  hadHistory: boolean;
+}
+
+/** How round-ups are specialised (the orchestrator's tools and prompts) and watched. */
+export interface SessionHooks {
+  /** Extra run settings for each harness process; called on every start. */
+  specFor?(session: Session, run: RunContext): Partial<RunSpec>;
+  /** Every event, once it is logged and subscribers have seen it. Must not throw. */
+  observe?(session: Session, index: number, event: KelpieEvent): void;
+}
+
+export interface CreateOptions {
+  parentId?: string;
+  role?: 'orchestrator' | 'agent';
+  writes?: boolean;
+  title?: string;
+  model?: string;
+}
+
 export interface SessionManagerOptions {
   store: Store;
   defaultCwd: string;
@@ -44,6 +74,7 @@ export interface SessionManagerOptions {
   runsDir?: string;
   /** A harness process idle this long is stopped; the next message resumes it. */
   idleMs?: number;
+  hooks?: SessionHooks;
 }
 
 interface SessionContext {
@@ -52,6 +83,9 @@ interface SessionContext {
   adapter: Adapter;
   runsDir: string | undefined;
   idleMs: number;
+  hooks: SessionHooks;
+  /** Set once the daemon is shutting down: nothing may start a harness process any more. */
+  closing: boolean;
   changed: (s: Session) => void;
   reportUsage: (harness: string, usage: EventData<'rate_limit'>) => void;
 }
@@ -107,9 +141,65 @@ export class Session {
     return this.busyState;
   }
 
+  /**
+   * Busy, or about to be: also true from the moment a turn is sent, before the harness's
+   * `activity` event is logged. What scheduling decisions (caps, the writer guard) go by.
+   */
+  get working(): boolean {
+    return this.busyState || (!!this.run && !this.run.exited && this.run.busy);
+  }
+
+  get title(): string {
+    return this.row.title;
+  }
+
+  get parentId(): string | undefined {
+    return this.row.parentId ?? undefined;
+  }
+
+  get role(): 'orchestrator' | 'agent' {
+    return this.row.role;
+  }
+
+  get writes(): boolean {
+    return this.row.writes;
+  }
+
+  get resumePending(): boolean {
+    return this.row.resumePending;
+  }
+
+  get notifiedIdx(): number {
+    return this.row.notifiedIdx;
+  }
+
+  get lastTurn(): TurnStatus | undefined {
+    return this.lastTurnState;
+  }
+
   info(): SessionInfo {
-    const { id, title, cwd, createdAt, updatedAt, harnessSessionId } = this.row;
-    return { id, title, cwd, createdAt, updatedAt, busy: this.busy, lastTurn: this.lastTurnState, harnessSessionId: harnessSessionId ?? undefined };
+    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes } = this.row;
+    return {
+      id,
+      title,
+      cwd,
+      createdAt,
+      updatedAt,
+      busy: this.busy,
+      lastTurn: this.lastTurnState,
+      harnessSessionId: harnessSessionId ?? undefined,
+      harness,
+      parentId: parentId ?? undefined,
+      role,
+      writes,
+    };
+  }
+
+  /** The whole log, without keeping it in memory for longer than needed. */
+  events(): KelpieEvent[] {
+    const log = this.load().slice();
+    this.release();
+    return log;
   }
 
   /**
@@ -131,30 +221,83 @@ export class Session {
     closing.push(close('process.exited', { code: null, signal: null, stderrTail: STOPPED }));
     let idx = store.eventCount(this.id);
     // Keep the round-up's place in the list: this is housekeeping, not activity.
-    for (const e of closing) store.appendEvent(this.id, idx++, e, this.row.updatedAt);
+    store.atomically(() => {
+      for (const e of closing) store.appendEvent(this.id, idx++, e, this.row.updatedAt);
+      // It was cut off mid-work: the next daemon start resumes it.
+      if (busy) this.row = store.updateSession(this.id, { resumePending: true }) ?? this.row;
+    });
     if (busy) this.lastTurnState = 'interrupted';
   }
 
-  async send(text: string): Promise<void> {
+  /**
+   * Sends a turn. It is written to the outbox first, so a turn the harness has not taken in
+   * yet survives a crash and is sent again. `alsoInTx` runs in the same transaction as that
+   * write (e.g. marking what a notification covers).
+   */
+  async send(text: string, source: OutboxSource = 'user', alsoInTx?: () => void): Promise<void> {
     while (this.stopping) await this.stopping;
     if (this.deleted) throw new Error('this round-up was deleted');
+    if (this.ctx.closing) throw new Error('Kelpie is shutting down');
+    // The harness echoes an empty turn as nothing, which would put the outbox out of step.
+    if (!text.trim()) throw new Error('a turn needs some text');
     this.load();
+    this.ctx.store.atomically(() => {
+      alsoInTx?.();
+      this.ctx.store.enqueue(this.id, text, source);
+    });
     if (this.run && !this.run.exited) this.run.send(text);
-    else this.start(text);
-    if (!this.row.title) this.update({ title: titleFrom(text) });
+    else this.start();
+    if (!this.row.title && source === 'user') this.update({ title: titleFrom(text) });
   }
 
-  private start(text: string): void {
+  /**
+   * Picks up after Kelpie stopped mid-work: re-sends the turns the harness never took in,
+   * or, if there are none, `note` (asking it to carry on). Clears `resumePending` once the
+   * turns are on their way: from then on the outbox (and `repair()`) carry it across a crash.
+   */
+  async resumeAfterRestart(note: string): Promise<void> {
+    while (this.stopping) await this.stopping;
+    if (this.deleted || this.ctx.closing) return;
+    if (!this.run || this.run.exited) {
+      if (this.ctx.store.undelivered(this.id).length) this.start();
+      else await this.send(note, 'kelpie');
+    }
+    this.clearResumePending();
+  }
+
+  markResumePending(): void {
+    this.update({ resumePending: true });
+  }
+
+  /** Something else (e.g. a new message) has picked this round-up up again. */
+  clearResumePending(): void {
+    if (this.row.resumePending) this.update({ resumePending: false });
+  }
+
+  /** Records that the orchestrator has been told about this sub-agent up to log index `index`. */
+  markNotified(index: number): void {
+    this.row = this.ctx.store.updateSession(this.id, { notifiedIdx: index }) ?? this.row;
+  }
+
+  /** Starts a harness process with every turn still undelivered, oldest first. */
+  private start(): void {
+    const { store, hooks } = this.ctx;
+    const texts = store.undelivered(this.id).map((r) => r.text);
+    if (!texts.length) return;
     const runId = randomUUID();
     const resume = this.row.harnessSessionId ?? undefined;
+    const hadHistory = store.firstSent(this.id)?.deliveredAt != null;
     const run = this.ctx.adapter.start({
       ...this.ctx.defaults,
+      ...(this.row.model ? { model: this.row.model } : {}),
+      ...hooks.specFor?.(this, { runId, fresh: !resume, hadHistory }),
       cwd: this.cwd,
-      prompt: text,
+      prompt: texts[0]!,
       runId,
       ...(this.ctx.runsDir ? { runDir: join(this.ctx.runsDir, runId) } : {}),
       ...(resume ? { resume } : {}),
     });
+    for (const text of texts.slice(1)) run.send(text);
     this.run = run;
     this.pumping = this.pump(run, resume);
   }
@@ -227,9 +370,10 @@ export class Session {
   private async pump(run: Run, resumed: string | undefined): Promise<void> {
     const log = this.load();
     let started = false;
+    let retryFresh = false;
     this.pumpActive = true;
     try {
-      for await (const event of run.events) {
+      for await (let event of run.events) {
         if (this.deleted) continue; // drain the process, log nothing
         let changed = false;
         if (event.kind === 'session.started') {
@@ -247,16 +391,34 @@ export class Session {
           changed = true;
         } else if (event.kind === 'process.exited') {
           clearTimeout(this.idleTimer);
-          // The harness could not resume (e.g. its transcript is gone): start afresh next time.
-          if (resumed && !started && event.data.code) this.update({ harnessSessionId: null });
+          // The harness could not resume (e.g. its transcript is gone): start afresh, re-sending
+          // whatever it never took in.
+          if (resumed && !started && event.data.code) {
+            this.update({ harnessSessionId: null });
+            retryFresh = true;
+          }
+        }
+
+        // The harness echoing a sent turn: the oldest outbox row is delivered, and says who sent it.
+        let deliveredId: number | undefined;
+        if (event.kind === 'message' && event.data.sent) {
+          const row = this.ctx.store.undelivered(this.id)[0];
+          if (row) {
+            deliveredId = row.id;
+            event = { ...event, data: { ...event.data, source: row.source } };
+          }
         }
 
         const index = log.push(event) - 1;
         // A process ending (idle timeout, daemon shutdown) is housekeeping: it must not reorder the list.
         const now = event.kind === 'process.exited' ? this.row.updatedAt : Date.now();
         try {
-          this.ctx.store.appendEvent(this.id, index, event, now);
+          this.ctx.store.appendEvent(this.id, index, event, now, deliveredId);
           this.row = { ...this.row, updatedAt: now };
+          // Turns this process never read are dropped, not retried forever: the turn that
+          // failed shows in the log, and whoever sent it can send again. Kept only when Kelpie
+          // itself is stopping (the next start re-sends them) or a fresh start will retry them once.
+          if (event.kind === 'process.exited' && !retryFresh && !this.ctx.closing) this.ctx.store.discardUndelivered(this.id);
         } catch (err) {
           console.error(`session ${this.id}: could not store event ${index}`, err);
         }
@@ -269,6 +431,11 @@ export class Session {
           }
         }
         if (changed) this.ctx.changed(this);
+        try {
+          this.ctx.hooks.observe?.(this, index, event);
+        } catch (err) {
+          console.error(`session ${this.id}: observer failed`, err);
+        }
       }
     } catch (err) {
       console.error(`session ${this.id}: event stream failed`, err);
@@ -276,6 +443,7 @@ export class Session {
       this.pumpActive = false;
       this.release();
     }
+    if (retryFresh && !this.deleted && !this.ctx.closing && this.run === run) this.start();
   }
 }
 
@@ -297,6 +465,8 @@ export class SessionManager {
       adapter: opts.adapter ?? claudeCode,
       runsDir: opts.runsDir,
       idleMs: opts.idleMs ?? 10 * 60_000,
+      hooks: opts.hooks ?? {},
+      closing: false,
       changed: (s) => this.notify({ type: 'session', session: s.info() }),
       // Usage is advisory: nothing about it may disturb the run that reported it.
       reportUsage: (harness, report) => {
@@ -319,8 +489,17 @@ export class SessionManager {
     }
   }
 
-  create(cwd = this.defaultCwd): Session {
-    const row = this.store.createSession({ id: randomUUID(), cwd, ...(this.ctx.defaults.model ? { model: this.ctx.defaults.model } : {}) });
+  create(cwd = this.defaultCwd, opts: CreateOptions = {}): Session {
+    const model = opts.model ?? this.ctx.defaults.model;
+    const row = this.store.createSession({
+      id: randomUUID(),
+      cwd,
+      ...(model ? { model } : {}),
+      ...(opts.parentId ? { parentId: opts.parentId } : {}),
+      ...(opts.role ? { role: opts.role } : {}),
+      ...(opts.writes ? { writes: true } : {}),
+      ...(opts.title ? { title: opts.title } : {}),
+    });
     const session = new Session(row, this.ctx);
     this.sessions.set(session.id, session);
     this.notify({ type: 'session', session: session.info() });
@@ -331,15 +510,32 @@ export class SessionManager {
     return this.sessions.get(id);
   }
 
-  /** Most recently active first. */
+  /** Top-level round-ups, most recently active first. */
   list(): SessionInfo[] {
-    return [...this.sessions.values()].map((s) => s.info()).sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+    return [...this.sessions.values()]
+      .filter((s) => !s.parentId)
+      .map((s) => s.info())
+      .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
   }
 
+  /** Every round-up, sub-agents included. */
+  all(): Session[] {
+    return [...this.sessions.values()];
+  }
+
+  /** An orchestrator's sub-agents, oldest first. */
+  children(parentId: string): Session[] {
+    return this.all()
+      .filter((s) => s.parentId === parentId)
+      .sort((a, b) => a.info().createdAt - b.info().createdAt);
+  }
+
+  /** Deletes a round-up and, first, its sub-agents (stopping their processes). */
   async delete(id: string): Promise<boolean> {
     const session = this.sessions.get(id);
     if (!session) return false;
     this.sessions.delete(id);
+    await Promise.all(this.children(id).map((c) => this.delete(c.id)));
     await session.delete();
     this.notify({ type: 'deleted', id });
     return true;
@@ -354,6 +550,12 @@ export class SessionManager {
   watch(listener: (u: ManagerUpdate) => void): () => void {
     this.watchers.add(listener);
     return () => this.watchers.delete(listener);
+  }
+
+  /** Marks every round-up still working, so the next daemon start resumes it. Call before `stopAll`. */
+  prepareShutdown(): void {
+    this.ctx.closing = true;
+    for (const s of this.sessions.values()) if (s.working) s.markResumePending();
   }
 
   async stopAll(): Promise<void> {

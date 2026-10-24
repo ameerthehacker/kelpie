@@ -8,7 +8,9 @@ import { USAGE } from './use-usage';
 
 const ROUND_UPS = ['round-ups'] as const;
 
-const upsert = (list: RoundUp[] = [], next: RoundUp) => [next, ...list.filter((r) => r.id !== next.id)].sort(byRecent);
+/** Sub-agents are not listed in the sidebar; they belong to their orchestrator. */
+const upsert = (list: RoundUp[] = [], next: RoundUp) =>
+  next.parentId ? list : [next, ...list.filter((r) => r.id !== next.id)].sort(byRecent);
 
 /**
  * The daemon's round-ups: fetched once, then kept live by its event stream; plus rename and
