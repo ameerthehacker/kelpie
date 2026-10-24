@@ -1,87 +1,90 @@
-import { useCallback, useEffect, useRef, type CSSProperties } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { PanelLeftIcon } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMatch, useNavigate } from 'react-router';
 import { AgentPaneSlot, AgentsButton } from '@/components/agents/agent-pane';
 import { AgentPaneProvider } from '@/components/agents/pane-state';
 import { PlanDock, TodoDock } from '@/components/agents/plan-dock';
-import { AssistantParts } from '@/components/chat/assistant-part';
-import { ClaudeLogo } from '@/components/claude-logo';
-import { KelpieMark, RoundUpSidebar } from '@/components/chat/round-up-sidebar';
-import {
-  Conversation,
-  ConversationContent,
-  ConversationEmptyState,
-  ConversationScrollButton,
-} from '@/components/ai-elements/conversation';
-import { Message, MessageContent } from '@/components/ai-elements/message';
-import {
-  PromptInput,
-  PromptInputBody,
-  PromptInputFooter,
-  PromptInputProvider,
-  PromptInputSubmit,
-  PromptInputTextarea,
-  PromptInputTools,
-  usePromptInputController,
-} from '@/components/ai-elements/prompt-input';
+import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation';
 import { Shimmer } from '@/components/ai-elements/shimmer';
-import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar';
+import { AssistantParts } from '@/components/chat/assistant-part';
+import { Composer } from '@/components/chat/composer';
+import { KelpieLogo } from '@/components/shell/brand';
+import { Search } from '@/components/shell/search';
+import { AppSidebar } from '@/components/shell/sidebar';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { LimitHint } from '@/components/chat/limit-hint';
 import { useAgents } from '@/hooks/use-agents';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { useNow } from '@/hooks/use-now';
 import { useRoundUps } from '@/hooks/use-round-ups';
-import { useSession, type ChatStatus } from '@/hooks/use-session';
+import { useSession } from '@/hooks/use-session';
 import type { AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
-import { ROUND_UP_ROUTE, roundUpPath, shortPath, titleOf, type RoundUp } from '@/lib/round-ups';
+import { ROUND_UP_ROUTE, roundUpPath, roundUpSummary, shortPath, titleOf, type RoundUp } from '@/lib/round-ups';
 
-interface ComposerProps {
-  status: ChatStatus;
-  send: (text: string) => Promise<void>;
-  interrupt: () => void;
+const NO_AGENTS: AgentSummary[] = [];
+const NAV_KEY = 'kelpie.nav';
+
+/** Whether the sidebar is shown on a wide screen, remembered per browser. */
+function useNavOpen(): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(NAV_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const set = useCallback((next: boolean) => {
+    setOpen(next);
+    try {
+      localStorage.setItem(NAV_KEY, next ? '1' : '0');
+    } catch {}
+  }, []);
+  return [open, set];
 }
 
-/** Clears as soon as a message is sent, and puts the text back if sending fails and the box is still empty. */
-function Composer({ status, send, interrupt }: ComposerProps) {
-  const { textInput } = usePromptInputController();
-  const current = useRef(textInput.value);
-  current.current = textInput.value;
-
+/** The round-up's name in the display face, with its repo and what it is up to. */
+function TitleBlock({ roundUp, agents }: { roundUp: RoundUp; agents: AgentSummary[] }) {
+  const now = useNow();
   return (
-    <PromptInput
-      onSubmit={({ text }) => {
-        const message = text.trim();
-        if (!message) return;
-        textInput.clear();
-        send(message).catch(() => {
-          if (!current.current) textInput.setInput(text);
-        });
-      }}
-    >
-      <PromptInputBody>
-        <PromptInputTextarea placeholder="Ask Claude Code to do something…" />
-      </PromptInputBody>
-      <PromptInputFooter>
-        <PromptInputTools>
-          <span className="text-muted-foreground flex items-center gap-1.5 px-2 text-xs">
-            <ClaudeLogo label="" className="size-3.5" />
-            Claude Code
-          </span>
-        </PromptInputTools>
-        <PromptInputSubmit status={status} onStop={interrupt} />
-      </PromptInputFooter>
-    </PromptInput>
+    <div className="flex flex-col gap-2.5 pb-2">
+      <h1 className="font-heading text-[42px] leading-[1.05] font-semibold tracking-[-0.035em] text-balance max-sm:text-[32px]">{titleOf(roundUp)}</h1>
+      <div className="text-mu flex flex-wrap items-center gap-2.5 text-[13px]">
+        <span className="font-mono text-xs">{shortPath(roundUp.cwd)}</span>
+        <span aria-hidden="true" className="text-fa">
+          ·
+        </span>
+        <span>{roundUpSummary(roundUp, agents, now)}</span>
+      </div>
+    </div>
   );
 }
 
-const NO_AGENTS: AgentSummary[] = [];
+function EmptyState({ cwd }: { cwd: string | undefined }) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 pt-[18vh] pb-10 text-center">
+      <KelpieLogo className="size-16" />
+      <h1 className="font-heading text-[40px] leading-[1.1] font-semibold tracking-[-0.035em] max-sm:text-3xl">What are we rounding up?</h1>
+      <p className="text-mu text-[15px]">
+        Describe the outcome. Kelpie plans the work and herds the agents{cwd ? ` in ${shortPath(cwd)}` : ''}.
+      </p>
+    </div>
+  );
+}
 
 export function App() {
   const roundUpId = useMatch(ROUND_UP_ROUTE)?.params.roundUpId;
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const isMobile = useIsMobile();
+  const [navOpen, setNavOpen] = useNavOpen();
+  const [mobileNav, setMobileNav] = useState(false);
+  const [draftModel, setDraftModel] = useState('');
+  const [modelError, setModelError] = useState<string | undefined>();
   const { roundUps, error: listError, defaultCwd, rename, remove, actionError, clearActionError } = useRoundUps();
   const onCreated = useCallback((id: string) => navigate(roundUpPath(id), { replace: true }), [navigate]);
-  const { items, todos, status, busy, error, send, interrupt } = useSession(roundUpId, onCreated);
+  const { items, todos, status, busy, error, send, interrupt } = useSession(roundUpId, onCreated, { model: draftModel || undefined });
   // Sub-agents are not in the sidebar list; fetch one directly when it is opened.
   const listed = roundUps?.find((r) => r.id === roundUpId);
   const direct = useQuery({
@@ -97,79 +100,110 @@ export function App() {
   const last = items.at(-1);
   // Show a working indicator unless the agent is visibly streaming text right now.
   const working = busy && (last?.role !== 'assistant' || last.parts.at(-1)?.type !== 'text');
+  // Steps on a sub-agent's own page are its own; everywhere else they are Kelpie's.
+  const actor = current?.role === 'agent' ? titleOf(current) : 'Kelpie';
+  const model = roundUpId ? (current?.model ?? '') : draftModel;
 
   useEffect(() => {
     document.title = roundUpId ? `${titleOf(current)} · kelpie` : 'kelpie';
   }, [roundUpId, current]);
+  useEffect(() => setModelError(undefined), [roundUpId]);
+
+  const changeModel = (next: string) => {
+    if (!roundUpId) return setDraftModel(next);
+    setModelError(undefined);
+    // The daemon's session event updates the list; a sub-agent opened directly is refetched.
+    api<RoundUp>('PATCH', `/api/sessions/${roundUpId}`, { model: next || null }).then(
+      () => queryClient.invalidateQueries({ queryKey: ['round-up', roundUpId] }),
+      (err: Error) => setModelError(`Couldn't change the model: ${err.message}`),
+    );
+  };
+
+  const sidebar = (className?: string) => (
+    <AppSidebar
+      className={className}
+      roundUps={roundUps}
+      currentId={roundUpId}
+      onNavigate={() => {
+        // On a phone the sidebar is a sheet over the chat; get it out of the way once something is picked.
+        setMobileNav(false);
+        clearActionError();
+      }}
+      onHide={() => (isMobile ? setMobileNav(false) : setNavOpen(false))}
+      // Failures show through actionError; the sidebar has already put things back as they were.
+      onRename={(id, title) => rename(id, title).catch(() => {})}
+      onDelete={(id) =>
+        remove(id).then(
+          () => id === roundUpId && navigate('/', { replace: true }),
+          () => {},
+        )
+      }
+    />
+  );
+  const problem = modelError ?? actionError ?? error ?? listError;
 
   return (
     <TooltipProvider>
-      <SidebarProvider style={{ '--sidebar-width': '15.5rem' } as CSSProperties}>
-        <RoundUpSidebar
-          roundUps={roundUps}
-          currentId={roundUpId}
-          onNavigate={clearActionError}
-          // Failures show through actionError; the sidebar has already put things back as they were.
-          onRename={(id, title) => rename(id, title).catch(() => {})}
-          onDelete={(id) =>
-            remove(id).then(
-              () => id === roundUpId && navigate('/', { replace: true }),
-              () => {},
-            )
-          }
-        />
-        {/* Keyed: each round-up opens with its pane closed and no tabs. */}
-        <AgentPaneProvider key={roundUpId ?? 'new'} agents={agents ?? NO_AGENTS}>
-          <SidebarInset className="h-dvh min-w-0 flex-row">
-            <div className="flex min-w-0 flex-1 flex-col">
-              <header className="flex items-center gap-2.5 px-4 py-3">
-                <SidebarTrigger className="text-muted-foreground" />
-                <div className="flex min-w-0 flex-1 items-baseline gap-2.5">
-                  <span className="truncate text-sm">{titleOf(current)}</span>
-                  {cwd && <span className="text-muted-foreground truncate font-mono text-xs">{shortPath(cwd)}</span>}
-                </div>
-                <AgentsButton />
-              </header>
+      {/* Keyed: each round-up opens with its pane closed and no tabs. */}
+      <AgentPaneProvider key={roundUpId ?? 'new'} agents={agents ?? NO_AGENTS}>
+        <div className="bg-canvas flex h-dvh gap-2.5 p-2.5 max-sm:p-0">
+          {!isMobile && navOpen && sidebar()}
+          {isMobile && (
+            <Sheet open={mobileNav} onOpenChange={setMobileNav}>
+              <SheetContent side="left" showCloseButton={false} className="w-[276px] border-0 bg-transparent p-2 shadow-none">
+                <SheetTitle className="sr-only">Round-ups</SheetTitle>
+                {sidebar('h-full w-full shadow-card')}
+              </SheetContent>
+            </Sheet>
+          )}
 
-              <Conversation key={roundUpId ?? 'new'} className="min-h-0 flex-1">
-                <ConversationContent className="mx-auto w-full max-w-3xl">
-                  {items.length === 0 ? (
-                    <ConversationEmptyState
-                      icon={<KelpieMark className="size-10" />}
-                      title="What are we working on?"
-                      description={cwd ? `Claude Code works in ${shortPath(cwd)}.` : undefined}
-                    />
+          <main aria-label="Chat" className="bg-background shadow-card flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl max-sm:rounded-none">
+            <header className="flex h-16 shrink-0 items-center gap-2.5 pr-4 pl-5">
+              {(isMobile || !navOpen) && (
+                <button
+                  type="button"
+                  onClick={() => (isMobile ? setMobileNav(true) : setNavOpen(true))}
+                  aria-label="Show sidebar"
+                  className="text-mu2 hover:bg-hov hover:text-fg -ml-2 flex size-[34px] items-center justify-center rounded-lg"
+                >
+                  <PanelLeftIcon className="size-[17px]" strokeWidth={1.7} />
+                </button>
+              )}
+              <span className="flex-1" />
+              <Search roundUps={roundUps} />
+              <AgentsButton />
+            </header>
+
+            <Conversation key={roundUpId ?? 'new'} className="min-h-0 flex-1">
+              <ConversationContent className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
+                {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} />}
+                {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
+                {items.map((item) =>
+                  item.role === 'user' ? (
+                    <div key={item.id} className="flex justify-end">
+                      <div className="bg-raise max-w-[78%] rounded-[20px] px-4 py-[11px] break-words whitespace-pre-wrap">{item.text}</div>
+                    </div>
                   ) : (
-                    items.map((item, i) => (
-                      <Message from={item.role} key={item.id} className={item.role === 'assistant' ? 'max-w-full' : undefined}>
-                        <MessageContent className={item.role === 'assistant' ? 'w-full' : undefined}>
-                          {item.role === 'user'
-                            ? <p className="whitespace-pre-wrap">{item.text}</p>
-                            : <AssistantParts parts={item.parts} streaming={busy && i === items.length - 1} />}
-                        </MessageContent>
-                      </Message>
-                    ))
-                  )}
-                  {working && <Shimmer className="text-sm">Working…</Shimmer>}
-                </ConversationContent>
-                <ConversationScrollButton />
-              </Conversation>
+                    <div key={item.id} className="flex min-w-0 flex-col gap-3.5">
+                      <AssistantParts parts={item.parts} streaming={busy && item === last} actor={actor} />
+                    </div>
+                  ),
+                )}
+                {working && <Shimmer className="text-sm">Working…</Shimmer>}
+              </ConversationContent>
+              <ConversationScrollButton />
+            </Conversation>
 
-              <div className="mx-auto w-full max-w-3xl px-4 pb-4">
-                {/* The plan sits outside the chat flow, always in view while agents work. */}
-                {agents?.length ? <PlanDock /> : <TodoDock todos={todos} />}
-                {(actionError ?? error ?? listError) && <p className="text-destructive mb-2 text-sm">{actionError ?? error ?? listError}</p>}
-                <PromptInputProvider>
-                  <Composer status={status} send={send} interrupt={interrupt} />
-                </PromptInputProvider>
-                {/* Every round-up runs on Claude Code for now. */}
-                <LimitHint harness="claude-code" />
-              </div>
+            <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
+              {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
+              {/* The plan sits outside the chat flow, always in view while agents work. */}
+              {agents?.length ? <PlanDock /> : <TodoDock todos={todos} />}
+              <Composer status={status} busy={busy} send={send} interrupt={interrupt} model={model} onModel={changeModel} />
             </div>
-            <AgentPaneSlot />
-          </SidebarInset>
-        </AgentPaneProvider>
-      </SidebarProvider>
+          </main>
+          <AgentPaneSlot />
+        </div>
+      </AgentPaneProvider>
     </TooltipProvider>
   );
 }

@@ -26,6 +26,8 @@ export interface SessionInfo {
   role: 'orchestrator' | 'agent';
   /** A sub-agent allowed to change files. */
   writes: boolean;
+  /** The model asked for, if not the harness's default. */
+  model: string | undefined;
 }
 
 /** What subscribers receive. `index` is the event's position in the session log (stable across runs and restarts). */
@@ -209,7 +211,7 @@ export class Session {
   }
 
   info(): SessionInfo {
-    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes } = this.row;
+    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes, model } = this.row;
     return {
       id,
       title,
@@ -223,6 +225,7 @@ export class Session {
       parentId: parentId ?? undefined,
       role,
       writes,
+      model: model ?? undefined,
     };
   }
 
@@ -370,6 +373,16 @@ export class Session {
 
   rename(title: string): void {
     this.update({ title });
+  }
+
+  /**
+   * The model for its next process; undefined goes back to the default. An idle process is
+   * ended now so the next turn starts on it (resuming the same conversation); a busy one
+   * keeps its model until it ends.
+   */
+  setModel(model: string | undefined): void {
+    this.update({ model: model ?? null });
+    if (!this.working) void this.stop();
   }
 
   /** Ends the harness process, if any, once its last events are logged. */

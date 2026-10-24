@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
-import { chatStatus, settlePending } from '../src/lib/session-state.js';
+import { chatStatus, settlePending, unechoed } from '../src/lib/session-state.js';
 
 const ev = (kind: string, data: unknown, parentCallId?: string) => ({ kind, data, parentCallId }) as unknown as KelpieEvent;
 const echo = (text: string, parentCallId?: string) => ev('message', { role: 'user', text }, parentCallId);
@@ -25,6 +25,25 @@ describe('settlePending', () => {
   it('drops everything when the process exits, but keeps what a later run echoes after', () => {
     expect(settlePending(pending('lost', 'lost too'), [ev('process.exited', {})])).toEqual([]);
     expect(settlePending(pending('a'), [ev('process.exited', {}), echo('a')])).toEqual([]);
+  });
+});
+
+describe('unechoed', () => {
+  const sent = (text: string, id: number, after: number) => ({ id, text, after });
+
+  it('keeps a message until the log echoes it, counting only what was logged after it was sent', () => {
+    const log = [echo('earlier'), ev('activity', { busy: true })];
+    const first = sent('first', 1, 2);
+    expect(unechoed([first], log)).toEqual([first]);
+    // An echo from before the send (index 0) settles nothing; one after it does.
+    expect(unechoed([first], [...log, echo('first')])).toEqual([]);
+  });
+
+  it('settles messages in the order they were sent, and ignores the orchestrator’s own turns', () => {
+    const a = sent('a', 1, 0);
+    const b = sent('b', 2, 1);
+    const log = [ev('message', { role: 'user', text: 'brief', source: 'orchestrator' }), echo('a')];
+    expect(unechoed([a, b], log)).toEqual([b]);
   });
 });
 

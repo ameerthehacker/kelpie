@@ -31,7 +31,7 @@ const belongs = (m: Pending, view: string) => m.view === view || m.created === v
  * while one is in flight), so everything they touch on completion is
  * checked against the view on screen now.
  */
-export function useSession(id: string | undefined, onCreated: (id: string) => void) {
+export function useSession(id: string | undefined, onCreated: (id: string) => void, draft: { model?: string } = {}) {
   const [events, setEvents] = useState<KelpieEvent[]>([]);
   const [pending, setPending] = useState<Pending[]>([]);
   const [error, setError] = useState<string | undefined>();
@@ -50,6 +50,11 @@ export function useSession(id: string | undefined, onCreated: (id: string) => vo
     goneRef.current = goneView;
   });
   const creating = useRef<{ view: string; promise: Promise<string> } | undefined>(undefined);
+  // What a round-up created from the draft starts with, as chosen when the first message is sent.
+  const draftRef = useRef(draft);
+  useLayoutEffect(() => {
+    draftRef.current = draft;
+  });
   const nextPendingId = useRef(0);
 
   const markGone = useCallback((gone: string) => {
@@ -91,7 +96,8 @@ export function useSession(id: string | undefined, onCreated: (id: string) => vo
         let target = from.startsWith('draft:') || goneRef.current === from ? undefined : from;
         if (!target) {
           if (creating.current?.view !== from) {
-            const promise = api<{ id: string }>('POST', '/api/sessions').then(({ id: created }) => {
+            const { model } = draftRef.current;
+            const promise = api<{ id: string }>('POST', '/api/sessions', model ? { model } : {}).then(({ id: created }) => {
               // Every message sent from this view goes with it, and stays visible while the route changes.
               setPending((p) => p.map((m) => (m.view === from ? { ...m, created } : m)));
               // Only follow it there if the user is still looking at where they sent from.

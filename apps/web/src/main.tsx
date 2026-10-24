@@ -5,12 +5,9 @@ import { createBrowserRouter, Navigate } from 'react-router';
 import { RouterProvider } from 'react-router/dom';
 import './index.css';
 import { App } from './App';
+import { initTheme } from './lib/theme';
 
-// Follow the OS light/dark setting.
-const dark = window.matchMedia('(prefers-color-scheme: dark)');
-const applyTheme = () => document.documentElement.classList.toggle('dark', dark.matches);
-applyTheme();
-dark.addEventListener('change', applyTheme);
+initTheme();
 
 // `/` (a new round-up) and `/r/:roundUpId` share one mounted App, so creating a round-up from `/`
 // and moving to its URL keeps the conversation (and the message being sent) on screen.

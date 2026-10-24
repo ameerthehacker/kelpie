@@ -28,15 +28,15 @@ function Dock({ title, bar, summary, children }: { title: string; bar: ReactNode
     } catch {}
   };
   return (
-    <Collapsible open={open} onOpenChange={toggle} className="bg-card mb-2 rounded-xl border text-sm shadow-xs">
-      <CollapsibleTrigger className="hover:bg-muted/50 flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-left">
+    <Collapsible open={open} onOpenChange={toggle} className="bg-surf border-ln mb-2 rounded-[20px] border text-sm">
+      <CollapsibleTrigger className="hover:bg-hov flex w-full items-center gap-3 rounded-[20px] px-4 py-2.5 text-left">
         <span className="font-medium">{title}</span>
         {bar}
-        <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">{summary}</span>
-        <ChevronDownIcon className={cn('text-muted-foreground size-4 shrink-0 transition-transform', !open && '-rotate-90')} />
+        <span className="text-mu min-w-0 flex-1 truncate text-xs">{summary}</span>
+        <ChevronDownIcon className={cn('text-mu2 size-4 shrink-0 transition-transform', !open && '-rotate-90')} />
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="max-h-[min(18rem,35vh)] overflow-y-auto border-t px-1.5 py-1.5">{children}</div>
+        <div className="border-ln max-h-[min(18rem,35vh)] overflow-y-auto border-t px-2 py-2">{children}</div>
       </CollapsibleContent>
     </Collapsible>
   );
@@ -82,8 +82,8 @@ export function TodoDock({ todos }: { todos: TodoItem[] }) {
     <Dock
       title="Todos"
       bar={
-        <span aria-hidden="true" className="bg-muted-foreground/20 h-1.5 w-24 shrink-0 overflow-hidden rounded-full">
-          <span className="block h-full rounded-full bg-green-500" style={{ width: `${(done / todos.length) * 100}%` }} />
+        <span aria-hidden="true" className="bg-ln2 h-1 w-24 shrink-0 overflow-hidden rounded-full">
+          <span className="bg-done block h-full rounded-full" style={{ width: `${(done / todos.length) * 100}%` }} />
         </span>
       }
       summary={
@@ -106,11 +106,11 @@ function Segments({ agents }: { agents: AgentSummary[] }) {
         <span
           key={a.id}
           className={cn(
-            'h-1.5 flex-1 rounded-full',
-            a.status === 'done' && 'bg-green-500',
-            a.status === 'working' && 'animate-pulse bg-blue-500',
-            a.status === 'failed' && 'bg-destructive',
-            (a.status === 'idle' || a.status === 'stopped') && 'bg-muted-foreground/30',
+            'h-1 flex-1 rounded-full',
+            a.status === 'done' && 'bg-done',
+            a.status === 'working' && 'bg-run animate-k-pulse',
+            a.status === 'failed' && 'bg-fail',
+            (a.status === 'idle' || a.status === 'stopped') && 'bg-ln2',
           )}
         />
       ))}
@@ -126,14 +126,14 @@ function AgentRow({ agent: a, onOpen }: { agent: AgentSummary; onOpen: () => voi
         type="button"
         onClick={onOpen}
         title={`Open ${a.title} in the agent pane`}
-        className="hover:bg-muted/60 grid grid-cols-[18px_1fr_auto] items-center gap-2.5 rounded-lg px-2 py-1.5 text-left"
+        className="hover:bg-hov grid grid-cols-[18px_1fr_auto] items-center gap-2.5 rounded-xl px-2 py-1.5 text-left"
       >
         <HarnessMark harness={a.harness} />
         <span className="flex min-w-0 items-baseline gap-2">
-          <span className={cn('shrink-0 truncate', a.status === 'done' && 'text-muted-foreground')}>{a.title}</span>
-          <span className="text-muted-foreground truncate text-xs">{a.now || STATUS_LABEL[a.status]}</span>
+          <span className={cn('shrink-0 truncate', a.status === 'done' ? 'text-mu' : 'text-fg')}>{a.title}</span>
+          <span className="text-mu truncate text-xs">{a.now || STATUS_LABEL[a.status]}</span>
         </span>
-        <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+        <span className="text-mu2 flex items-center gap-1.5 text-xs">
           {a.todos.length > 0 && (
             <span className="font-mono">
               {done}/{a.todos.length}
@@ -142,7 +142,7 @@ function AgentRow({ agent: a, onOpen }: { agent: AgentSummary; onOpen: () => voi
           <StatusDot status={a.status} />
         </span>
       </button>
-      {a.todos.length > 0 && <TodoList todos={a.todos} label={`${a.title}’s todos`} className="mb-1 ml-[33px] border-l pl-3" />}
+      {a.todos.length > 0 && <TodoList todos={a.todos} label={`${a.title}’s todos`} className="border-ln mb-1.5 ml-[33px] border-l pt-0.5 pl-3" />}
     </li>
   );
 }

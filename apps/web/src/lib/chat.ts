@@ -12,17 +12,19 @@ export interface ToolView {
   delta?: { added: number; removed: number };
   /** One-line summaries of what a sub-agent spawned by this call did. */
   steps: string[];
+  /** When it started (ISO). */
+  ts: string;
 }
 
 export type AssistantPart =
-  | { type: 'text'; text: string }
-  | { type: 'reasoning'; text: string }
+  | { type: 'text'; text: string; ts: string }
+  | { type: 'reasoning'; text: string; ts: string }
   | ToolView
   /** A sub-agent the orchestrator started (or tried to). */
   | SpawnView
   /** Sub-agents Kelpie told the orchestrator about. */
-  | { type: 'agents'; agents: AgentUpdate[] }
-  | { type: 'notice'; tone: 'error' | 'info'; text: string };
+  | { type: 'agents'; agents: AgentUpdate[]; ts: string }
+  | { type: 'notice'; tone: 'error' | 'info'; text: string; ts: string };
 
 export interface SpawnView {
   type: 'spawn';
@@ -37,8 +39,11 @@ export interface SpawnView {
 
 const SPAWN_TOOL = 'mcp__kelpie__spawn_agent';
 
+/** Who sent a turn: the person, the orchestrator (to its sub-agent), or Kelpie. */
+export type Sender = NonNullable<EventOf<'message'>['data']['source']>;
+
 export type ChatItem =
-  | { role: 'user'; id: string; text: string }
+  | { role: 'user'; id: string; text: string; ts?: string; source?: Sender }
   | { role: 'assistant'; id: string; parts: AssistantPart[] };
 
 const NOTIFICATION_OPEN = '<kelpie-notification>';
@@ -70,12 +75,12 @@ export function agentsFromText(text: string): AgentUpdate[] {
  * A turn Kelpie sent the orchestrator itself: agent updates, or a note (a restart) as one line.
  * The echo's `agents` leave out a report the text already carries in full.
  */
-function kelpieTurn(data: EventOf<'message'>['data']): AssistantPart {
+function kelpieTurn(data: EventOf<'message'>['data'], ts: string): AssistantPart {
   const parsed = agentsFromText(data.text);
   const agents = data.agents?.map((a) => ({ ...a, report: a.report ?? parsed.find((p) => p.agentId === a.agentId)?.report ?? '' })) ?? parsed;
-  if (agents.length) return { type: 'agents', agents };
+  if (agents.length) return { type: 'agents', agents, ts };
   const note = data.text.replace(NOTIFICATION_OPEN, '').trim().split('\n')[0] ?? '';
-  return { type: 'notice', tone: 'info', text: note };
+  return { type: 'notice', tone: 'info', text: note, ts };
 }
 
 /** Kelpie's own turns. Logs from before echoes carried `source` only have the tag to go by. */
@@ -108,13 +113,14 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
     switch (ev.kind) {
       case 'message':
         // Turns Kelpie sent itself (notifications, restarts) are not the person speaking.
-        if (ev.data.role === 'user' && fromKelpie(ev.data)) assistant(ev.id).push(kelpieTurn(ev.data));
-        else if (ev.data.role === 'user') items.push({ role: 'user', id: ev.id, text: ev.data.text });
-        else assistant(ev.id).push({ type: 'text', text: ev.data.text });
+        if (ev.data.role === 'user' && fromKelpie(ev.data)) assistant(ev.id).push(kelpieTurn(ev.data, ev.ts));
+        else if (ev.data.role === 'user')
+          items.push({ role: 'user', id: ev.id, text: ev.data.text, ts: ev.ts, ...(ev.data.source ? { source: ev.data.source } : {}) });
+        else assistant(ev.id).push({ type: 'text', text: ev.data.text, ts: ev.ts });
         break;
       case 'thinking':
         // Claude Code withholds thinking text; an empty block has nothing to show.
-        if (!ev.data.redacted) assistant(ev.id).push({ type: 'reasoning', text: ev.data.text });
+        if (!ev.data.redacted) assistant(ev.id).push({ type: 'reasoning', text: ev.data.text, ts: ev.ts });
         break;
       case 'tool.started': {
         // Todo lists live in the agent pane, by agent, not scattered through the chat.
@@ -126,7 +132,7 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
           assistant(ev.id).push(view);
           break;
         }
-        const view: ToolView = { type: 'tool', ...ev.data, state: 'running', steps: [] };
+        const view: ToolView = { type: 'tool', ...ev.data, state: 'running', steps: [], ts: ev.ts };
         tools.set(view.callId, view);
         assistant(ev.id).push(view);
         break;
@@ -146,8 +152,8 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
         break;
       }
       case 'turn.ended':
-        if (ev.data.status === 'failed') assistant(ev.id).push({ type: 'notice', tone: 'error', text: ev.data.error ?? 'The turn failed.' });
-        if (ev.data.status === 'interrupted') assistant(ev.id).push({ type: 'notice', tone: 'info', text: 'Interrupted.' });
+        if (ev.data.status === 'failed') assistant(ev.id).push({ type: 'notice', tone: 'error', text: ev.data.error ?? 'The turn failed.', ts: ev.ts });
+        if (ev.data.status === 'interrupted') assistant(ev.id).push({ type: 'notice', tone: 'info', text: 'Interrupted.', ts: ev.ts });
         break;
       case 'process.exited':
         // Tools still open when the process is gone will never finish, even if a later run resumes the session.
@@ -155,7 +161,7 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
         spawns.forEach((s) => s.state === 'running' && (s.state = 'error'));
         if (ev.data.code) {
           const detail = ev.data.stderrTail.trim().split('\n').slice(-3).join('\n');
-          assistant(ev.id).push({ type: 'notice', tone: 'error', text: `Agent process exited with code ${ev.data.code}${detail ? `: ${detail}` : ''}` });
+          assistant(ev.id).push({ type: 'notice', tone: 'error', text: `Agent process exited with code ${ev.data.code}${detail ? `: ${detail}` : ''}`, ts: ev.ts });
         }
         break;
     }

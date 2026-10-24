@@ -1,21 +1,27 @@
-import { ListIcon, PanelRightCloseIcon, XIcon } from 'lucide-react';
+import { format } from 'date-fns';
+import { ArrowUpIcon, ChevronRightIcon, ExternalLinkIcon, ListIcon, PauseIcon, SearchIcon, XIcon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import type { KelpieEvent } from '@kelpie/protocol';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { HarnessMark } from '@/components/harness-mark';
+import { MessageResponse } from '@/components/ai-elements/message';
+import { EventLine } from '@/components/chat/events';
+import { ShowCommandsToggle, StepRow } from '@/components/chat/steps';
 import { useEventLog } from '@/hooks/use-agents';
 import { useNow } from '@/hooks/use-now';
-import { byAttention, elapsed, liveLog, STATUS_LABEL, type AgentSummary, type LogKind } from '@/lib/agents';
+import { byAttention, elapsed, STATUS_LABEL, STATUS_ORDER, type AgentStatus, type AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
+import { buildChat } from '@/lib/chat';
+import { unechoed, type SentMessage } from '@/lib/session-state';
+import { harnessOf, modelLabel } from '@/lib/harnesses';
 import { roundUpPath } from '@/lib/round-ups';
 import { cn } from '@/lib/utils';
-import { HarnessMark } from '@/components/harness-mark';
-import { harnessOf } from '@/lib/harnesses';
 import { StatusDot, TodoList } from './agent-bits';
 import { useAgentPane } from './pane-state';
 
-/** The right-hand pane of an orchestrator round-up: all its agents, and a tab per agent opened. */
+const iconButton = 'text-mu2 hover:bg-hov hover:text-fg flex size-8 shrink-0 items-center justify-center rounded-full';
+
+/** The right-hand card of an orchestrator round-up: all its agents, and a tab per agent opened. */
 export function AgentPane({ agents }: { agents: AgentSummary[] }) {
   const pane = useAgentPane()!;
   const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
@@ -25,30 +31,30 @@ export function AgentPane({ agents }: { agents: AgentSummary[] }) {
   return (
     <section
       aria-label="Agent pane"
-      className="bg-background fixed inset-y-0 right-0 z-40 flex w-full max-w-lg min-w-0 flex-col border-l lg:static lg:z-auto lg:w-[32rem] lg:max-w-[40vw] lg:shrink-0"
+      className="bg-background shadow-card fixed inset-2 z-40 flex min-w-0 flex-col overflow-hidden rounded-3xl sm:left-auto sm:w-[30rem] lg:static lg:z-auto lg:w-auto lg:flex-[0_1_470px]"
     >
-      <div role="tablist" aria-label="Open agents" className="flex items-center gap-0.5 overflow-x-auto border-b pt-2 pr-2 pl-2.5">
+      <div role="tablist" aria-label="Open agents" className="flex items-center gap-1 overflow-x-auto px-2.5 pt-2.5">
         <button
           type="button"
           role="tab"
           aria-selected={!active}
-          aria-label="All agents"
           onClick={pane.showList}
-          className={cn('text-muted-foreground hover:text-foreground flex size-10 shrink-0 items-center justify-center', !active && 'text-foreground shadow-[inset_0_-2px_0_currentColor]')}
+          className={cn('flex h-[34px] shrink-0 items-center gap-[7px] rounded-full px-3 text-[13px]', active ? 'text-mu hover:text-fg' : 'bg-raise text-fg')}
         >
-          <ListIcon className="size-4" />
+          <ListIcon className="size-3.5" />
+          All
         </button>
         {tabs.map((id) => {
           const a = byId.get(id)!;
           const on = id === active?.id;
           return (
-            <span key={id} className={cn('flex shrink-0 items-center', on && 'shadow-[inset_0_-2px_0_var(--foreground)]')}>
+            <span key={id} className={cn('flex shrink-0 items-center rounded-full', on && 'bg-raise')}>
               <button
                 type="button"
                 role="tab"
                 aria-selected={on}
                 onClick={() => pane.openAgent(id)}
-                className={cn('hover:text-foreground flex h-10 items-center gap-1.5 pr-1.5 pl-3 text-[13px] whitespace-nowrap', on ? 'text-foreground' : 'text-muted-foreground')}
+                className={cn('flex h-[34px] items-center gap-2 pr-1 pl-3 text-[13px] whitespace-nowrap', on ? 'text-fg' : 'text-mu hover:text-fg')}
               >
                 <StatusDot status={a.status} />
                 <span className="max-w-40 truncate">{a.title}</span>
@@ -57,227 +63,389 @@ export function AgentPane({ agents }: { agents: AgentSummary[] }) {
                 type="button"
                 onClick={() => pane.closeTab(id)}
                 aria-label={`Close ${a.title}`}
-                className="text-muted-foreground hover:bg-muted hover:text-foreground mr-1.5 flex size-[22px] items-center justify-center rounded"
+                className="text-mu2 hover:text-fg mr-[5px] flex size-[22px] items-center justify-center rounded-full"
               >
-                <XIcon className="size-3" />
+                <XIcon className="size-[11px]" strokeWidth={2.4} />
               </button>
             </span>
           );
         })}
         <span className="flex-1" />
-        <button
-          type="button"
-          onClick={pane.close}
-          aria-label="Close pane"
-          className="text-muted-foreground hover:bg-muted hover:text-foreground mb-1 flex size-8 shrink-0 items-center justify-center rounded-md"
-        >
-          <PanelRightCloseIcon className="size-4" />
+        <button type="button" onClick={pane.close} aria-label="Close pane" className={iconButton}>
+          <XIcon className="size-[15px]" />
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">{active ? <AgentView key={active.id} agent={active} /> : <AgentList agents={agents} />}</div>
+      <div className="flex min-h-0 flex-1 flex-col">{active ? <AgentView key={active.id} agent={active} /> : <AgentList agents={agents} />}</div>
     </section>
   );
 }
 
+const GROUP_LABEL: Record<AgentStatus, string> = { failed: 'Failed', working: 'Working', stopped: 'Stopped', idle: 'Idle', done: 'Done' };
+const FLEET: Record<AgentStatus, string> = { failed: 'bg-fail', working: 'bg-run', stopped: 'bg-ln2', idle: 'bg-ln2', done: 'bg-done' };
+const PER_GROUP = 6;
+
+/** Every agent: a filter, status chips, the fleet map (one square each), and the agents grouped by status. */
 function AgentList({ agents }: { agents: AgentSummary[] }) {
   const pane = useAgentPane()!;
   const now = useNow(10_000);
+  const [q, setQ] = useState('');
+  const [filter, setFilter] = useState<AgentStatus | 'all'>('all');
+  const [collapsed, setCollapsed] = useState<Partial<Record<AgentStatus, boolean>>>({});
+  const [showAll, setShowAll] = useState<Partial<Record<AgentStatus, boolean>>>({});
   const sorted = [...agents].sort(byAttention);
-  return (
-    <div className="flex flex-col px-3 py-3.5">
-      <div className="text-muted-foreground px-2.5 pt-1 pb-2.5 text-xs">All agents in this round-up</div>
-      {sorted.length === 0 && <p className="text-muted-foreground px-2.5 text-sm">No agents yet. They appear here as the orchestrator starts them.</p>}
-      {sorted.map((a) => (
-        <button
-          key={a.id}
-          type="button"
-          onClick={() => pane.openAgent(a.id)}
-          className="hover:bg-muted/60 grid min-h-14 grid-cols-[18px_1fr_auto] items-center gap-3 rounded-lg px-2.5 py-2 text-left"
-        >
-          <HarnessMark harness={a.harness} />
-          <span className="flex min-w-0 flex-col">
-            <span className={cn('truncate text-sm', a.status === 'done' && 'text-muted-foreground')}>{a.title}</span>
-            <span className="text-muted-foreground truncate text-[13px]">{a.now || STATUS_LABEL[a.status]}</span>
-          </span>
-          <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
-            {a.status === 'working' ? elapsed(a, now) : STATUS_LABEL[a.status].toLowerCase()}
-            <StatusDot status={a.status} />
-          </span>
-        </button>
-      ))}
-    </div>
+  const count = (s: AgentStatus) => agents.filter((a) => a.status === s).length;
+  const query = q.trim().toLowerCase();
+  const matches = (a: AgentSummary) => (filter === 'all' || a.status === filter) && (!query || a.title.toLowerCase().includes(query));
+  const chips = [['all', 'All', agents.length] as const, ...STATUS_ORDER.map((s) => [s, GROUP_LABEL[s], count(s)] as const)].filter(
+    ([key, , n]) => key === 'all' || n > 0,
   );
-}
-
-const KIND_CLASS: Partial<Record<LogKind, string>> = {
-  edit: 'text-blue-600 dark:text-blue-400',
-  bash: 'text-violet-600 dark:text-violet-400',
-  done: 'text-green-600 dark:text-green-500',
-  fail: 'text-destructive',
-  task: 'text-amber-600 dark:text-amber-400',
-  you: 'text-amber-600 dark:text-amber-400',
-};
-
-function AgentView({ agent: a }: { agent: AgentSummary }) {
-  const now = useNow(10_000);
-  const { events, error } = useEventLog(a.id);
-  const log = useMemo(() => liveLog(events), [events]);
-  const h = harnessOf(a.harness);
+  const groups = STATUS_ORDER.map((status) => ({ status, rows: sorted.filter((a) => a.status === status && matches(a)) })).filter((g) => g.rows.length > 0);
 
   return (
-    <div className="flex min-h-full flex-col">
-      <div className="flex flex-col gap-1 px-6 pt-5 pb-3.5">
-        <div className="flex items-center gap-2.5">
-          <HarnessMark harness={a.harness} size="lg" />
-          <h2 className="text-lg font-medium">{a.title}</h2>
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pt-4 pb-3">
+      <label className="bg-chip flex h-10 shrink-0 items-center gap-2 rounded-full px-3.5">
+        <SearchIcon className="text-mu2 size-3.5 shrink-0" />
+        <span className="sr-only">Filter agents</span>
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={`Filter ${agents.length} agent${agents.length === 1 ? '' : 's'}…`}
+          className="text-fg min-w-0 flex-1 bg-transparent text-sm outline-none"
+        />
+      </label>
+
+      <div role="radiogroup" aria-label="Status filter" className="flex flex-wrap gap-1.5">
+        {chips.map(([key, label, n]) => {
+          const on = filter === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              onClick={() => setFilter(key)}
+              className={cn('flex h-[30px] items-center gap-1.5 rounded-full px-[11px] text-[13px]', on ? 'bg-fg text-background' : 'bg-chip text-fg2 hover:bg-raise')}
+            >
+              {label}
+              <span className="font-mono text-[11px] opacity-75">{n}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex flex-col gap-2.5">
+        <div className="text-mu2 flex items-baseline justify-between text-xs">
+          <span>Fleet</span>
+          <span>
+            {count('done')} of {agents.length} done
+          </span>
         </div>
-        <div className="text-muted-foreground flex flex-wrap items-center gap-x-1.5 text-[13px]">
-          <StatusDot status={a.status} />
-          {[STATUS_LABEL[a.status], h.name, a.model, a.writes ? 'can edit' : 'read-only', elapsed(a, now)].filter(Boolean).join(' · ')}
+        <div role="group" aria-label="Fleet map, one square per agent" className="flex flex-wrap gap-[3px]">
+          {sorted.map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              onClick={() => pane.openAgent(a.id)}
+              aria-label={`${a.title}: ${STATUS_LABEL[a.status]}`}
+              title={`${a.title} — ${STATUS_LABEL[a.status]}`}
+              className={cn('size-[11px] rounded-[3px]', FLEET[a.status], a.status === 'working' && 'animate-k-pulse', !matches(a) && 'opacity-20')}
+            />
+          ))}
         </div>
       </div>
-      {a.now && <p className="px-6 pb-4 text-[15px]">{a.now}</p>}
 
-      <section aria-label="Its todos" className="flex flex-col gap-2 border-t px-6 py-4">
-        <div className="text-muted-foreground text-xs">Its todos</div>
-        {a.todos.length === 0 ? <p className="text-muted-foreground text-sm">No todo list yet.</p> : <TodoList todos={a.todos} className="gap-1.5" />}
-      </section>
-
-      <LiveLog events={events} lines={log} error={error} />
-      <AgentControls agent={a} />
+      <div className="-mx-1.5 flex flex-col gap-2.5">
+        {agents.length === 0 && <p className="text-mu px-2.5 text-sm">No agents yet. They appear here as Kelpie starts them.</p>}
+        {agents.length > 0 && groups.length === 0 && <p className="text-mu px-2.5 py-2 text-sm">No agents match.</p>}
+        {groups.map(({ status, rows }) => {
+          // Done agents start folded away when others are still moving; a search or a status
+          // filter always shows what it found.
+          const folded = collapsed[status] ?? (status === 'done' && groups.length > 1);
+          const open = !folded || !!query || filter === status;
+          const shown = showAll[status] ? rows : rows.slice(0, PER_GROUP);
+          return (
+            <div key={status} className="flex flex-col">
+              <button
+                type="button"
+                aria-expanded={open}
+                onClick={() => setCollapsed((c) => ({ ...c, [status]: open }))}
+                className="text-mu hover:bg-hov flex h-8 items-center gap-2 rounded-lg px-2 text-left text-xs"
+              >
+                <ChevronRightIcon className={cn('size-[11px] transition-transform', open && 'rotate-90')} strokeWidth={2.6} />
+                <StatusDot status={status} />
+                {GROUP_LABEL[status]}
+                <span className="text-mu2 font-mono text-[11px]">{rows.length}</span>
+              </button>
+              {open && (
+                <div className="flex flex-col">
+                  {shown.map((a) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => pane.openAgent(a.id)}
+                      className="hover:bg-hov grid min-h-12 grid-cols-[18px_1fr_auto] items-center gap-3 rounded-xl px-2.5 py-1.5 text-left"
+                    >
+                      <HarnessMark harness={a.harness} />
+                      <span className="flex min-w-0 flex-col">
+                        <span className={cn('truncate text-sm', a.status === 'done' || a.status === 'idle' ? 'text-mu' : 'text-fg')}>{a.title}</span>
+                        <span className="text-mu truncate text-xs">{a.now || STATUS_LABEL[a.status]}</span>
+                      </span>
+                      <span className="text-mu2 text-xs">{a.status === 'working' ? elapsed(a, now) : STATUS_LABEL[a.status].toLowerCase()}</span>
+                    </button>
+                  ))}
+                  {shown.length < rows.length && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAll((s) => ({ ...s, [status]: true }))}
+                      className="text-mu hover:text-fg ml-10 h-8 self-start text-[13px]"
+                    >
+                      Show all {rows.length}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-function LiveLog({ events, lines, error }: { events: KelpieEvent[]; lines: ReturnType<typeof liveLog>; error: string | undefined }) {
+/** One agent: who and how it is, what it is doing right now, its todos, its timeline, and a line to it. */
+function AgentView({ agent: a }: { agent: AgentSummary }) {
+  const navigate = useNavigate();
+  const now = useNow(10_000);
+  const [error, setError] = useState<string | undefined>();
+  const log = useEventLog(a.id);
+  // Messages sent from the pane show at once; the harness only echoes one when it takes it in.
+  const [sent, setSent] = useState<SentMessage[]>([]);
+  const pending = useMemo(() => unechoed(sent, log.events), [sent, log.events]);
+  const done = a.todos.filter((t) => t.status === 'completed').length;
+  const pause = () => api('POST', `/api/sessions/${a.id}/interrupt`).catch((err) => setError((err as Error).message));
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex max-h-[55%] shrink-0 flex-col gap-4 overflow-y-auto px-[22px] pt-5 pb-[18px]">
+        <div className="flex items-start gap-3">
+          <HarnessMark harness={a.harness} size="lg" className="mt-0.5" />
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <h2 className="font-heading text-2xl leading-[1.1] font-semibold tracking-[-0.03em]">{a.title}</h2>
+            <div className="text-mu flex flex-wrap items-center gap-[7px] text-[13px]">
+              <StatusDot status={a.status} />
+              {STATUS_LABEL[a.status]}
+              <span className="text-fa">·</span>
+              {[harnessOf(a.harness).name, a.model && modelLabel(a.model)].filter(Boolean).join(' ')}
+              <span className="text-fa">·</span>
+              {a.writes ? 'can edit' : 'read-only'}
+              <span className="text-fa">·</span>
+              {elapsed(a, now)}
+            </div>
+          </div>
+          <div className="flex gap-0.5">
+            <button type="button" onClick={pause} disabled={a.status !== 'working'} aria-label="Pause agent" title="Pause" className={cn(iconButton, 'disabled:opacity-40')}>
+              <PauseIcon className="size-3.5" strokeWidth={2.2} />
+            </button>
+            <button type="button" onClick={() => navigate(roundUpPath(a.id))} aria-label="Open full session" title="Open full session" className={iconButton}>
+              <ExternalLinkIcon className="size-3.5" strokeWidth={2.2} />
+            </button>
+          </div>
+        </div>
+
+        <div className="bg-well flex items-start gap-2.5 rounded-[14px] px-3.5 py-3">
+          <StatusDot status={a.status} className="mt-[7px]" />
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-mu2 text-xs">Right now</span>
+            <span className="text-[15px] leading-[1.45] break-words">{a.now || STATUS_LABEL[a.status]}</span>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <div className="text-mu2 flex items-center gap-2.5 text-xs">
+            <span>Todos</span>
+            <div className="bg-ln2 h-1 flex-1 overflow-hidden rounded-full">
+              <div className="bg-done h-full rounded-full" style={{ width: `${a.todos.length ? (done / a.todos.length) * 100 : 0}%` }} />
+            </div>
+            <span className="font-mono text-[11px]">
+              {done}/{a.todos.length}
+            </span>
+          </div>
+          {a.todos.length === 0 ? <p className="text-mu text-[13px]">No todo list yet.</p> : <TodoList todos={a.todos} />}
+        </div>
+        {error && <p className="text-fail text-xs">{error}</p>}
+      </div>
+
+      <AgentTimeline agent={a} events={log.events} error={log.error} pending={pending} />
+      <AgentMessage
+        agent={a}
+        onSend={(text) => {
+          const message = { id: Date.now() + Math.random(), text, after: log.events.length };
+          setSent((s) => [...unechoed(s, log.events), message]);
+          return () => setSent((s) => s.filter((m) => m !== message));
+        }}
+      />
+    </div>
+  );
+}
+
+/** What the agent did and what was said to it, as the design's activity and message bubbles. */
+function AgentTimeline({ agent: a, events, error, pending }: { agent: AgentSummary; events: KelpieEvent[]; error: string | undefined; pending: SentMessage[] }) {
+  const items = useMemo(() => buildChat(events), [events]);
   const end = useRef<HTMLDivElement>(null);
-  // Follow the newest line, as a tail would. A block body: scrollIntoView may return a promise,
+  // Follow the newest entry, as a tail would. A block body: scrollIntoView may return a promise,
   // and anything an effect returns is taken for its cleanup.
   useEffect(() => {
     end.current?.scrollIntoView({ block: 'nearest' });
-  }, [lines.length]);
+  }, [items, pending.length]);
+  const time = (ts?: string) => (ts ? format(new Date(ts), 'HH:mm') : '');
+
   return (
-    <section aria-label="Live log" className="flex flex-1 flex-col gap-1 border-t px-6 py-4 font-mono text-xs">
-      <div className="text-muted-foreground pb-1 font-sans text-xs">Live</div>
-      {error && <p className="text-destructive font-sans text-sm">{error}</p>}
-      {events.length === 0 && !error && <p className="text-muted-foreground font-sans text-sm">Loading…</p>}
-      {lines.map((l) => (
-        <div key={l.id} className="grid grid-cols-[40px_44px_1fr] gap-2.5">
-          <span className="text-muted-foreground/70">{l.time}</span>
-          <span className={KIND_CLASS[l.kind] ?? 'text-muted-foreground'}>{l.kind}</span>
-          <span className="truncate" title={l.text}>
-            {l.text}
-            {l.delta && (
-              <>
-                {' '}
-                <span className="text-green-600 dark:text-green-500">+{l.delta.added}</span>{' '}
-                <span className="text-red-600 dark:text-red-500">−{l.delta.removed}</span>
-              </>
-            )}
-          </span>
-        </div>
-      ))}
-      <div ref={end} />
+    <section aria-label="Activity and messages" className="border-ln flex min-h-0 flex-1 flex-col border-t">
+      <div className="flex items-center justify-between px-[22px] pt-3 pb-0.5">
+        <span className="text-mu2 text-xs">Activity and messages</span>
+        <ShowCommandsToggle />
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-[22px] pt-3 pb-4">
+        {error && <p className="text-fail text-sm">{error}</p>}
+        {events.length === 0 && !error && <p className="text-mu text-sm">Loading…</p>}
+        {items.map((item) =>
+          item.role === 'user' ? (
+            <div key={item.id} className="flex flex-col items-end gap-1">
+              <div className="text-mu2 text-xs">
+                {item.source === 'orchestrator' ? 'Kelpie' : 'You'} · {time(item.ts)}
+              </div>
+              <div className="bg-raise max-w-[85%] rounded-2xl px-3.5 py-[9px] text-sm leading-[1.45] break-words whitespace-pre-wrap">{item.text}</div>
+            </div>
+          ) : (
+            item.parts.map((p, i) => {
+              const key = `${item.id}-${i}`;
+              switch (p.type) {
+                case 'tool':
+                  return <StepRow key={key} tool={p} />;
+                case 'text':
+                  return (
+                    <div key={key} className="flex flex-col items-start gap-1">
+                      <div className="text-mu2 text-xs">
+                        {a.title} · {time(p.ts)}
+                      </div>
+                      <div className="bg-surf max-w-[92%] min-w-0 rounded-2xl px-3.5 py-[9px] text-sm leading-[1.45] shadow-[inset_0_0_0_1px_var(--ln2)] [&_h1]:text-[15px] [&_h2]:text-sm [&_h3]:text-sm [&_:is(h1,h2,h3)]:mt-3 [&_:is(h1,h2,h3)]:mb-1 [&_:is(h1,h2,h3)]:font-semibold [&>*>:first-child]:mt-0">
+                        <MessageResponse>{p.text}</MessageResponse>
+                      </div>
+                    </div>
+                  );
+                case 'notice':
+                  return (
+                    <EventLine key={key} tone={p.tone === 'error' ? 'fail' : 'muted'}>
+                      {p.text} · {time(p.ts)}
+                    </EventLine>
+                  );
+                case 'reasoning':
+                  return (
+                    <p key={key} className="text-mu text-sm whitespace-pre-wrap italic">
+                      {p.text}
+                    </p>
+                  );
+                default:
+                  return null;
+              }
+            })
+          ),
+        )}
+        {pending.map((m) => (
+          <div key={m.id} className="flex flex-col items-end gap-1">
+            <div className="text-mu2 text-xs">You · sending…</div>
+            <div className="bg-raise max-w-[85%] rounded-2xl px-3.5 py-[9px] text-sm leading-[1.45] break-words whitespace-pre-wrap opacity-70">{m.text}</div>
+          </div>
+        ))}
+        <div ref={end} />
+      </div>
     </section>
   );
 }
 
-/** Talk to the agent directly: a nudge (its orchestrator hears the outcome when it next goes idle), pause, or open its whole session. */
-function AgentControls({ agent: a }: { agent: AgentSummary }) {
-  const navigate = useNavigate();
+/**
+ * A line straight to the agent; its orchestrator hears how it turns out when the agent next goes
+ * idle. `onSend` shows the message at once and returns how to take it back if sending fails.
+ */
+function AgentMessage({ agent: a, onSend }: { agent: AgentSummary; onSend: (text: string) => () => void }) {
   const [text, setText] = useState('');
   const [error, setError] = useState<string | undefined>();
-  const [sending, setSending] = useState(false);
 
-  const nudge = async (e: FormEvent) => {
+  // Each message goes on its own: the next can be typed and sent while one is still on its way.
+  const send = async (e: FormEvent) => {
     e.preventDefault();
     const message = text.trim();
     if (!message) return;
-    setSending(true);
     setError(undefined);
+    setText('');
+    const undo = onSend(message);
     try {
       await api('POST', `/api/sessions/${a.id}/messages`, { text: message });
-      setText('');
     } catch (err) {
+      undo();
+      setText((now) => now || message);
       setError((err as Error).message);
-    } finally {
-      setSending(false);
     }
   };
-  const pause = () => api('POST', `/api/sessions/${a.id}/interrupt`).catch((err) => setError((err as Error).message));
 
   return (
-    <form onSubmit={nudge} className="bg-background sticky bottom-0 flex flex-wrap items-center gap-2 border-t px-4 pt-3 pb-4 pl-6">
-      <label htmlFor="agent-nudge" className="sr-only">
-        Message this agent
-      </label>
-      <Input
-        id="agent-nudge"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Nudge or redirect this agent…"
-        disabled={sending}
-        className="h-9 min-w-0 flex-[1_1_200px]"
-      />
-      <Button type="button" variant="outline" size="sm" onClick={pause} disabled={a.status !== 'working'}>
-        Pause
-      </Button>
-      <Button type="button" variant="outline" size="sm" onClick={() => navigate(roundUpPath(a.id))}>
-        Full session
-      </Button>
-      {error && <p className="text-destructive w-full text-xs">{error}</p>}
+    <form onSubmit={send} className="border-ln flex flex-col gap-1.5 border-t px-3.5 pt-2.5 pb-3.5">
+      <div className="bg-chip flex items-center gap-1.5 rounded-full py-[5px] pr-[5px] pl-4">
+        <label htmlFor="agent-message" className="sr-only">
+          Message {a.title}
+        </label>
+        <input
+          id="agent-message"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={`Message ${a.title}…`}
+          className="text-fg h-[34px] min-w-0 flex-1 bg-transparent text-sm outline-none"
+        />
+        <button
+          type="submit"
+          aria-label="Send to this agent"
+          disabled={!text.trim()}
+          className="bg-acc text-accfg flex size-[34px] shrink-0 items-center justify-center rounded-full disabled:opacity-50"
+        >
+          <ArrowUpIcon className="size-3.5" strokeWidth={2.4} />
+        </button>
+      </div>
+      <p className={cn('px-2 text-xs', error ? 'text-fail' : 'text-mu2')}>{error ?? `Goes straight to ${a.title}. Kelpie hears how it turns out.`}</p>
     </form>
   );
 }
 
-/** The header's "Agents" toggle: a ring of the round-up's progress, then how many agents are done. */
+/** The header's agents button: who needs a look (failed), who is working, and how many in all. */
 export function AgentsButton() {
   const pane = useAgentPane();
   if (!pane || pane.agents.length === 0) return null;
   const listOn = pane.open && !pane.active;
-  const count = (status: AgentSummary['status']) => pane.agents.filter((a) => a.status === status).length;
-  const [done, working, failed] = [count('done'), count('working'), count('failed')];
+  const failed = pane.agents.filter((a) => a.status === 'failed').length;
+  const working = pane.agents.filter((a) => a.status === 'working').length;
   const total = pane.agents.length;
-  const said = [working && `${working} working`, failed && `${failed} failed`, `${done} of ${total} done`].filter(Boolean).join(', ');
   return (
     <button
       type="button"
       onClick={pane.toggleList}
       aria-pressed={listOn}
-      aria-label={`Agents: ${said}`}
-      title={said}
-      className={cn(
-        'hover:bg-muted flex h-8 shrink-0 items-center gap-2 rounded-full border px-3 text-[13px] transition-colors',
-        listOn && 'bg-muted border-foreground/25',
-      )}
+      className={cn('text-fg flex h-[34px] shrink-0 items-center gap-[9px] rounded-full pr-3.5 pl-3 text-[13px]', pane.open ? 'bg-raise' : 'bg-chip hover:bg-raise')}
     >
-      <ProgressRing total={total} done={done} failed={failed} working={working} />
-      Agents
-      <span className="text-muted-foreground font-mono text-xs">{done === total ? total : `${done}/${total}`}</span>
+      {failed > 0 && (
+        <span aria-label={`${failed} failed`} className="text-fail flex items-center gap-1.5 font-mono text-xs">
+          <StatusDot status="failed" />
+          {failed}
+        </span>
+      )}
+      {working > 0 && (
+        <span aria-label={`${working} working`} className="text-fg2 flex items-center gap-1.5 font-mono text-xs">
+          <StatusDot status="working" />
+          {working}
+        </span>
+      )}
+      <span>
+        {total} agent{total === 1 ? '' : 's'}
+      </span>
     </button>
-  );
-}
-
-/** Arcs around a ring in order: done (green), failed (red), working (blue, pulsing); the rest is track. */
-function ProgressRing({ total, done, failed, working }: { total: number; done: number; failed: number; working: number }) {
-  const r = 6;
-  const c = 2 * Math.PI * r;
-  let at = 0;
-  const arc = (n: number, className: string) => {
-    const len = (n / total) * c;
-    const el = n > 0 && (
-      <circle r={r} cx="8" cy="8" fill="none" strokeWidth="2.5" strokeDasharray={`${len} ${c}`} strokeDashoffset={-at} className={className} />
-    );
-    at += len;
-    return el;
-  };
-  return (
-    <svg aria-hidden="true" viewBox="0 0 16 16" className="size-4 shrink-0 -rotate-90">
-      <circle r={r} cx="8" cy="8" fill="none" strokeWidth="2.5" className="stroke-muted-foreground/25" />
-      {arc(done, 'stroke-green-500')}
-      {arc(failed, 'stroke-destructive')}
-      {arc(working, 'animate-pulse stroke-blue-500')}
-    </svg>
   );
 }
 

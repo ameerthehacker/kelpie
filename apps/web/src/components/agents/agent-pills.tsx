@@ -16,7 +16,7 @@ export function AgentPills({ spawns }: { spawns: SpawnView[] }) {
   return (
     <div className="flex flex-col gap-2">
       {started.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-2">
           {started.map((s) => {
             const agent = pane?.agents.find((a) => a.id === s.agentId);
             const focused = pane?.open && pane.active === s.agentId;
@@ -29,8 +29,9 @@ export function AgentPills({ spawns }: { spawns: SpawnView[] }) {
                 // The pane shows only agents it has loaded; any other opens on its own page.
                 onClick={() => (agent && pane ? pane.openAgent(agent.id) : s.agentId && navigate(roundUpPath(s.agentId)))}
                 className={cn(
-                  'hover:border-foreground/40 flex h-[30px] items-center gap-1.5 rounded-full border pr-2.5 pl-1.5 text-[13px] transition-colors disabled:opacity-60',
-                  focused ? 'border-foreground bg-muted' : 'text-foreground/85',
+                  'bg-chip hover:bg-raise flex h-[34px] items-center gap-2 rounded-full pr-3 pl-2 text-[13px] transition-colors disabled:opacity-60',
+                  focused ? 'text-fg shadow-[inset_0_0_0_1.5px_var(--acc)]' : 'text-fg2',
+                  !focused && agent?.status === 'failed' && 'shadow-[inset_0_0_0_1px_var(--fail)]',
                 )}
               >
                 <HarnessMark harness={agent?.harness ?? 'claude-code'} />
@@ -42,8 +43,8 @@ export function AgentPills({ spawns }: { spawns: SpawnView[] }) {
         </div>
       )}
       {refused.map((s) => (
-        <p key={s.callId} className="text-muted-foreground flex items-start gap-2 text-sm">
-          <XCircleIcon className="text-destructive mt-0.5 size-4 shrink-0" />
+        <p key={s.callId} className="text-mu flex items-start gap-2 text-sm">
+          <XCircleIcon className="text-fail mt-0.5 size-4 shrink-0" />
           <span>
             Couldn't start “{s.title}”{s.error ? `: ${s.error}` : '.'}
           </span>

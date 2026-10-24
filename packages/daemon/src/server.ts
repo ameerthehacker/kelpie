@@ -8,6 +8,11 @@ import { handleMcp } from './orchestrator/mcp.js';
 import type { Orchestrator } from './orchestrator/orchestrator.js';
 import type { SessionManager } from './sessions.js';
 
+
+const MODEL_ERROR = 'model must be a model name or alias, like "sonnet" or "claude-opus-5-5"';
+/** A model name or alias as the harness CLI takes it; never anything that could pass for a flag. */
+const isModel = (m: unknown): m is string => typeof m === 'string' && /^[A-Za-z0-9][\w.:\[\]-]{0,79}$/.test(m);
+
 export interface AppOptions {
   /** Built web UI to serve at `/`. */
   staticDir?: string;
@@ -89,12 +94,13 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   );
 
   app.post('/api/sessions', async (c) => {
-    const body = await jsonBody<{ cwd?: unknown }>(c);
+    const body = await jsonBody<{ cwd?: unknown; model?: unknown }>(c);
     if (body.cwd !== undefined && typeof body.cwd !== 'string') return c.json({ error: 'cwd must be a string' }, 400);
+    if (body.model !== undefined && !isModel(body.model)) return c.json({ error: MODEL_ERROR }, 400);
     // Relative to the daemon's default repo, not its process cwd (a package dir under `pnpm dev`).
     const cwd = resolve(sessions.defaultCwd, body.cwd ?? '.');
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) return c.json({ error: `not a directory: ${cwd}` }, 400);
-    return c.json(sessions.create(cwd).info(), 201);
+    return c.json(sessions.create(cwd, body.model ? { model: body.model } : {}).info(), 201);
   });
 
   app.get('/api/sessions/:id', (c) => {
@@ -112,10 +118,16 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   app.patch('/api/sessions/:id', async (c) => {
     const s = sessions.get(c.req.param('id'));
     if (!s) return c.json({ error: 'no such session' }, 404);
-    const body = await jsonBody<{ title?: unknown }>(c);
-    const title = typeof body.title === 'string' ? body.title.trim().replace(/\s+/g, ' ') : '';
-    if (!title || title.length > 200) return c.json({ error: 'title must be 1-200 characters' }, 400);
-    s.rename(title);
+    const body = await jsonBody<{ title?: unknown; model?: unknown }>(c);
+    if (body.title === undefined && body.model === undefined) return c.json({ error: 'nothing to change: send title or model' }, 400);
+    // Null puts the harness's default model back.
+    if (body.model !== undefined && body.model !== null && !isModel(body.model)) return c.json({ error: MODEL_ERROR }, 400);
+    if (body.title !== undefined) {
+      const title = typeof body.title === 'string' ? body.title.trim().replace(/\s+/g, ' ') : '';
+      if (!title || title.length > 200) return c.json({ error: 'title must be 1-200 characters' }, 400);
+      s.rename(title);
+    }
+    if (body.model !== undefined) s.setModel(body.model ?? undefined);
     return c.json(s.info());
   });
 

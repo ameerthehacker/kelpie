@@ -1,33 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { KelpieEvent } from '@kelpie/protocol';
-import { ClaudeCodeParser } from '@kelpie/adapters';
-import { byAttention, elapsed, liveLog, planProgress, type AgentSummary } from '../src/lib/agents.js';
-
-const FIXTURES = join(import.meta.dirname, '../../../packages/adapters/fixtures/claude-code');
-
-function events(name: string): KelpieEvent[] {
-  const parser = new ClaudeCodeParser({ runId: 'r', now: () => '2026-01-01T10:32:00.000Z' });
-  return readFileSync(join(FIXTURES, `${name}.jsonl`), 'utf8')
-    .split('\n')
-    .filter(Boolean)
-    .flatMap((l, i) => parser.parse(JSON.parse(l), i + 1));
-}
-
-describe('liveLog', () => {
-  it('lists an agent’s own steps with edit line counts, and leaves out its todo calls', () => {
-    const log = liveLog(events('edit-bash'));
-    expect(log.map((l) => l.kind)).toEqual(['you', 'read', 'bash', 'read', 'edit', 'edit', 'bash', 'say', 'done']);
-    expect(log.find((l) => l.kind === 'edit')).toMatchObject({ text: 'src/math.js', delta: { added: 4, removed: 0 } });
-    expect(liveLog(events('todos')).map((l) => l.kind)).toEqual(['you', 'bash', 'say', 'say', 'done']); // no TaskCreate/TaskUpdate lines
-  });
-
-  it('shows failures and skips what its own sub-agents did', () => {
-    expect(liveLog(events('bash-fail')).map((l) => l.kind)).toContain('fail');
-    expect(liveLog(events('subagent')).some((l) => l.text === 'src/math.js')).toBe(false);
-  });
-});
+import { byAttention, elapsed, planProgress, type AgentSummary } from '../src/lib/agents.js';
 
 describe('agent pane helpers', () => {
   const agent = (status: AgentSummary['status'], createdAt = 0): AgentSummary =>

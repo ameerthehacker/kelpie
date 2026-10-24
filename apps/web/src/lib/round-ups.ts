@@ -17,6 +17,8 @@ export interface RoundUp {
   /** Set on a sub-agent: the orchestrator round-up that spawned it. */
   parentId?: string;
   role?: 'orchestrator' | 'agent';
+  /** The model asked for; absent for the harness's default. */
+  model?: string;
 }
 
 export const NEW_TITLE = 'New round-up';
@@ -47,3 +49,16 @@ export function statusLine(r: RoundUp, now: number): { text: string; tone: Statu
 
 /** Most recently active first, as the daemon orders them. */
 export const byRecent = (a: RoundUp, b: RoundUp) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt;
+
+/**
+ * The line under a round-up's title: what its agents are up to ("2 working · 1 failed"),
+ * or, with none moving, whether they are all done; a round-up without agents says its own state.
+ */
+export function roundUpSummary(r: RoundUp, agents: readonly { status: string }[], now: number): string {
+  const when = relativeTime(r.updatedAt, now);
+  if (!agents.length) return r.busy ? 'Working' : statusLine(r, now).text;
+  const n = (status: string) => agents.filter((a) => a.status === status).length;
+  const moving = [n('working') && `${n('working')} working`, n('failed') && `${n('failed')} failed`].filter(Boolean);
+  if (moving.length) return moving.join(' · ');
+  return n('done') === agents.length ? `Done · ${when}` : `Idle · ${when}`;
+}

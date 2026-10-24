@@ -65,7 +65,7 @@ describe('buildChat', () => {
   });
 
   it('notes an interrupted turn', () => {
-    expect(partsOf('interrupt').at(-1)).toEqual({ type: 'notice', tone: 'info', text: 'Interrupted.' });
+    expect(partsOf('interrupt').at(-1)).toMatchObject({ type: 'notice', tone: 'info', text: 'Interrupted.' });
   });
 
   it('keeps a tool cut off by a dead process failed after a later run resumes the session', () => {
@@ -96,29 +96,29 @@ describe('orchestrator notifications', () => {
 
   it('shows a notification as agent updates, not as the person speaking', () => {
     const items = buildChat([{ ...base, id: 'n', seq: 0, kind: 'message', data: { role: 'user', text, sent: true, source: 'kelpie', agents } }]);
-    expect(items).toEqual([{ role: 'assistant', id: 'n', parts: [{ type: 'agents', agents }] }]);
+    expect(items).toEqual([{ role: 'assistant', id: 'n', parts: [{ type: 'agents', agents, ts: '2026-01-01T00:00:00.000Z' }] }]);
   });
 
   it('takes reports from the text when the echo leaves them out', () => {
     const slim = agents.map(({ report: _, ...a }) => a);
     const items = buildChat([{ ...base, id: 'n', seq: 0, kind: 'message', data: { role: 'user', text, sent: true, source: 'kelpie', agents: slim } }]);
-    expect(items).toEqual([{ role: 'assistant', id: 'n', parts: [{ type: 'agents', agents }] }]);
+    expect(items).toEqual([{ role: 'assistant', id: 'n', parts: [{ type: 'agents', agents, ts: '2026-01-01T00:00:00.000Z' }] }]);
   });
 
   it('reads the agents out of notifications logged before echoes carried them', () => {
     const items = buildChat([{ ...base, id: 'n', seq: 0, kind: 'message', data: { role: 'user', text, sent: true } }]);
-    expect(items).toEqual([{ role: 'assistant', id: 'n', parts: [{ type: 'agents', agents }] }]);
+    expect(items).toEqual([{ role: 'assistant', id: 'n', parts: [{ type: 'agents', agents, ts: '2026-01-01T00:00:00.000Z' }] }]);
   });
 
   it('shows a restart note as one line', () => {
     const note = '<kelpie-notification>\nKelpie restarted while you were working; your turn was cut off.\n</kelpie-notification>';
     const items = buildChat([{ ...base, id: 'n', seq: 0, kind: 'message', data: { role: 'user', text: note, sent: true, source: 'kelpie' } }]);
-    expect(items[0]).toEqual({ role: 'assistant', id: 'n', parts: [{ type: 'notice', tone: 'info', text: 'Kelpie restarted while you were working; your turn was cut off.' }] });
+    expect(items[0]).toEqual({ role: 'assistant', id: 'n', parts: [{ type: 'notice', tone: 'info', text: 'Kelpie restarted while you were working; your turn was cut off.', ts: '2026-01-01T00:00:00.000Z' }] });
   });
 
   it('keeps the person’s words as theirs, whatever they look like', () => {
     const text = '<kelpie-notification> not really';
-    expect(buildChat([{ ...base, id: 'u', seq: 0, kind: 'message', data: { role: 'user', text, sent: true, source: 'user' } }])).toEqual([{ role: 'user', id: 'u', text }]);
+    expect(buildChat([{ ...base, id: 'u', seq: 0, kind: 'message', data: { role: 'user', text, sent: true, source: 'user' } }])).toEqual([{ role: 'user', id: 'u', text, ts: '2026-01-01T00:00:00.000Z', source: 'user' }]);
   });
 });
 

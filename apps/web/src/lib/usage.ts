@@ -7,8 +7,8 @@ export type { HarnessUsage };
 
 /** The windows the design shows, in its order and words. */
 const WINDOWS = [
-  { key: 'five_hour', label: 'Usage limit', noun: 'usage limit' },
-  { key: 'seven_day', label: 'Weekly limit', noun: 'weekly limit' },
+  { key: 'five_hour', label: 'Usage limit', short: 'Usage', noun: 'usage limit' },
+  { key: 'seven_day', label: 'Weekly limit', short: 'Weekly', noun: 'weekly limit' },
 ];
 
 /** At or above this a meter turns amber and the composer warns. */
@@ -16,6 +16,8 @@ export const WARN_AT = 80;
 
 export interface Meter {
   label: string;
+  /** The sidebar's one-word label. */
+  short: string;
   noun: string;
   pct: number;
   warn: boolean;
@@ -43,12 +45,12 @@ export function resetText(resetsAt: Date, now: number): string {
  * only reports during a turn, so the old figure no longer holds.
  */
 export function metersOf(u: HarnessUsage, now: number): Meter[] {
-  return WINDOWS.flatMap(({ key, label, noun }) => {
+  return WINDOWS.flatMap(({ key, label, short, noun }) => {
     const w = u.usage.windows?.[key];
     if (!w) return [];
     const resetsAt = new Date(w.resetsAt);
     const pct = resetsAt.getTime() <= now ? 0 : Math.round(w.utilization * 100);
-    return [{ label, noun, pct, warn: pct >= WARN_AT, resetsAt, reset: resetText(resetsAt, now) }];
+    return [{ label, short, noun, pct, warn: pct >= WARN_AT, resetsAt, reset: resetText(resetsAt, now) }];
   });
 }
 

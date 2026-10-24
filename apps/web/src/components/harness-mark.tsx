@@ -4,13 +4,13 @@ import { cn } from '@/lib/utils';
 
 // Badge tints from the design canvas (Codex teal), with light-mode pairs.
 const TINT: Record<string, string> = {
-  codex: 'bg-[#DDF0F4] text-[#1D5F6E] dark:bg-[#1D2F35] dark:text-[#86D3E3]',
+  codex: 'bg-cxb text-cxf',
 };
 
 /** A harness at a glance: Claude's logo for Claude Code, a tinted two-letter mark for others. */
 export function HarnessMark({ harness, size = 'sm', className }: { harness: string; size?: 'sm' | 'lg'; className?: string }) {
   const h = harnessOf(harness);
-  const box = size === 'sm' ? 'size-[18px]' : 'size-6';
+  const box = size === 'sm' ? 'size-[18px]' : 'size-7';
   if (harness === 'claude-code') return <ClaudeLogo label={h.name} className={cn(box, size === 'sm' ? 'p-px' : 'p-0.5', className)} />;
   return (
     <span
@@ -19,7 +19,7 @@ export function HarnessMark({ harness, size = 'sm', className }: { harness: stri
       className={cn(
         'inline-flex shrink-0 items-center justify-center font-mono font-semibold tracking-tight',
         box,
-        size === 'sm' ? 'rounded-[5px] text-[9px]' : 'rounded-md text-[10px]',
+        size === 'sm' ? 'rounded-md text-[9px]' : 'rounded-[9px] text-[11px]',
         TINT[harness] ?? 'border',
         className,
       )}

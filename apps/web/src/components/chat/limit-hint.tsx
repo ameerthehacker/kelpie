@@ -10,8 +10,8 @@ export function LimitHint({ harness }: { harness: string }) {
   const hint = limitHint(useUsage().data?.find((u) => u.harness === harness), useNow());
   if (!hint) return null;
   return (
-    <p className="text-muted-foreground flex items-center gap-2 px-1 pt-2 text-xs">
-      <span aria-hidden="true" className="size-1.5 flex-none rotate-45 bg-amber-500" />
+    <p className="text-mu flex items-center justify-center gap-2 pt-2.5 text-xs">
+      <span aria-hidden="true" className="bg-wait size-[5px] flex-none rotate-45" />
       {hint}
     </p>
   );

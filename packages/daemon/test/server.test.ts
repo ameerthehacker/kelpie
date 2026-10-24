@@ -109,6 +109,19 @@ describe('round-up API', () => {
     expect((await app.request(`/api/sessions/${id}`, { method: 'DELETE', headers: local })).status).toBe(404);
   });
 
+  it('sets a round-up’s model when it is created, changes it, and puts the default back', async () => {
+    const { app } = setup();
+    const res = await app.request('/api/sessions', { method: 'POST', ...json({ model: 'opus' }) });
+    const { id, model } = (await res.json()) as { id: string; model?: string };
+    expect(model).toBe('opus');
+    const patch = (body: unknown) => app.request(`/api/sessions/${id}`, { method: 'PATCH', ...json(body) });
+    expect(await (await patch({ model: 'claude-sonnet-5-5' })).json()).toMatchObject({ model: 'claude-sonnet-5-5' });
+    expect(await (await patch({ model: null })).json()).not.toHaveProperty('model');
+    expect((await patch({ model: '--dangerously-skip-permissions' })).status).toBe(400);
+    expect((await app.request('/api/sessions', { method: 'POST', ...json({ model: 'a b' }) })).status).toBe(400);
+    expect((await patch({})).status).toBe(400);
+  });
+
   it('ends open event streams when the round-up is deleted', async () => {
     const { app } = setup();
     const id = await create(app);

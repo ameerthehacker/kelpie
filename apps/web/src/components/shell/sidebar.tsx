@@ -1,0 +1,242 @@
+import { MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, PencilIcon, PlusIcon, SunIcon, Trash2Icon } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router';
+import { HarnessMark } from '@/components/harness-mark';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useNow } from '@/hooks/use-now';
+import { useUsage } from '@/hooks/use-usage';
+import { harnessOf } from '@/lib/harnesses';
+import { roundUpPath, statusLine, titleOf, type RoundUp } from '@/lib/round-ups';
+import { setTheme, useTheme, type Theme } from '@/lib/theme';
+import { metersOf } from '@/lib/usage';
+import { cn } from '@/lib/utils';
+import { KelpieLogo, Wordmark } from './brand';
+
+interface RowProps {
+  roundUp: RoundUp;
+  active: boolean;
+  now: number;
+  onNavigate: () => void;
+  onRename: (id: string, title: string) => Promise<unknown>;
+  onDelete: (roundUp: RoundUp) => void;
+}
+
+/** A round-up in the list: its title, and a pulsing dot while it works. Rename and delete on its menu. */
+function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete }: RowProps) {
+  const [editing, setEditing] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  const status = statusLine(roundUp, now);
+
+  useEffect(() => {
+    if (editing) input.current?.select();
+  }, [editing]);
+
+  const save = () => {
+    const title = input.current?.value.trim();
+    setEditing(false);
+    if (title && title !== roundUp.title) void onRename(roundUp.id, title);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={input}
+        aria-label="Round-up title"
+        defaultValue={titleOf(roundUp)}
+        maxLength={200}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') save();
+          if (e.key === 'Escape') setEditing(false);
+        }}
+        className="bg-surf border-ln2 h-[38px] w-full rounded-[10px] border px-3 text-sm outline-none"
+      />
+    );
+  }
+
+  return (
+    <div className="group/row relative">
+      <Link
+        to={roundUpPath(roundUp.id)}
+        aria-current={active ? 'page' : undefined}
+        title={status.text}
+        onClick={onNavigate}
+        className={cn('hover:bg-hov flex h-[38px] items-center gap-2.5 rounded-[10px] pr-9 pl-3 text-sm', active && 'bg-sel font-medium')}
+      >
+        <span className={cn('min-w-0 flex-1 truncate', active || roundUp.busy ? 'text-fg' : 'text-mu', status.tone === 'error' && 'text-fail')}>
+          {titleOf(roundUp)}
+        </span>
+        <span className="sr-only">{status.text}</span>
+      </Link>
+      {roundUp.busy && <span aria-hidden="true" className="bg-run animate-k-pulse absolute top-1/2 right-3 size-[7px] -translate-y-1/2 rounded-full group-hover/row:opacity-0" />}
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          aria-label={`Options for ${titleOf(roundUp)}`}
+          className="text-mu2 hover:text-fg data-[state=open]:text-fg absolute top-1/2 right-1.5 flex size-7 -translate-y-1/2 items-center justify-center rounded-lg opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+        >
+          <MoreHorizontalIcon className="size-4" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="right" align="start">
+          <DropdownMenuItem onSelect={() => setEditing(true)}>
+            <PencilIcon /> Rename
+          </DropdownMenuItem>
+          <DropdownMenuItem variant="destructive" onSelect={() => onDelete(roundUp)}>
+            <Trash2Icon /> Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
+/** Each harness's subscription windows as compact meters; the reset time shows once a window runs high. */
+function Usage({ now }: { now: number }) {
+  const { data: usage, isPending, isError } = useUsage();
+  return (
+    <section aria-label="Usage limits" className="flex flex-col gap-3.5 px-2.5 pt-4 pb-3.5">
+      {isPending && <Skeleton className="h-12 w-full" />}
+      {isError && <p className="text-mu2 text-xs">Couldn’t load usage from the daemon.</p>}
+      {usage?.length === 0 && <p className="text-mu2 text-xs">Usage shows up after Claude Code’s first turn.</p>}
+      {usage?.map((u) => {
+        const name = harnessOf(u.harness).name;
+        return (
+          <div key={u.harness} className="flex flex-col gap-1.5">
+            <div className="text-fg2 flex items-center gap-2 text-[13px]">
+              <HarnessMark harness={u.harness} />
+              {name}
+            </div>
+            {metersOf(u, now).map((m) => (
+              <div key={m.label} className="flex flex-col gap-1">
+                <div title={m.reset} className="grid grid-cols-[48px_1fr_34px] items-center gap-2 text-xs">
+                  <span className="text-mu2">{m.short}</span>
+                  <div
+                    role="meter"
+                    aria-label={`${name} ${m.label.toLowerCase()}`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={m.pct}
+                    className="bg-ln2 h-1 overflow-hidden rounded-full"
+                  >
+                    <div className={cn('h-full rounded-full', m.warn ? 'bg-wait' : 'bg-fg3')} style={{ width: `${m.pct}%` }} />
+                  </div>
+                  <span className={cn('text-right font-mono text-[11px]', m.warn ? 'text-wait' : 'text-mu')}>{m.pct}%</span>
+                </div>
+                {m.warn && <div className="text-mu2 pl-14 text-[11px]">{m.reset}</div>}
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+const THEMES: { value: Theme; label: string; Icon: typeof SunIcon }[] = [
+  { value: 'system', label: 'System theme', Icon: MonitorIcon },
+  { value: 'light', label: 'Light theme', Icon: SunIcon },
+  { value: 'dark', label: 'Dark theme', Icon: MoonIcon },
+];
+
+/** System, light or dark, as the design's three-way switch. */
+function ThemeSwitch() {
+  const theme = useTheme();
+  return (
+    <div role="radiogroup" aria-label="Theme" className="bg-chip flex gap-0.5 rounded-full p-[3px]">
+      {THEMES.map(({ value, label, Icon }) => {
+        const on = theme === value;
+        return (
+          <button
+            key={value}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            aria-label={label}
+            title={label}
+            onClick={() => setTheme(value)}
+            className={cn('flex size-7 items-center justify-center rounded-full', on ? 'bg-surf text-fg shadow-[0_1px_3px_rgba(0,0,0,0.18)]' : 'text-mu2 hover:text-fg')}
+          >
+            <Icon className="size-3.5" strokeWidth={1.9} />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+interface SidebarProps {
+  roundUps: RoundUp[] | undefined;
+  currentId: string | undefined;
+  /** Called when a link in the sidebar is followed. */
+  onNavigate: () => void;
+  onRename: (id: string, title: string) => Promise<unknown>;
+  onDelete: (id: string) => Promise<unknown>;
+  onHide: () => void;
+  className?: string;
+}
+
+/** The round-ups, usage and theme: the design's left-hand panel. */
+export function AppSidebar({ roundUps, currentId, onNavigate, onRename, onDelete, onHide, className }: SidebarProps) {
+  const now = useNow();
+  const [confirming, setConfirming] = useState<RoundUp | undefined>();
+
+  return (
+    <nav aria-label="Round-ups" className={cn('bg-side flex w-[260px] shrink-0 flex-col gap-1.5 rounded-[22px] px-3 pt-3.5 pb-3', className)}>
+      <div className="flex h-9 items-center gap-2.5 pr-1.5 pl-2">
+        <KelpieLogo className="size-7" />
+        <Wordmark className="flex-1" />
+        <button type="button" onClick={onHide} aria-label="Hide sidebar" className="text-mu2 hover:bg-hov hover:text-fg flex size-8 items-center justify-center rounded-lg">
+          <PanelLeftIcon className="size-[17px]" strokeWidth={1.7} />
+        </button>
+      </div>
+
+      <Link to="/" onClick={onNavigate} className="bg-chip hover:bg-raise mt-2.5 mb-3.5 flex h-10 items-center gap-2.5 rounded-xl px-3 text-sm font-medium">
+        <PlusIcon className="size-4" strokeWidth={2} />
+        New round-up
+      </Link>
+
+      <div className="text-mu2 px-2.5 pb-1 text-xs">Round-ups</div>
+      <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1">
+        {roundUps === undefined && Array.from({ length: 3 }, (_, i) => <Skeleton key={i} className="my-1 h-[30px] rounded-[10px]" />)}
+        {roundUps?.length === 0 && <p className="text-mu2 px-2.5 py-2 text-xs">Nothing yet. Your round-ups show up here.</p>}
+        {roundUps?.map((r) => (
+          <RoundUpRow key={r.id} roundUp={r} active={r.id === currentId} now={now} onNavigate={onNavigate} onRename={onRename} onDelete={setConfirming} />
+        ))}
+      </div>
+
+      <Usage now={now} />
+
+      <div className="flex items-center gap-1.5 pl-2.5">
+        <span className="text-mu2 flex-1 text-[13px]">Theme</span>
+        <ThemeSwitch />
+      </div>
+
+      <Dialog open={!!confirming} onOpenChange={(open) => !open && setConfirming(undefined)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete “{titleOf(confirming)}”?</DialogTitle>
+            <DialogDescription>
+              Its conversation is removed from Kelpie, and any work in progress is stopped. Claude Code’s own transcript stays in ~/.claude.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline">Cancel</Button>
+            </DialogClose>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (confirming) void onDelete(confirming.id);
+                setConfirming(undefined);
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </nav>
+  );
+}

@@ -42,3 +42,16 @@ export function chatStatus(s: { inFlight: number; pending: number; busy: boolean
   if (s.busy) return 'streaming';
   return s.error ? 'error' : 'ready';
 }
+
+/** A message sent to a round-up whose whole log is at hand, with how long that log was when it was sent. */
+export interface SentMessage extends PendingMessage {
+  after: number;
+}
+
+/**
+ * The sent messages the log has not echoed yet, for a view that holds the whole log (an agent's
+ * tab). Settles them by the same rules as `settlePending`, over what was logged since the first.
+ */
+export function unechoed<P extends SentMessage>(sent: P[], events: readonly KelpieEvent[]): P[] {
+  return sent.length ? settlePending(sent, events.slice(sent[0]!.after)) : sent;
+}
