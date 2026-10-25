@@ -7,6 +7,7 @@ import { openStore } from '@kelpie/store';
 import lockfile from 'proper-lockfile';
 import { Connections } from './connectors/connector.js';
 import { GitHubConnector } from './connectors/github.js';
+import { canStart, checkHarnesses, shared, type HarnessStatus } from './harness-status.js';
 import { Orchestrator } from './orchestrator/orchestrator.js';
 import { createApp } from './server.js';
 import { SessionManager } from './sessions.js';
@@ -34,6 +35,8 @@ export interface DaemonOptions {
 export interface Daemon {
   url: string;
   home: string;
+  /** Checks each harness CLI's setup, sharing a check already running (the UI's own included). */
+  checkHarnesses(): Promise<HarnessStatus[]>;
   /** Stops every harness (work under way resumes on the next start), closes the store, frees the port. */
   close(): Promise<void>;
 }
@@ -47,7 +50,7 @@ export class PortInUseError extends Error {}
 /**
  * Starts Kelpie: the API, the kelpie MCP server and (with `staticDir`) the web UI, all on one
  * loopback port. Once listening, it brings the worktrees on disk back in line with the database and
- * resumes whatever was working when Kelpie last stopped.
+ * resumes whatever was working when Kelpie last stopped (once a `claude` it can start is on PATH).
  */
 export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   const home = resolve(opts.home ?? join(homedir(), '.kelpie'));
@@ -92,8 +95,20 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     defaults: opts.model ? { model: opts.model } : {},
   });
   orchestrator.attach(sessions);
+
+  // Resuming starts harnesses, and one that can't start dies before reading its turns, which drops
+  // them. So while there is no `claude` on PATH, interrupted work waits: the first check that finds
+  // one (the UI's Check again, or its setup dialog) resumes it, or else the next start does.
+  let reconciled = false;
+  let recovery: Promise<void> | undefined;
+  const harnessStatus = shared(async () => {
+    const statuses = await checkHarnesses();
+    if (reconciled && !recovery && statuses.every(canStart)) recovery = orchestrator.recover().catch((err) => console.error('kelpie: recovery failed', err));
+    return statuses;
+  });
   const app = createApp(sessions, {
     orchestrator,
+    checkHarnesses: harnessStatus,
     connections,
     ...(opts.staticDir ? { staticDir: opts.staticDir } : {}),
     ...(opts.maxUploadBytes ? { maxUploadBytes: opts.maxUploadBytes } : {}),
@@ -119,8 +134,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   void orchestrator
     .reconcile()
     .catch((err) => console.error('kelpie: worktree reconcile failed', err))
-    .then(() => orchestrator.recover())
-    .catch((err) => console.error('kelpie: recovery failed', err))
+    .then(() => {
+      reconciled = true;
+      return harnessStatus();
+    })
+    .then(() => recovery)
+    .catch((err) => console.error('kelpie: harness check failed', err))
     .then(() => orchestrator.sweep())
     .catch((err) => console.error('kelpie: worktree sweep failed', err));
   // Worktrees left idle (and clean) for days come off disk; their branches stay.
@@ -131,6 +150,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   return {
     url: `http://127.0.0.1:${opts.port}`,
     home,
+    checkHarnesses: harnessStatus,
     close: () =>
       (closing ??= (async () => {
         clearInterval(sweep);

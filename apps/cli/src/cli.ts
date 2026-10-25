@@ -4,10 +4,10 @@
  * is run from, and opens the UI. Agents run on the person's own Claude Code.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import open from 'open';
-import { claudeCodeStatus, limitsFromEnv, PortInUseError, startDaemon, type HarnessStatus } from '@kelpie/daemon';
+import { limitsFromEnv, PortInUseError, startDaemon, type HarnessStatus } from '@kelpie/daemon';
 
 const MIN_NODE = 22;
 const DEFAULT_PORT = 3173;
@@ -33,6 +33,9 @@ function port(value: string): number {
 function claudeHint(s: HarnessStatus | undefined): string | undefined {
   if (!s) return undefined;
   if (!s.installed) return 'Claude Code (the `claude` command) is not installed. Kelpie shows you how to set it up, or see https://code.claude.com/docs/en/setup';
+  if (s.onPath === false) {
+    return `Claude Code is installed at ${s.path}, but not on this terminal's PATH, so Kelpie can't start it (interrupted work waits for it).\n  Add ${dirname(s.path!)} to your PATH, then start Kelpie again from a new terminal.`;
+  }
   if (s.loggedIn === false) return 'Claude Code is not signed in. Run `claude` in a terminal and follow its sign-in; Kelpie checks again when you are back.';
   return undefined;
 }
@@ -51,9 +54,6 @@ const program = new Command()
     if (major < MIN_NODE) fail(`Kelpie needs Node ${MIN_NODE} or newer; this is ${process.versions.node}.`);
     const cwd = resolve(opts.cwd);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) fail(`not a directory: ${cwd}`);
-    // Checked while the daemon starts; reported after its banner.
-    const claude = claudeCodeStatus().catch(() => undefined);
-
     const daemon = await startDaemon({
       cwd,
       port: opts.port,
@@ -66,7 +66,8 @@ const program = new Command()
 
     console.log(`Kelpie ${version} on ${daemon.url}\n  repo  ${cwd}\n  data  ${daemon.home}\nPress Ctrl-C to stop; work under way picks up again next time.`);
     if (opts.open) open(daemon.url).catch(() => console.log(`Open ${daemon.url} in your browser.`));
-    const hint = claudeHint(await claude);
+    // The daemon's own check, which resumes interrupted work once it finds Claude Code.
+    const hint = claudeHint((await daemon.checkHarnesses().catch(() => undefined))?.[0]);
     if (hint) console.warn(`\n${hint}`);
 
     let stopping = false;

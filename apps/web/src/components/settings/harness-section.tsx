@@ -6,12 +6,12 @@ import { HarnessMark } from '@/components/harness-mark';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useHarnessStatus } from '@/hooks/use-harness-status';
-import { authLabel, CLAUDE_CODE_DOCS, installCommands, isWindows, needsSetup, setupSteps, type HarnessStatus, type SetupStep } from '@/lib/harness-setup';
+import { authLabel, binDir, CLAUDE_CODE_DOCS, installCommands, isReady, needsSetup, offPath, pathCommands, setupSteps, type Command, type HarnessStatus, type SetupStep } from '@/lib/harness-setup';
 import { harnessOf } from '@/lib/harnesses';
 import { cn } from '@/lib/utils';
 
 /** A command to paste into a terminal, with a copy button. */
-export function CopyCommand({ command }: { command: string }) {
+function CopyCommand({ command }: { command: string }) {
   return (
     <CodeBlock code={command} language="bash" className="bg-well rounded-xl border-0 pr-10 [&_pre]:py-2.5 [&_pre]:text-[13px]">
       <CodeBlockCopyButton aria-label={`Copy ${command}`} className="text-mu hover:text-fg absolute top-1/2 right-1.5 z-10 size-7 -translate-y-1/2" />
@@ -37,18 +37,38 @@ const MARK: Record<SetupStep['state'], string> = {
   waiting: 'shadow-[inset_0_0_0_1.5px_var(--bd)] text-mu2',
 };
 
+function Commands({ commands }: { commands: Command[] }) {
+  return (
+    <>
+      {commands.map((c) => (
+        <div key={c.command} className="flex flex-col gap-1">
+          <span className="text-mu2 text-xs">{c.label}</span>
+          <CopyCommand command={c.command} />
+        </div>
+      ))}
+    </>
+  );
+}
+
 /** What to do next for one step: the commands to run, in the person's own terminal. */
-function StepHelp({ step }: { step: SetupStep }) {
+function StepHelp({ step, status }: { step: SetupStep; status: HarnessStatus }) {
+  if (step.id === 'install' && step.state === 'todo' && offPath(status)) {
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="text-mu text-[13px]">
+          It is in <code className="font-mono">{binDir(status)}</code>, which isn’t on the PATH Kelpie was started with, so Kelpie can’t start it.{' '}
+          {status.platform === 'win32' ? 'Add that folder to your Path in Settings › Environment Variables.' : 'Add that folder to your PATH:'}
+        </p>
+        <Commands commands={pathCommands(status)} />
+        <p className="text-mu2 text-xs">Then stop Kelpie and start it again from a new terminal. Work that was under way picks up once it can.</p>
+      </div>
+    );
+  }
   if (step.id === 'install' && step.state === 'todo') {
     return (
       <div className="flex flex-col gap-2">
         <p className="text-mu text-[13px]">Run Claude Code’s official installer in a terminal:</p>
-        {installCommands(isWindows()).map((c) => (
-          <div key={c.command} className="flex flex-col gap-1">
-            <span className="text-mu2 text-xs">{c.label}</span>
-            <CopyCommand command={c.command} />
-          </div>
-        ))}
+        <Commands commands={installCommands(status.platform)} />
         <a href={CLAUDE_CODE_DOCS} target="_blank" rel="noreferrer" className="text-mu hover:text-fg flex w-fit items-center gap-1 text-[13px] underline-offset-4 hover:underline">
           Other ways to install, and system requirements <ExternalLinkIcon className="size-3" />
         </a>
@@ -92,7 +112,7 @@ export function SetupSteps({ status }: { status: HarnessStatus }) {
               <span className="sr-only">{step.state === 'done' ? 'done' : step.state === 'todo' ? 'to do' : step.state === 'unknown' ? 'not known' : 'after installing'}</span>
               {step.detail && <span className="text-mu text-[13px]">{step.detail}</span>}
             </div>
-            <StepHelp step={step} />
+            <StepHelp step={step} status={status} />
           </div>
         </li>
       ))}
@@ -113,7 +133,7 @@ const yesNo = (v: boolean | null) => (v === null ? 'Couldn’t tell' : v ? 'Yes'
 
 /** One harness: what was found, and what to do about anything missing. */
 function HarnessCard({ status }: { status: HarnessStatus }) {
-  const ready = !needsSetup(status) && status.loggedIn !== null && !status.error;
+  const ready = isReady(status);
   return (
     <div className="bg-surf border-ln flex flex-col gap-4 rounded-[20px] border px-5 py-4">
       <div className="flex items-center gap-2.5">
@@ -129,6 +149,7 @@ function HarnessCard({ status }: { status: HarnessStatus }) {
         <Fact label="Version">{status.version ?? '—'}</Fact>
         <Fact label="Path" mono>
           {status.path ?? '—'}
+          {offPath(status) && <span className="text-wait font-sans"> · not on PATH</span>}
         </Fact>
         <Fact label="Signed in">
           {yesNo(status.installed ? status.loggedIn : false)}

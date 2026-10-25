@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import type { HarnessStatus } from '@/lib/harness-setup';
+import type { HarnessStatus } from '@kelpie/protocol';
 
-export const HARNESS_STATUS = ['harness-status'] as const;
+const HARNESS_STATUS = ['harness-status'] as const;
 
 /**
  * Whether each harness CLI is installed and signed in. Unlike round-up data nothing pushes this, so it
