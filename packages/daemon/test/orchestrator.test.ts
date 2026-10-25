@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -31,16 +31,17 @@ afterEach(async () => {
   await Promise.all(managers.splice(0).map((m) => m.stopAll()));
 });
 
-function setup(env: Record<string, string> = {}, opts: { maxAgents?: number; notifyDelayMs?: number; store?: Store } = {}) {
+function setup(env: Record<string, string> = {}, opts: { maxAgents?: number; notifyDelayMs?: number; store?: Store; scratch?: boolean; cwd?: string } = {}) {
   const store = opts.store ?? openStore(':memory:');
   const argsFile = join(tmp('kelpie-args-'), 'args.jsonl');
   const orch = new Orchestrator({ store, mcpUrl: 'http://127.0.0.1:7317/mcp', maxAgents: opts.maxAgents ?? 4, notifyDelayMs: opts.notifyDelayMs ?? 300 });
   const sessions = new SessionManager({
     store,
-    defaultCwd: tmpdir(),
+    defaultCwd: opts.cwd ?? tmpdir(),
     runsDir: tmp('kelpie-runs-'),
     defaults: { bin: FAKE, env: { FAKE_FIXTURE: FIXTURE, FAKE_ARGS_FILE: argsFile, ...env } },
     hooks: orch,
+    ...(opts.scratch ? { scratchDir: tmp('kelpie-scratch-') } : {}),
   });
   orch.attach(sessions);
   managers.push(sessions);
@@ -70,6 +71,14 @@ async function orchestrator(ctx: ReturnType<typeof setup>) {
   return { parent, argv, call, client, headers: headers as Record<string, string> };
 }
 
+/** A variadic flag's values: everything after it up to the next flag. */
+function flag(args: string[], name: string): string[] {
+  const i = args.indexOf(name);
+  if (i < 0) return [];
+  const end = args.findIndex((a, j) => j > i && a.startsWith('--'));
+  return args.slice(i + 1, end < 0 ? undefined : end);
+}
+
 const sentTexts = (s: Session) => s.events().flatMap((e: KelpieEvent) => (e.kind === 'message' && e.data.sent ? [e.data.text] : []));
 
 describe('orchestrator round-ups', () => {
@@ -80,6 +89,52 @@ describe('orchestrator round-ups', () => {
     expect(ORCHESTRATOR_TOOLS).toEqual([]);
     expect(argv.slice(argv.indexOf('--allowedTools'), argv.indexOf('--allowedTools') + 2)).toEqual(['--allowedTools', 'mcp__kelpie']);
     expect(argv[argv.indexOf('--append-system-prompt') + 1]).toContain("You are Kelpie's orchestrator");
+  });
+
+  it('gives the orchestrator file tools for its scratch folder only, and passes files from it to agents', async () => {
+    const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
+    const repo = tmp('kelpie-cwd-');
+    const ctx = setup({ FAKE_EVERY_TURN: '1', FAKE_STDIN_FILE: stdin }, { scratch: true, cwd: repo });
+    const { parent, argv, call } = await orchestrator(ctx);
+    const scratch = parent.scratch!;
+    expect(flag(argv, '--tools')).toEqual(['Read,Write']);
+    expect(flag(argv, '--add-dir')).toEqual([scratch]);
+    expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie', `Read(/${scratch}/**)`, `Edit(/${scratch}/**)`, `Write(/${scratch}/**)`]);
+    // Its repo is denied outright: the scratch folder is all it can touch.
+    const cwd = realpathSync(repo);
+    expect(flag(argv, '--disallowedTools')).toEqual([`Read(/${cwd}/**)`, `Edit(/${cwd}/**)`, `Write(/${cwd}/**)`]);
+    expect(argv[argv.indexOf('--append-system-prompt') + 1]).toContain(`only inside your scratch folder, \`${scratch}\``);
+
+    writeFileSync(join(scratch, 'spec.md'), 'hello');
+    expect((await call('spawn_agent', { title: 'A', task: 'x', writes: false, files: ['../escape.md'] })).error).toMatch(/no such file|outside your scratch folder/);
+    expect((await call('spawn_agent', { title: 'A', task: 'x', writes: false, files: ['/etc/hosts'] })).error).toMatch(/outside your scratch folder/);
+    expect((await call('spawn_agent', { title: 'A', task: 'x', writes: false, files: ['missing.md'] })).error).toMatch(/no such file/);
+    expect(ctx.sessions.children(parent.id)).toHaveLength(0);
+
+    const { data } = await call('spawn_agent', { title: 'Review', task: 'Review the spec', writes: false, files: ['spec.md'] });
+    const child = ctx.sessions.get(data.agentId)!;
+    const childArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
+    // A reader may read the scratch folder, not write to it.
+    expect(flag(childArgv, '--add-dir')).toEqual([scratch]);
+    expect(flag(childArgv, '--allowedTools')).toEqual([`Read(/${scratch}/**)`]);
+    expect(childArgv[childArgv.indexOf('--append-system-prompt') + 1]).toContain(`scratch folder, \`${scratch}\`, is shared`);
+    const brief = await waitFor(() => jsonLines<{ text: string }>(stdin).find((l) => l.text.startsWith('Review the spec')));
+    expect(brief.text).toBe(`Review the spec\n\n<attachments>\n- ${join(scratch, 'spec.md')} (file, 5 B)\n</attachments>`);
+    const echo = await waitFor(() => child.events().find((e) => e.kind === 'message' && e.data.sent));
+    expect(echo.kind === 'message' && echo.data.attachments?.map((a) => [a.name, a.size])).toEqual([['spec.md', 5]]);
+
+    await waitFor(() => !child.working && child.lastTurn);
+    await call('message_agent', { agentId: child.id, text: 'And this one', files: [join(scratch, 'spec.md')] });
+    const followUp = await waitFor(() => jsonLines<{ text: string }>(stdin).find((l) => l.text.startsWith('And this one')));
+    expect(followUp.text).toContain('<attachments>');
+  });
+
+  it('leaves out the repo deny rules when the scratch folder is inside the repo, rather than deny the scratch folder too', async () => {
+    const ctx = setup({}, { scratch: true }); // scratch under the system temp dir, which is also the cwd
+    const { parent, argv } = await orchestrator(ctx);
+    expect(parent.scratch!.startsWith(realpathSync(tmpdir()))).toBe(true);
+    expect(argv).not.toContain('--disallowedTools');
+    expect(flag(argv, '--allowedTools')).toContain(`Read(/${parent.scratch}/**)`);
   });
 
   it('rejects MCP calls without a live token', async () => {
@@ -169,6 +224,44 @@ describe('orchestrator round-ups', () => {
     expect((await call('spawn_agent', { title: 'A', task: '   ', writes: false })).error).toMatch(/task is empty/);
     const { data } = await call('spawn_agent', { title: 'A', task: 'x', writes: false });
     expect((await call('message_agent', { agentId: data.agentId, text: '' })).error).toBeDefined();
+  });
+
+  it('follows the round-up mode: plan refuses writers, and agents run in the harness mode it maps to', async () => {
+    const ctx = setup({ FAKE_HANG: '1' });
+    const { parent, argv, call } = await orchestrator(ctx);
+    // The orchestrator's own tools are settled by rule; the mode is for its agents.
+    expect(flag(argv, '--permission-mode')).toEqual(['acceptEdits']);
+
+    await ctx.sessions.setMode(parent, 'plan');
+    expect((await call('spawn_agent', { title: 'W', task: 'edit', writes: true })).error).toMatch(/plan mode/);
+    expect((await call('muster_agents', { agentIds: ['x'] })).error).toMatch(/plan mode/);
+    expect((await call('list_agents')).data.mode).toBe('plan');
+    const reader = await call('spawn_agent', { title: 'R', task: 'read', writes: false });
+    expect(reader.error).toBeUndefined();
+    const readerArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
+    // Readers run in auto, with no blanket Bash allow: the harness's own checks decide.
+    expect(flag(readerArgv, '--permission-mode')).toEqual(['auto']);
+    expect(readerArgv).not.toContain('--allowedTools');
+    expect(ctx.sessions.get(reader.data.agentId)!.info().mode).toBe('plan');
+
+    await ctx.sessions.setMode(parent, 'acceptEdits');
+    expect((await call('spawn_agent', { title: 'W', task: 'edit', writes: true })).error).toBeUndefined();
+    const writerArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[2]);
+    expect(flag(writerArgv, '--permission-mode')).toEqual(['acceptEdits']);
+    await expect(ctx.sessions.setMode(ctx.sessions.get(reader.data.agentId)!, 'auto')).rejects.toThrow(/follows its round-up/);
+  });
+
+  it('restarts an idle orchestrator on a mode change, so its prompt says what the mode means', async () => {
+    const ctx = setup({ FAKE_EVERY_TURN: '1' });
+    const { parent, argv } = await orchestrator(ctx);
+    expect(argv[argv.indexOf('--append-system-prompt') + 1]).not.toContain('plan mode');
+    await waitFor(() => parent.lastTurn && !parent.working);
+    await ctx.sessions.setMode(parent, 'plan');
+    await waitFor(() => parent.events().some((e) => e.kind === 'process.exited'));
+    await parent.send('Plan the work');
+    const next = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
+    expect(next[next.indexOf('--append-system-prompt') + 1]).toContain('The person has this round-up in plan mode');
+    expect(flag(next, '--resume')).toHaveLength(1);
   });
 
   it('caps working agents and allows one writer per repo', async () => {

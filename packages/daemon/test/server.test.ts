@@ -1,9 +1,9 @@
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openStore } from '@kelpie/store';
-import { createApp, SessionManager } from '../src/index.js';
+import { createApp, safeName, SessionManager } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
 const FIXTURE = join(import.meta.dirname, '../../adapters/fixtures/claude-code/plain.jsonl');
@@ -122,6 +122,19 @@ describe('round-up API', () => {
     expect((await patch({})).status).toBe(400);
   });
 
+  it('sets a round-up’s mode when it is created and changes it, among the modes its harness has', async () => {
+    const { app } = setup();
+    expect(await (await app.request('/api/harnesses', { headers: local })).json()).toEqual([{ harness: 'claude-code', modes: ['auto', 'acceptEdits', 'plan'] }]);
+    const created = await app.request('/api/sessions', { method: 'POST', ...json({ mode: 'plan' }) });
+    const { id, mode } = (await created.json()) as { id: string; mode: string };
+    expect(mode).toBe('plan');
+    expect(((await (await app.request('/api/sessions', { method: 'POST', ...json({}) })).json()) as { mode: string }).mode).toBe('auto');
+    const patch = (body: unknown) => app.request(`/api/sessions/${id}`, { method: 'PATCH', ...json(body) });
+    expect(await (await patch({ mode: 'acceptEdits' })).json()).toMatchObject({ mode: 'acceptEdits' });
+    expect((await patch({ mode: 'yolo' })).status).toBe(400);
+    expect((await app.request('/api/sessions', { method: 'POST', ...json({ mode: 'yolo' }) })).status).toBe(400);
+  });
+
   it('ends open event streams when the round-up is deleted', async () => {
     const { app } = setup();
     const id = await create(app);
@@ -186,5 +199,138 @@ describe('Session', () => {
       await sessions.stopAll();
     }
     expect(seen).toContain('message');
+  });
+});
+
+describe('uploads', () => {
+  const STDIN = () => join(mkdtempSync(join(tmpdir(), 'kelpie-stdin-')), 'stdin.jsonl');
+
+  function withScratch(maxUploadBytes?: number) {
+    const stdin = STDIN();
+    const sessions = new SessionManager({
+      store: openStore(':memory:'),
+      defaultCwd: tmpdir(),
+      runsDir: mkdtempSync(join(tmpdir(), 'kelpie-runs-')),
+      scratchDir: mkdtempSync(join(tmpdir(), 'kelpie-scratch-')),
+      defaults: { bin: FAKE, env: { FAKE_FIXTURE: FIXTURE, FAKE_STDIN_FILE: stdin } },
+    });
+    return { sessions, stdin, app: createApp(sessions, maxUploadBytes ? { maxUploadBytes } : {}) };
+  }
+  const upload = (app: ReturnType<typeof createApp>, id: string, bytes: string, headers: Record<string, string> = {}) =>
+    app.request(`/api/sessions/${id}/uploads`, {
+      method: 'POST',
+      headers: { host: local.host, 'content-type': 'application/octet-stream', 'x-file-name': encodeURIComponent('my shot.png'), 'x-file-type': 'image/png', ...headers },
+      body: bytes,
+    });
+
+  it('saves a file to the round-up scratch folder, serves it back, and lists it in a message by path', async () => {
+    const { app, sessions, stdin } = withScratch();
+    const session = sessions.create();
+    const res = await upload(app, session.id, 'PNGDATA');
+    expect(res.status).toBe(201);
+    const file = (await res.json()) as { id: string; name: string; mime: string; size: number };
+    expect(file).toMatchObject({ name: 'my shot.png', mime: 'image/png', size: 7 });
+
+    const [row] = sessions.uploads(session, [file.id]);
+    expect(row!.path.startsWith(join(session.scratch!, 'uploads'))).toBe(true);
+    expect(row!.path).toMatch(/-my-shot\.png$/);
+    expect(readFileSync(row!.path, 'utf8')).toBe('PNGDATA');
+
+    const got = await app.request(`/api/sessions/${session.id}/uploads/${file.id}`, { headers: { host: local.host } });
+    expect(got.headers.get('content-type')).toBe('image/png');
+    expect(got.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(await got.text()).toBe('PNGDATA');
+
+    const sent = await app.request(`/api/sessions/${session.id}/messages`, { method: 'POST', headers: local, body: JSON.stringify({ text: 'What is this?', attachments: [file.id] }) });
+    expect(sent.status).toBe(202);
+    const echo = await (async () => {
+      for (let i = 0; i < 250; i++) {
+        const e = session.events().find((ev) => ev.kind === 'message' && ev.data.sent);
+        if (e) return e;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    })();
+    await sessions.stopAll();
+    // The harness got the paths in the turn itself; the echo carries the files for the UI.
+    const turn = JSON.parse(readFileSync(stdin, 'utf8').split('\n')[0]!).text as string;
+    expect(turn).toBe(`What is this?\n\n<attachments>\n- ${row!.path} (image/png, 7 B)\n</attachments>`);
+    expect(echo?.kind === 'message' && echo.data.attachments).toEqual([{ id: file.id, name: 'my shot.png', mime: 'image/png', size: 7 }]);
+    expect(session.title).toBe('What is this?');
+  });
+
+  it('sends files without text, titled after them', async () => {
+    const { app, sessions } = withScratch();
+    const session = sessions.create();
+    const { id } = (await (await upload(app, session.id, 'x')).json()) as { id: string };
+    expect((await app.request(`/api/sessions/${session.id}/messages`, { method: 'POST', headers: local, body: JSON.stringify({ attachments: [id] }) })).status).toBe(202);
+    await sessions.stopAll();
+    expect(session.title).toBe('my shot.png');
+  });
+
+  it('downloads anything that is not an image or PDF instead of showing it', async () => {
+    const { app, sessions } = withScratch();
+    const session = sessions.create();
+    const { id } = (await (await upload(app, session.id, '<svg onload=alert(1)>', { 'x-file-name': 'a.svg', 'x-file-type': 'image/svg+xml' })).json()) as { id: string };
+    const got = await app.request(`/api/sessions/${session.id}/uploads/${id}`, { headers: { host: local.host } });
+    expect(got.headers.get('content-type')).toBe('application/octet-stream');
+    expect(got.headers.get('content-disposition')).toMatch(/^attachment;/);
+  });
+
+  it('refuses bad uploads and unknown attachments', async () => {
+    const { app, sessions } = withScratch(10);
+    const a = sessions.create();
+    const b = sessions.create();
+    expect((await upload(app, a.id, 'way more than ten bytes')).status).toBe(413);
+    expect((await upload(app, a.id, 'x', { 'x-file-name': '' })).status).toBe(400);
+    expect((await upload(app, a.id, '')).status).toBe(400);
+    expect((await upload(app, a.id, 'x', { 'content-type': 'text/plain' })).status).toBe(415);
+    expect((await upload(app, 'nope', 'x')).status).toBe(404);
+    // Another round-up's upload is not this one's to send.
+    const { id } = (await (await upload(app, b.id, 'x')).json()) as { id: string };
+    const send = (attachments: unknown) => app.request(`/api/sessions/${a.id}/messages`, { method: 'POST', headers: local, body: JSON.stringify({ text: 'hi', attachments }) });
+    expect((await send([id])).status).toBe(400);
+    expect((await send('nope')).status).toBe(400);
+    expect((await app.request(`/api/sessions/${a.id}/uploads/${id}`, { headers: { host: local.host } })).status).toBe(404);
+  });
+
+  it('keeps names on disk safe, and removes the scratch folder with its round-up', async () => {
+    const { app, sessions } = withScratch();
+    const session = sessions.create();
+    const { id } = (await (await upload(app, session.id, 'x', { 'x-file-name': encodeURIComponent('../../etc/pa$$wd') })).json()) as { id: string };
+    const [row] = sessions.uploads(session, [id]);
+    expect(row!.path).toBe(join(session.scratch!, 'uploads', `${id.slice(0, 8)}-pa-wd`));
+    expect(row!.name).toBe('../../etc/pa$$wd');
+    await sessions.delete(session.id);
+    expect(existsSync(session.scratch!)).toBe(false);
+  });
+
+  it('keeps names readable in any script, and always keeps the extension', () => {
+    expect(safeName('截图.png')).toBe('截图.png');
+    expect(safeName('my shot (1).PNG')).toBe('my-shot-1-.PNG');
+    expect(safeName('.env')).toBe('env');
+    expect(safeName('$$$.pdf')).toBe('file.pdf');
+  });
+
+  it('serves an SVG as a download whatever case its type is given in', async () => {
+    const { app, sessions } = withScratch();
+    const session = sessions.create();
+    const { id, mime } = (await (await upload(app, session.id, '<svg/>', { 'x-file-name': 'a.svg', 'x-file-type': 'image/SVG+XML' })).json()) as { id: string; mime: string };
+    expect(mime).toBe('image/svg+xml');
+    const got = await app.request(`/api/sessions/${session.id}/uploads/${id}`, { headers: { host: local.host } });
+    expect(got.headers.get('content-type')).toBe('application/octet-stream');
+  });
+
+  it('leaves nothing behind when the round-up is deleted while a file is being saved', async () => {
+    const { sessions } = withScratch();
+    const session = sessions.create();
+    const saving = sessions.saveUpload(session, { name: 'a.txt', mime: 'text/plain', bytes: new Uint8Array([1]) });
+    await sessions.delete(session.id);
+    await expect(saving).rejects.toThrow(/deleted/);
+    expect(existsSync(session.scratch!)).toBe(false);
+  });
+
+  it('turns uploads away when Kelpie keeps no scratch folder', async () => {
+    const { app, sessions } = setup();
+    expect((await upload(app, sessions.create().id, 'x')).status).toBe(400);
   });
 });

@@ -1,8 +1,12 @@
 import { existsSync, statSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { streamSSE, type SSEMessage } from 'hono/streaming';
+import { getMimeType } from 'hono/utils/mime';
+import { Mode } from '@kelpie/protocol';
 import { isLocalHost, isLocalOrigin } from './local.js';
 import { handleMcp } from './orchestrator/mcp.js';
 import { BaseFixedError, type Orchestrator } from './orchestrator/orchestrator.js';
@@ -12,23 +16,31 @@ import type { SessionManager } from './sessions.js';
 const MODEL_ERROR = 'model must be a model name or alias, like "sonnet" or "claude-opus-5-5"';
 /** A model name or alias as the harness CLI takes it; never anything that could pass for a flag. */
 const isModel = (m: unknown): m is string => typeof m === 'string' && /^[A-Za-z0-9][\w.:\[\]-]{0,79}$/.test(m);
+const isMime = (m: string | undefined): m is string => !!m && m.length <= 100 && /^[\w.+-]+\/[\w.+-]+$/.test(m);
+const MODE_ERROR = `mode must be one of: ${Mode.options.join(', ')}`;
+const MAX_ATTACHMENTS = 20;
+/** Uploads the browser may show in place: images (not SVG, which can carry script) and PDFs. */
+const inline = (mime: string) => (mime.startsWith('image/') && mime !== 'image/svg+xml') || mime === 'application/pdf';
 
 export interface AppOptions {
   /** Built web UI to serve at `/`. */
   staticDir?: string;
   /** Serves the kelpie MCP server (the orchestrator's tools) at `/mcp`. */
   orchestrator?: Orchestrator;
+  /** Largest file one upload may be. Default 25 MB. */
+  maxUploadBytes?: number;
 }
 
 /**
- * Only local pages may drive the API (see local.ts), and writes must be JSON (forces a
- * CORS preflight, which we never grant).
+ * Only local pages may drive the API (see local.ts), and writes must be JSON, or raw bytes for
+ * an upload: both force a CORS preflight, which we never grant.
  */
 export const localOnly: MiddlewareHandler = async (c, next) => {
   if (!isLocalHost(c.req.header('host'))) return c.text('forbidden host', 403);
   const origin = c.req.header('origin');
   if (origin && !isLocalOrigin(origin)) return c.text('forbidden origin', 403);
-  if (c.req.method !== 'GET' && c.req.method !== 'HEAD' && !c.req.header('content-type')?.startsWith('application/json')) {
+  const type = c.req.header('content-type') ?? '';
+  if (c.req.method !== 'GET' && c.req.method !== 'HEAD' && !type.startsWith('application/json') && !type.startsWith('application/octet-stream')) {
     return c.text('expected application/json', 415);
   }
   await next();
@@ -79,6 +91,9 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
 
   app.get('/api/usage', (c) => c.json(sessions.usage()));
 
+  // What the harness offers a round-up: its modes, in the order Shift+Tab cycles through them.
+  app.get('/api/harnesses', (c) => c.json(sessions.harnesses()));
+
   // Round-up list and harness usage: snapshots, then every change.
   app.get('/api/events', (c) =>
     sse(c, (send) => {
@@ -94,14 +109,16 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   );
 
   app.post('/api/sessions', async (c) => {
-    const body = await jsonBody<{ cwd?: unknown; model?: unknown; baseBranch?: unknown }>(c);
+    const body = await jsonBody<{ cwd?: unknown; model?: unknown; baseBranch?: unknown; mode?: unknown }>(c);
     if (body.cwd !== undefined && typeof body.cwd !== 'string') return c.json({ error: 'cwd must be a string' }, 400);
     if (body.model !== undefined && !isModel(body.model)) return c.json({ error: MODEL_ERROR }, 400);
+    const mode = Mode.safeParse(body.mode ?? 'auto');
+    if (!mode.success || !sessions.modes.includes(mode.data)) return c.json({ error: MODE_ERROR }, 400);
     if (body.baseBranch !== undefined && (typeof body.baseBranch !== 'string' || !orch)) return c.json({ error: 'baseBranch must be a branch name' }, 400);
     // Relative to the daemon's default repo, not its process cwd (a package dir under `pnpm dev`).
     const cwd = resolve(sessions.defaultCwd, body.cwd ?? '.');
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) return c.json({ error: `not a directory: ${cwd}` }, 400);
-    const session = sessions.create(cwd, body.model ? { model: body.model } : {});
+    const session = sessions.create(cwd, { mode: mode.data, ...(body.model ? { model: body.model } : {}) });
     if (typeof body.baseBranch === 'string' && orch) {
       try {
         await orch.setBase(session, body.baseBranch);
@@ -135,10 +152,13 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   app.patch('/api/sessions/:id', async (c) => {
     const s = sessions.get(c.req.param('id'));
     if (!s) return c.json({ error: 'no such session' }, 404);
-    const body = await jsonBody<{ title?: unknown; model?: unknown; baseBranch?: unknown }>(c);
-    if (body.title === undefined && body.model === undefined && body.baseBranch === undefined) {
-      return c.json({ error: 'nothing to change: send title, model or baseBranch' }, 400);
+    const body = await jsonBody<{ title?: unknown; model?: unknown; baseBranch?: unknown; mode?: unknown }>(c);
+    if (body.title === undefined && body.model === undefined && body.baseBranch === undefined && body.mode === undefined) {
+      return c.json({ error: 'nothing to change: send title, model, baseBranch or mode' }, 400);
     }
+    const mode = body.mode === undefined ? undefined : Mode.safeParse(body.mode);
+    if (mode && (!mode.success || !sessions.modes.includes(mode.data))) return c.json({ error: MODE_ERROR }, 400);
+    if (mode && s.parentId) return c.json({ error: "a sub-agent follows its round-up's mode" }, 400);
     // Everything is checked before anything is saved: a bad field changes nothing.
     // Null puts the harness's default model back.
     if (body.model !== undefined && body.model !== null && !isModel(body.model)) return c.json({ error: MODEL_ERROR }, 400);
@@ -155,6 +175,7 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     }
     if (body.title !== undefined) s.rename(title);
     if (body.model !== undefined) s.setModel(body.model ?? undefined);
+    if (mode?.success) await sessions.setMode(s, mode.data);
     return c.json(s.info());
   });
 
@@ -162,14 +183,64 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     return (await sessions.delete(c.req.param('id'))) ? c.body(null, 204) : c.json({ error: 'no such session' }, 404);
   });
 
+  // A file for the round-up's next message: the raw bytes, named by an `x-file-name` header (URI-encoded)
+  // and typed by `x-file-type`. Send its id in the message's `attachments`.
+  const maxUpload = opts.maxUploadBytes ?? 25 * 1024 * 1024;
+  app.post(
+    '/api/sessions/:id/uploads',
+    bodyLimit({ maxSize: maxUpload, onError: (c) => c.json({ error: `a file can be at most ${Math.round(maxUpload / 1024 / 1024)} MB` }, 413) }),
+    async (c) => {
+      const s = sessions.get(c.req.param('id'));
+      if (!s) return c.json({ error: 'no such session' }, 404);
+      if (!c.req.header('content-type')?.startsWith('application/octet-stream')) return c.json({ error: 'send the file as application/octet-stream' }, 415);
+      if (!s.scratch) return c.json({ error: 'uploads are not enabled' }, 400);
+      let name = '';
+      try {
+        name = decodeURIComponent(c.req.header('x-file-name') ?? '').trim();
+      } catch {}
+      if (!name || name.length > 255) return c.json({ error: 'x-file-name must name the file (URI-encoded, at most 255 characters)' }, 400);
+      const bytes = new Uint8Array(await c.req.arrayBuffer());
+      if (!bytes.length) return c.json({ error: 'the file is empty' }, 400);
+      // Lower case, as browsers compare types: the SVG check below must not be dodged by `image/SVG+XML`.
+      const given = c.req.header('x-file-type')?.toLowerCase();
+      const mime = isMime(given) ? given : (getMimeType(name) ?? 'application/octet-stream');
+      const row = await sessions.saveUpload(s, { name, mime, bytes });
+      return c.json({ id: row.id, name: row.name, mime: row.mime, size: row.size }, 201);
+    },
+  );
+
+  // An upload's bytes, e.g. an image's thumbnail. Only images and PDFs show in place; anything else downloads.
+  app.get('/api/sessions/:id/uploads/:upload', async (c) => {
+    const s = sessions.get(c.req.param('id'));
+    const row = s && sessions.uploads(s, [c.req.param('upload')])[0];
+    if (!row) return c.json({ error: 'no such upload' }, 404);
+    const bytes = await readFile(row.path).catch(() => undefined);
+    if (!bytes) return c.json({ error: 'the file is gone' }, 404);
+    const show = inline(row.mime);
+    return c.body(bytes, 200, {
+      'content-type': show ? row.mime : 'application/octet-stream',
+      'content-disposition': `${show ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.name)}`,
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox",
+      // Uploads never change.
+      'cache-control': 'private, max-age=31536000, immutable',
+    });
+  });
+
   app.post('/api/sessions/:id/messages', async (c) => {
     const s = sessions.get(c.req.param('id'));
     if (!s) return c.json({ error: 'no such session' }, 404);
-    const body = await jsonBody<{ text?: unknown }>(c);
+    const body = await jsonBody<{ text?: unknown; attachments?: unknown }>(c);
     const text = typeof body.text === 'string' ? body.text.trim() : '';
-    if (!text) return c.json({ error: 'text is required' }, 400);
+    const ids = body.attachments ?? [];
+    if (!Array.isArray(ids) || ids.length > MAX_ATTACHMENTS || !ids.every((id) => typeof id === 'string')) {
+      return c.json({ error: `attachments must be at most ${MAX_ATTACHMENTS} upload ids` }, 400);
+    }
+    const files = sessions.uploads(s, [...new Set(ids)]);
+    if (files.length !== new Set(ids).size) return c.json({ error: 'unknown upload in attachments' }, 400);
+    if (!text && !files.length) return c.json({ error: 'text is required' }, 400);
     try {
-      await s.send(text);
+      await s.send(text, 'user', files.length ? { attachments: files.map(({ id, name, mime, size, path }) => ({ id, name, mime, size, path })) } : {});
     } catch (err) {
       return c.json({ error: (err as Error).message }, 409);
     }

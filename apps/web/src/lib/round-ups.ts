@@ -1,3 +1,4 @@
+import type { Mode } from '@kelpie/protocol';
 import { formatDistanceStrict } from 'date-fns';
 import { generatePath } from 'react-router';
 
@@ -24,6 +25,8 @@ export interface RoundUp {
   /** The branch the round-up starts from (e.g. origin/main) and the commit it was pinned to, once chosen. */
   baseBranch?: string;
   baseCommit?: string;
+  /** How freely its agents work; a sub-agent reports its round-up's. */
+  mode: Mode;
 }
 
 export const NEW_TITLE = 'New round-up';

@@ -19,6 +19,14 @@ const partsOf = (name: string): AssistantPart[] => buildChat(events(name)).flatM
 const toolsOf = (name: string) => partsOf(name).filter((p): p is ToolView => p.type === 'tool');
 
 describe('buildChat', () => {
+  it('shows a turn’s files as attachments, without the block of paths the harness reads', () => {
+    const base = { id: 'e1', runId: 'r', seq: 0, ts: '2026-01-01T00:00:00.000Z', harness: 'claude-code' as const };
+    const text = 'Why is this red?\n\n<attachments>\n- /s/uploads/ab-shot.png (image/png, 2 KB)\n</attachments>';
+    const attachments = [{ id: 'u1', name: 'shot.png', mime: 'image/png', size: 2048 }];
+    const [item] = buildChat([{ ...base, kind: 'message', data: { role: 'user', text, sent: true, source: 'user', attachments } }]);
+    expect(item).toMatchObject({ role: 'user', text: 'Why is this red?', attachments });
+  });
+
   it('alternates user turns and assistant replies', () => {
     expect(buildChat(events('multi-turn')).map((i) => (i.role === 'user' ? `user:${i.text.slice(0, 8)}` : `assistant:${i.parts.length}`))).toEqual([
       'user:Remember',

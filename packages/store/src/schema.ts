@@ -29,6 +29,8 @@ export const sessions = sqliteTable('sessions', {
    */
   baseBranch: text('base_branch'),
   baseCommit: text('base_commit'),
+  /** A top-level round-up's mode, as the person picked it; its agents follow it. */
+  mode: text('mode', { enum: ['auto', 'acceptEdits', 'plan'] }).notNull().default('auto'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
@@ -117,4 +119,26 @@ export const worktrees = sqliteTable(
     removedAt: integer('removed_at'),
   },
   (t) => [index('worktrees_round_up_idx').on(t.roundUpId)],
+);
+
+/**
+ * Files the person uploaded to a round-up (or to one of its agents). They live in the round-up's
+ * scratch folder, which its orchestrator and agents can read; the row says where and what.
+ */
+export const attachments = sqliteTable(
+  'attachments',
+  {
+    id: text('id').primaryKey(),
+    /** The top-level round-up whose scratch folder holds it. */
+    roundUpId: text('round_up_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    mime: text('mime').notNull(),
+    size: integer('size').notNull(),
+    /** Absolute path on disk. */
+    path: text('path').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [index('attachments_round_up_idx').on(t.roundUpId)],
 );

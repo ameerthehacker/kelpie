@@ -1,4 +1,4 @@
-import type { KelpieEvent } from '@kelpie/protocol';
+import type { Attachment, KelpieEvent } from '@kelpie/protocol';
 
 export type ChatStatus = 'ready' | 'submitted' | 'streaming' | 'error';
 
@@ -6,6 +6,8 @@ export type ChatStatus = 'ready' | 'submitted' | 'streaming' | 'error';
 export interface PendingMessage {
   id: number;
   text: string;
+  /** Files going with it, shown as chips until the echo arrives. */
+  attachments?: Attachment[];
 }
 
 /**

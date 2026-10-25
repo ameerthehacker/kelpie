@@ -9,6 +9,14 @@ import { z } from 'zod';
 export const Harness = z.enum(['claude-code']);
 export type Harness = z.infer<typeof Harness>;
 
+/**
+ * How freely a round-up's agents work, as the person picks it: `auto` (nothing asks; the harness
+ * blocks what is risky), `acceptEdits` (edits go through, anything else asks first), or `plan`
+ * (investigate and plan; no writers). Each harness supports some of them.
+ */
+export const Mode = z.enum(['auto', 'acceptEdits', 'plan']);
+export type Mode = z.infer<typeof Mode>;
+
 /** Coarse tool buckets; these drive the live-log labels in the UI. */
 export const ToolCategory = z.enum(['read', 'search', 'edit', 'bash', 'web', 'todo', 'task', 'mcp', 'other']);
 export type ToolCategory = z.infer<typeof ToolCategory>;
@@ -74,6 +82,15 @@ export const AgentUpdate = z.object({
 });
 export type AgentUpdate = z.infer<typeof AgentUpdate>;
 
+/** A file sent with a turn: uploaded by the person (it has an id), or handed on by the orchestrator. */
+export const Attachment = z.object({
+  id: z.string().optional(),
+  name: z.string(),
+  mime: z.string().optional(),
+  size: z.number(),
+});
+export type Attachment = z.infer<typeof Attachment>;
+
 export const Message = ev(
   'message',
   z.object({
@@ -88,6 +105,8 @@ export const Message = ev(
     source: z.enum(['user', 'orchestrator', 'kelpie']).optional(),
     /** On a notification Kelpie sent an orchestrator: the sub-agents it covers, for the UI. */
     agents: z.array(AgentUpdate).optional(),
+    /** Files sent with the turn; the text lists their paths in an `<attachments>` block. */
+    attachments: z.array(Attachment).optional(),
   }),
 );
 

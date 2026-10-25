@@ -5,10 +5,10 @@
  *
  * KELPIE_CWD / KELPIE_PORT / KELPIE_MODEL set the same defaults, KELPIE_MAX_AGENTS how many sub-agents
  * one orchestrator may have working at once, KELPIE_MAX_WORKTREES how many git worktrees may be on
- * disk (default 20), and KELPIE_WORKTREE_IDLE_DAYS how long an unused clean one stays (default 3);
- * `pnpm dev` runs it through turbo,
+ * disk (default 20), KELPIE_WORKTREE_IDLE_DAYS how long an unused clean one stays (default 3), and
+ * KELPIE_MAX_UPLOAD_MB the largest file one upload may be (default 25); `pnpm dev` runs it through turbo,
  * whose working directory is this package, so it passes the repo via KELPIE_CWD.
- * Round-ups and run logs live under KELPIE_HOME (default ~/.kelpie).
+ * Round-ups, run logs and each round-up's scratch folder live under KELPIE_HOME (default ~/.kelpie).
  */
 import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -68,6 +68,7 @@ const sessions = new SessionManager({
   store,
   defaultCwd: resolve(opts.cwd),
   runsDir: join(home, 'runs'),
+  scratchDir: join(home, 'scratch'),
   defaults: {
     ...(opts.model ? { model: opts.model } : {}),
     // Without a permission prompt in this UI yet, Bash would otherwise be denied outright.
@@ -75,7 +76,14 @@ const sessions = new SessionManager({
   },
 });
 orchestrator.attach(sessions);
-const app = createApp(sessions, { staticDir: join(import.meta.dirname, '../../../apps/web/dist'), orchestrator });
+const uploadMb = process.env.KELPIE_MAX_UPLOAD_MB ? Number(process.env.KELPIE_MAX_UPLOAD_MB) : undefined;
+// A typo must not switch the limit off: anything but a positive number keeps the default.
+if (uploadMb !== undefined && !(uploadMb > 0)) console.error('kelpie: KELPIE_MAX_UPLOAD_MB must be a number of megabytes; using 25');
+const app = createApp(sessions, {
+  staticDir: join(import.meta.dirname, '../../../apps/web/dist'),
+  orchestrator,
+  ...(uploadMb && uploadMb > 0 ? { maxUploadBytes: uploadMb * 1024 * 1024 } : {}),
+});
 // Loopback only: sessions can run shell commands.
 const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, () => {
   console.log(`kelpie daemon on http://127.0.0.1:${port} · default cwd ${sessions.defaultCwd} · data ${home}`);

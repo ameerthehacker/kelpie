@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { relativeTime, shortPath, statusLine, type RoundUp } from '../src/lib/round-ups.js';
+import { nextMode } from '../src/lib/modes.js';
 
 const NOW = new Date('2026-10-23T12:00:00').getTime();
 const MIN = 60_000;
-const r = (over: Partial<RoundUp>): RoundUp => ({ id: 'x', title: '', cwd: '/r', createdAt: 0, updatedAt: NOW - 5 * MIN, busy: false, ...over });
+const r = (over: Partial<RoundUp>): RoundUp => ({ id: 'x', title: '', cwd: '/r', createdAt: 0, updatedAt: NOW - 5 * MIN, busy: false, mode: 'auto', ...over });
 
 describe('round-up rows', () => {
   it('says how long ago', () => {
@@ -26,3 +27,12 @@ describe('round-up rows', () => {
   });
 });
 
+
+describe('modes', () => {
+  it('cycles through the harness’s modes in order, wrapping round', () => {
+    const modes = ['auto', 'acceptEdits', 'plan'] as const;
+    expect(nextMode(modes, 'auto')).toBe('acceptEdits');
+    expect(nextMode(modes, 'plan')).toBe('auto');
+    expect(nextMode([], 'plan')).toBe('plan');
+  });
+});

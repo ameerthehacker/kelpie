@@ -1,5 +1,6 @@
 import { PanelLeftIcon } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import type { Mode } from '@kelpie/protocol';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMatch, useNavigate } from 'react-router';
 import { AgentPaneSlot, AgentsButton } from '@/components/agents/agent-pane';
@@ -8,6 +9,7 @@ import { PlanDock, TodoDock } from '@/components/agents/plan-dock';
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation';
 import { Shimmer } from '@/components/ai-elements/shimmer';
 import { AssistantParts } from '@/components/chat/assistant-part';
+import { AttachmentChips } from '@/components/chat/attachments';
 import { Composer } from '@/components/chat/composer';
 import { KelpieLogo } from '@/components/shell/brand';
 import { Search } from '@/components/shell/search';
@@ -16,6 +18,7 @@ import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useAgents } from '@/hooks/use-agents';
 import { useBranches } from '@/hooks/use-branches';
+import { useHarnesses } from '@/hooks/use-harnesses';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useNow } from '@/hooks/use-now';
 import { useRoundUps } from '@/hooks/use-round-ups';
@@ -88,13 +91,16 @@ export function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [draftModel, setDraftModel] = useState('');
   const [draftBase, setDraftBase] = useState('');
+  const [draftMode, setDraftMode] = useState<Mode>('auto');
   const [modelError, setModelError] = useState<string | undefined>();
   const { roundUps, error: listError, defaultCwd, rename, remove, actionError, clearActionError } = useRoundUps();
   const onCreated = useCallback((id: string) => navigate(roundUpPath(id), { replace: true }), [navigate]);
   const { items, todos, status, busy, error, send, interrupt } = useSession(roundUpId, onCreated, {
     model: draftModel || undefined,
     baseBranch: draftBase || undefined,
+    mode: draftMode,
   });
+  const modes = useHarnesses()?.find((h) => h.harness === 'claude-code')?.modes ?? [];
   // Sub-agents are not in the sidebar list; fetch one directly when it is opened.
   const listed = roundUps?.find((r) => r.id === roundUpId);
   const direct = useQuery({
@@ -115,6 +121,7 @@ export function App() {
   const model = roundUpId ? (current?.model ?? '') : draftModel;
   const branches = useBranches(current?.role === 'agent' ? undefined : cwd);
   const base = roundUpId ? (current?.baseBranch ?? '') : draftBase;
+  const mode = roundUpId ? (current?.mode ?? 'auto') : draftMode;
   // Once a writer has a branch of its own, it started from the base: that can't change any more.
   const baseLocked = !!agents?.some((a) => a.branch);
 
@@ -131,6 +138,16 @@ export function App() {
       () => queryClient.invalidateQueries({ queryKey: ['round-up', roundUpId] }),
       (err: Error) => setModelError(`Couldn't change the model: ${err.message}`),
     );
+  };
+  const changeMode = (next: Mode) => {
+    if (!roundUpId) return setDraftMode(next);
+    setModelError(undefined);
+    // Optimistic: Shift+Tab should feel instant. The daemon's session event confirms it (or the refetch puts it back).
+    queryClient.setQueryData<RoundUp[]>(['round-ups'], (list) => list?.map((r) => (r.id === roundUpId ? { ...r, mode: next } : r)));
+    api<RoundUp>('PATCH', `/api/sessions/${roundUpId}`, { mode: next }).catch((err: Error) => {
+      setModelError(`Couldn't change the mode: ${err.message}`);
+      void queryClient.invalidateQueries({ queryKey: ['round-ups'] });
+    });
   };
   const changeBase = (next: string) => {
     if (!roundUpId) return setDraftBase(next);
@@ -200,8 +217,9 @@ export function App() {
                 {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
                 {items.map((item) =>
                   item.role === 'user' ? (
-                    <div key={item.id} className="flex justify-end">
-                      <div className="bg-raise max-w-[78%] rounded-[20px] px-4 py-[11px] break-words whitespace-pre-wrap">{item.text}</div>
+                    <div key={item.id} className="flex flex-col items-end gap-1.5">
+                      <AttachmentChips sessionId={roundUpId} attachments={item.attachments} className="max-w-[78%]" />
+                      {item.text && <div className="bg-raise max-w-[78%] rounded-[20px] px-4 py-[11px] break-words whitespace-pre-wrap">{item.text}</div>}
                     </div>
                   ) : (
                     <div key={item.id} className="flex min-w-0 flex-col gap-3.5">
@@ -229,6 +247,11 @@ export function App() {
                 onBase={changeBase}
                 branches={branches}
                 baseLocked={baseLocked}
+                baseClearable={!roundUpId}
+                // A sub-agent follows its round-up's mode; it is changed there.
+                mode={mode}
+                modes={current?.role === 'agent' ? [] : modes}
+                onMode={changeMode}
               />
             </div>
           </main>

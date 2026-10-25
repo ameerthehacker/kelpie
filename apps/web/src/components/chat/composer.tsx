@@ -1,19 +1,18 @@
-import { ArrowUpIcon, ChevronDownIcon, GitBranchIcon, SquareIcon } from 'lucide-react';
+import { ArrowUpIcon, SquareIcon } from 'lucide-react';
 import { useState, type KeyboardEvent } from 'react';
-import { HarnessMark } from '@/components/harness-mark';
+import type { Mode } from '@kelpie/protocol';
+import { AttachButton, FileChips, useAttachedFiles } from '@/components/chat/attachments';
+import { BranchPicker, HarnessMenu, ModeMenu } from '@/components/chat/composer-controls';
 import { LimitHint } from '@/components/chat/limit-hint';
 import type { Branch } from '@/hooks/use-branches';
 import type { ChatStatus } from '@/hooks/use-session';
-import { modelLabel } from '@/lib/harnesses';
+import { nextMode } from '@/lib/modes';
 import { cn } from '@/lib/utils';
-
-/** The Claude Code CLI's model aliases; '' leaves the choice to the harness. */
-const MODELS = ['', 'opus', 'sonnet', 'haiku'];
 
 interface Props {
   status: ChatStatus;
   busy: boolean;
-  send: (text: string) => Promise<void>;
+  send: (text: string, files: File[]) => Promise<void>;
   interrupt: () => void;
   /** The round-up's model, or '' for the default. */
   model: string;
@@ -25,69 +24,50 @@ interface Props {
   branches: Branch[] | undefined;
   /** Writers have started from the base, so it can no longer change. */
   baseLocked: boolean;
-}
-
-const chip = 'bg-chip relative flex h-8 items-center rounded-full pr-2 pl-3';
-const select = 'text-fg2 cursor-pointer appearance-none bg-transparent pr-4 text-[13px] outline-none disabled:cursor-default [&>*]:bg-[var(--surf)] [&>optgroup>option]:bg-[var(--surf)]';
-
-/** Where the round-up's feature branch starts: remote branches first, then local ones. */
-function BasePicker({ base, onBase, branches, locked }: { base: string; onBase: (b: string) => void; branches: Branch[]; locked: boolean }) {
-  const remote = branches.filter((b) => b.remote);
-  const local = branches.filter((b) => !b.remote);
-  // A base chosen earlier stays listed even if the branch has since gone.
-  const known = !base || branches.some((b) => b.name === base);
-  return (
-    <label title={locked ? `Writers started from ${base}; the base is fixed now` : 'The branch this round-up starts from'} className={cn(chip, !locked && 'hover:bg-raise')}>
-      <span className="sr-only">Base branch</span>
-      <GitBranchIcon aria-hidden="true" className="text-mu2 mr-1.5 size-3.5" strokeWidth={2} />
-      <select value={base} disabled={locked} onChange={(e) => onBase(e.target.value)} className={cn(select, 'max-w-48 truncate')}>
-        <option value="">Base: ask me</option>
-        {!known && <option value={base}>{base}</option>}
-        {remote.length > 0 && (
-          <optgroup label="Remote">
-            {remote.map((b) => (
-              <option key={b.name} value={b.name}>
-                {b.name}
-              </option>
-            ))}
-          </optgroup>
-        )}
-        {local.length > 0 && (
-          <optgroup label="Local">
-            {local.map((b) => (
-              <option key={b.name} value={b.name}>
-                {b.name}
-              </option>
-            ))}
-          </optgroup>
-        )}
-      </select>
-      {!locked && <ChevronDownIcon aria-hidden="true" className="text-mu2 pointer-events-none absolute right-2.5 size-[11px]" strokeWidth={2.4} />}
-    </label>
-  );
+  /** The base can go back to "ask me" (only before the round-up exists). */
+  baseClearable: boolean;
+  /** The round-up's mode, and the ones its harness has (in Shift+Tab order). */
+  mode: Mode;
+  modes: readonly Mode[];
+  onMode: (mode: Mode) => void;
 }
 
 /**
- * The design's composer: the message, the harness and model, and send. It clears as soon as a
- * message is sent, and puts the text back if sending fails and the box is still empty. While
- * the round-up works, an empty box offers stop; anything typed is still sent (and queued).
+ * The design's composer: the message and its files, the harness and model, the mode, the base
+ * branch, and send. Its controls are chips that shrink to icons as it narrows. It clears as
+ * soon as a message is sent, and puts the text and files back if sending fails and the box is
+ * still empty. While the round-up works, an empty box offers stop; anything typed is still sent
+ * (and queued). Files can be attached with the paperclip, dropped on the box, or pasted.
  */
-export function Composer({ status, busy, send, interrupt, model, onModel, base, onBase, branches, baseLocked }: Props) {
+export function Composer({ status, busy, send, interrupt, model, onModel, base, onBase, branches, baseLocked, baseClearable, mode, modes, onMode }: Props) {
   const [text, setText] = useState('');
+  const attached = useAttachedFiles();
+  const { getRootProps, getInputProps, isDragActive, open } = attached.dropzone;
+  const ready = !!text.trim() || attached.files.length > 0;
   const submit = () => {
     const message = text.trim();
-    if (!message) return;
+    const files = attached.files;
+    if (!message && !files.length) return;
     setText('');
-    send(message).catch(() => setText((now) => now || message));
+    attached.setFiles([]);
+    send(message, files).catch(() => {
+      setText((now) => now || message);
+      attached.setFiles((now) => (now.length ? now : files));
+    });
   };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // As in the terminal: Shift+Tab cycles the mode.
+    if (e.key === 'Tab' && e.shiftKey && modes.length > 1) {
+      e.preventDefault();
+      onMode(nextMode(modes, mode));
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       submit();
     }
   };
-  const stop = busy && !text.trim();
-  const models = model && !MODELS.includes(model) ? [...MODELS, model] : MODELS;
+  const stop = busy && !ready;
 
   return (
     <form
@@ -97,7 +77,13 @@ export function Composer({ status, busy, send, interrupt, model, onModel, base, 
       }}
       className="bg-background sticky bottom-0 pt-1 pb-5"
     >
-      <div className="border-ln bg-surf shadow-card flex flex-col gap-2 rounded-3xl border pt-3.5 pr-3 pb-3 pl-[18px]">
+      <div
+        {...getRootProps({
+          className: cn('border-ln bg-surf shadow-card flex flex-col gap-2 rounded-3xl border pt-3.5 pr-3 pb-3 pl-[18px]', isDragActive && 'border-acc ring-acc/30 ring-2'),
+        })}
+      >
+        <input {...getInputProps()} />
+        <FileChips files={attached.files} onRemove={attached.remove} className="-ml-1.5" />
         <label htmlFor="composer" className="sr-only">
           Message this round-up
         </label>
@@ -107,26 +93,16 @@ export function Composer({ status, busy, send, interrupt, model, onModel, base, 
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKey}
-          placeholder="Ask anything — it gets scheduled, never waited on"
+          onPaste={attached.onPaste}
+          placeholder={isDragActive ? 'Drop files to attach them' : 'Ask anything — it gets scheduled, never waited on'}
           className="text-fg field-sizing-content max-h-60 min-h-12 resize-none bg-transparent outline-none"
         />
-        <div className="-ml-1.5 flex flex-wrap items-center gap-1.5">
-          <span className="bg-chip text-fg2 flex h-8 items-center gap-[7px] rounded-full pr-3 pl-[7px] text-[13px]">
-            <HarnessMark harness="claude-code" />
-            Claude Code
-          </span>
-          <label className={cn(chip, 'hover:bg-raise')}>
-            <span className="sr-only">Model</span>
-            <select value={model} onChange={(e) => onModel(e.target.value)} className={select}>
-              {models.map((m) => (
-                <option key={m} value={m}>
-                  {m ? modelLabel(m) : 'Default model'}
-                </option>
-              ))}
-            </select>
-            <ChevronDownIcon aria-hidden="true" className="text-mu2 pointer-events-none absolute right-2.5 size-[11px]" strokeWidth={2.4} />
-          </label>
-          {!!branches?.length && <BasePicker base={base} onBase={onBase} branches={branches} locked={baseLocked} />}
+        {/* A container: as the composer narrows, the chips drop their labels instead of wrapping. */}
+        <div className="@container -ml-1.5 flex min-w-0 items-center gap-1.5">
+          <AttachButton onClick={open} />
+          <HarnessMenu harness="claude-code" model={model} onModel={onModel} />
+          {modes.length > 1 && <ModeMenu mode={mode} modes={modes} onMode={onMode} />}
+          {!!branches?.length && <BranchPicker base={base} onBase={onBase} branches={branches} locked={baseLocked} clearable={baseClearable} />}
           <span className="flex-1" />
           {stop ? (
             <button type="button" onClick={interrupt} aria-label="Stop" className="bg-fg text-background flex size-[38px] shrink-0 items-center justify-center rounded-full">
@@ -136,7 +112,7 @@ export function Composer({ status, busy, send, interrupt, model, onModel, base, 
             <button
               type="submit"
               aria-label="Send"
-              disabled={!text.trim() || status === 'submitted'}
+              disabled={!ready || status === 'submitted'}
               className="bg-acc text-accfg flex size-[38px] shrink-0 items-center justify-center rounded-full disabled:opacity-50"
             >
               <ArrowUpIcon className="size-4" strokeWidth={2.2} />

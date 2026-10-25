@@ -1,4 +1,4 @@
-import type { AgentUpdate, EventOf, KelpieEvent, TodoItem, ToolCategory } from '@kelpie/protocol';
+import { stripAttachments, type AgentUpdate, type Attachment, type EventOf, type KelpieEvent, type TodoItem, type ToolCategory } from '@kelpie/protocol';
 
 export interface ToolView {
   type: 'tool';
@@ -43,7 +43,8 @@ const SPAWN_TOOL = 'mcp__kelpie__spawn_agent';
 export type Sender = NonNullable<EventOf<'message'>['data']['source']>;
 
 export type ChatItem =
-  | { role: 'user'; id: string; text: string; ts?: string; source?: Sender }
+  /** `text` without the `<attachments>` block; the files are in `attachments`. */
+  | { role: 'user'; id: string; text: string; ts?: string; source?: Sender; attachments?: Attachment[] }
   | { role: 'assistant'; id: string; parts: AssistantPart[] };
 
 const NOTIFICATION_OPEN = '<kelpie-notification>';
@@ -128,7 +129,14 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
         // Turns Kelpie sent itself (notifications, restarts) are not the person speaking.
         if (ev.data.role === 'user' && fromKelpie(ev.data)) assistant(ev.id).push(...kelpieTurn(ev.data, ev.ts));
         else if (ev.data.role === 'user')
-          items.push({ role: 'user', id: ev.id, text: ev.data.text, ts: ev.ts, ...(ev.data.source ? { source: ev.data.source } : {}) });
+          items.push({
+            role: 'user',
+            id: ev.id,
+            text: ev.data.attachments?.length ? stripAttachments(ev.data.text) : ev.data.text,
+            ts: ev.ts,
+            ...(ev.data.source ? { source: ev.data.source } : {}),
+            ...(ev.data.attachments?.length ? { attachments: ev.data.attachments } : {}),
+          });
         else assistant(ev.id).push({ type: 'text', text: ev.data.text, ts: ev.ts });
         break;
       case 'thinking':

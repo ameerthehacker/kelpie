@@ -2,6 +2,7 @@ export {
   Session,
   SessionManager,
   titleFrom,
+  safeName,
   type ManagerUpdate,
   type SessionDefaults,
   type SessionInfo,

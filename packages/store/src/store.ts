@@ -9,12 +9,14 @@ import * as schema from './schema.js';
 
 export type SessionRow = typeof schema.sessions.$inferSelect;
 export type NewSession = Omit<typeof schema.sessions.$inferInsert, 'createdAt' | 'updatedAt'>;
-export type SessionPatch = Partial<Pick<SessionRow, 'title' | 'model' | 'harnessSessionId' | 'resumePending' | 'notifiedIdx' | 'baseBranch' | 'baseCommit'>>;
+export type SessionPatch = Partial<Pick<SessionRow, 'title' | 'model' | 'harnessSessionId' | 'resumePending' | 'notifiedIdx' | 'baseBranch' | 'baseCommit' | 'mode'>>;
 export type WorktreeRow = typeof schema.worktrees.$inferSelect;
 export type NewWorktree = Omit<typeof schema.worktrees.$inferInsert, 'id' | 'createdAt' | 'lastUsedAt' | 'state'>;
 export type WorktreePatch = Partial<Pick<WorktreeRow, 'state' | 'lastUsedAt' | 'removedAt' | 'forkCommit'>>;
 export type OutboxRow = typeof schema.outbox.$inferSelect;
 export type OutboxSource = OutboxRow['source'];
+export type AttachmentRow = typeof schema.attachments.$inferSelect;
+export type NewAttachment = Omit<AttachmentRow, 'createdAt'>;
 
 const MIGRATIONS = join(import.meta.dirname, '../drizzle');
 
@@ -232,6 +234,21 @@ export class Store {
   /** Every worktree row, removed ones included: the repos Kelpie has ever worked in. */
   allWorktrees(): WorktreeRow[] {
     return this.db.select().from(schema.worktrees).orderBy(asc(schema.worktrees.id)).all();
+  }
+
+  addAttachment(a: NewAttachment, now = Date.now()): AttachmentRow {
+    return this.db.insert(schema.attachments).values({ ...a, createdAt: now }).returning().get();
+  }
+
+  /** The given attachments of one round-up, in the order asked; ids from elsewhere (or unknown) are left out. */
+  attachmentsOf(roundUpId: string, ids: string[]): AttachmentRow[] {
+    if (!ids.length) return [];
+    const rows = this.db
+      .select()
+      .from(schema.attachments)
+      .where(and(eq(schema.attachments.roundUpId, roundUpId), inArray(schema.attachments.id, ids)))
+      .all();
+    return ids.flatMap((id) => rows.filter((r) => r.id === id));
   }
 
   close(): void {

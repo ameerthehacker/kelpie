@@ -54,6 +54,7 @@ export function claudeArgs(spec: RunSpec): string[] {
   if (spec.resume) args.push('--resume', spec.resume);
   if (spec.allowedTools?.length) args.push('--allowedTools', ...spec.allowedTools);
   if (spec.disallowedTools?.length) args.push('--disallowedTools', ...spec.disallowedTools);
+  if (spec.addDirs?.length) args.push('--add-dir', ...spec.addDirs);
   if (spec.appendSystemPrompt) args.push('--append-system-prompt', spec.appendSystemPrompt);
   if (spec.mcpConfig?.length) args.push('--mcp-config', ...spec.mcpConfig);
   if (spec.extraArgs?.length) args.push(...spec.extraArgs);
@@ -135,6 +136,12 @@ class ClaudeCodeRun implements Run {
     this.parser.noteSent().forEach((ev) => this.emit(ev));
     // The CLI replays the turn on stdout once it takes it in; that becomes the user `message` event.
     this.child.stdin.write(userTurn(text));
+  }
+
+  async setMode(mode: string): Promise<boolean> {
+    if (this.exit || this.stopping) return false;
+    const res = await this.control({ subtype: 'set_permission_mode', mode });
+    return res?.subtype === 'success';
   }
 
   async interrupt(): Promise<void> {
@@ -235,5 +242,6 @@ class ClaudeCodeRun implements Run {
 
 export const claudeCode: Adapter = {
   harness: 'claude-code',
+  modes: ['auto', 'acceptEdits', 'plan'],
   start: (spec) => new ClaudeCodeRun(spec),
 };

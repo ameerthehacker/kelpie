@@ -1,4 +1,4 @@
-import type { Harness, KelpieEvent } from '@kelpie/protocol';
+import type { Harness, KelpieEvent, Mode } from '@kelpie/protocol';
 
 export interface RunSpec {
   cwd: string;
@@ -16,6 +16,8 @@ export interface RunSpec {
   /** Tools that run without a permission prompt (e.g. 'Bash', 'Bash(git:*)'). */
   allowedTools?: string[];
   disallowedTools?: string[];
+  /** Directories outside `cwd` the harness may work in too (e.g. the round-up's scratch folder). */
+  addDirs?: string[];
   appendSystemPrompt?: string;
   /** MCP config files or JSON strings. Only these servers load (the user's global ones do not). */
   mcpConfig?: string[];
@@ -50,6 +52,8 @@ export interface Run {
   readonly exited: boolean;
   /** Sends a user turn; if one is running, the harness queues it. Throws once the run is stopping or exited. */
   send(text: string): void;
+  /** Switches the live process to a permission mode (a harness value, e.g. `acceptEdits`); false if it refused or never answered. */
+  setMode(mode: string): Promise<boolean>;
   /**
    * Stops the current turn; the session stays alive for further `send()`s.
    * Only if the harness does not answer at all is the process killed.
@@ -62,5 +66,7 @@ export interface Run {
 
 export interface Adapter {
   readonly harness: Harness;
+  /** The Kelpie modes this harness supports, in the order a person cycles through them. */
+  readonly modes: readonly Mode[];
   start(spec: RunSpec): Run;
 }

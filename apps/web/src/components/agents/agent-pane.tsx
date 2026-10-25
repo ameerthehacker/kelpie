@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { HarnessMark } from '@/components/harness-mark';
 import { MessageResponse } from '@/components/ai-elements/message';
+import { AttachButton, AttachmentChips, FileChips, useAttachedFiles } from '@/components/chat/attachments';
 import { EventLine } from '@/components/chat/events';
 import { ShowCommandsToggle, StepRow } from '@/components/chat/steps';
 import { useEventLog } from '@/hooks/use-agents';
@@ -13,6 +14,7 @@ import { byAttention, elapsed, STATUS_LABEL, STATUS_ORDER, type AgentStatus, typ
 import { api } from '@/lib/api';
 import { buildChat } from '@/lib/chat';
 import { unechoed, type SentMessage } from '@/lib/session-state';
+import { uploadFile } from '@/lib/uploads';
 import { harnessOf, modelLabel } from '@/lib/harnesses';
 import { roundUpPath } from '@/lib/round-ups';
 import { cn } from '@/lib/utils';
@@ -319,8 +321,9 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
       <AgentTimeline agent={a} events={log.events} error={log.error} pending={pending} />
       <AgentMessage
         agent={a}
-        onSend={(text) => {
-          const message = { id: Date.now() + Math.random(), text, after: log.events.length };
+        onSend={(text, files) => {
+          const attachments = files.map((f) => ({ name: f.name, size: f.size, mime: f.type }));
+          const message = { id: Date.now() + Math.random(), text, after: log.events.length, ...(files.length ? { attachments } : {}) };
           setSent((s) => [...unechoed(s, log.events), message]);
           return () => setSent((s) => s.filter((m) => m !== message));
         }}
@@ -355,7 +358,8 @@ function AgentTimeline({ agent: a, events, error, pending }: { agent: AgentSumma
               <div className="text-mu2 text-xs">
                 {item.source === 'orchestrator' ? 'Kelpie' : 'You'} · {time(item.ts)}
               </div>
-              <div className="bg-raise max-w-[85%] rounded-2xl px-3.5 py-[9px] text-sm leading-[1.45] break-words whitespace-pre-wrap">{item.text}</div>
+              <AttachmentChips sessionId={a.id} attachments={item.attachments} className="max-w-[85%]" />
+              {item.text && <div className="bg-raise max-w-[85%] rounded-2xl px-3.5 py-[9px] text-sm leading-[1.45] break-words whitespace-pre-wrap">{item.text}</div>}
             </div>
           ) : (
             item.parts.map((p, i) => {
@@ -395,7 +399,8 @@ function AgentTimeline({ agent: a, events, error, pending }: { agent: AgentSumma
         {pending.map((m) => (
           <div key={m.id} className="flex flex-col items-end gap-1">
             <div className="text-mu2 text-xs">You · sending…</div>
-            <div className="bg-raise max-w-[85%] rounded-2xl px-3.5 py-[9px] text-sm leading-[1.45] break-words whitespace-pre-wrap opacity-70">{m.text}</div>
+            <AttachmentChips sessionId={undefined} attachments={m.attachments} className="max-w-[85%] opacity-70" />
+            {m.text && <div className="bg-raise max-w-[85%] rounded-2xl px-3.5 py-[9px] text-sm leading-[1.45] break-words whitespace-pre-wrap opacity-70">{m.text}</div>}
           </div>
         ))}
         <div ref={end} />
@@ -408,30 +413,40 @@ function AgentTimeline({ agent: a, events, error, pending }: { agent: AgentSumma
  * A line straight to the agent; its orchestrator hears how it turns out when the agent next goes
  * idle. `onSend` shows the message at once and returns how to take it back if sending fails.
  */
-function AgentMessage({ agent: a, onSend }: { agent: AgentSummary; onSend: (text: string) => () => void }) {
+function AgentMessage({ agent: a, onSend }: { agent: AgentSummary; onSend: (text: string, files: File[]) => () => void }) {
   const [text, setText] = useState('');
   const [error, setError] = useState<string | undefined>();
+  const attached = useAttachedFiles();
+  const { getRootProps, getInputProps, isDragActive, open } = attached.dropzone;
 
   // Each message goes on its own: the next can be typed and sent while one is still on its way.
   const send = async (e: FormEvent) => {
     e.preventDefault();
     const message = text.trim();
-    if (!message) return;
+    const files = attached.files;
+    if (!message && !files.length) return;
     setError(undefined);
     setText('');
-    const undo = onSend(message);
+    attached.setFiles([]);
+    const undo = onSend(message, files);
     try {
-      await api('POST', `/api/sessions/${a.id}/messages`, { text: message });
+      // Into the round-up's scratch folder, like the composer's files.
+      const uploads = await Promise.all(files.map((f) => uploadFile(a.id, f)));
+      await api('POST', `/api/sessions/${a.id}/messages`, { text: message, ...(uploads.length ? { attachments: uploads.map((u) => u.id) } : {}) });
     } catch (err) {
       undo();
       setText((now) => now || message);
+      attached.setFiles((now) => (now.length ? now : files));
       setError((err as Error).message);
     }
   };
 
   return (
-    <form onSubmit={send} className="border-ln flex flex-col gap-1.5 border-t px-3.5 pt-2.5 pb-3.5">
-      <div className="bg-chip flex items-center gap-1.5 rounded-full py-[5px] pr-[5px] pl-4">
+    <form onSubmit={send} {...getRootProps({ className: 'border-ln flex flex-col gap-1.5 border-t px-3.5 pt-2.5 pb-3.5' })}>
+      <input {...getInputProps()} />
+      <FileChips files={attached.files} onRemove={attached.remove} />
+      <div className={cn('bg-chip flex items-center gap-1.5 rounded-full py-[5px] pr-[5px] pl-1.5', isDragActive && 'ring-acc/40 ring-2')}>
+        <AttachButton onClick={open} />
         <label htmlFor="agent-message" className="sr-only">
           Message {a.title}
         </label>
@@ -439,13 +454,14 @@ function AgentMessage({ agent: a, onSend }: { agent: AgentSummary; onSend: (text
           id="agent-message"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={`Message ${a.title}…`}
+          onPaste={attached.onPaste}
+          placeholder={isDragActive ? 'Drop files to attach them' : `Message ${a.title}…`}
           className="text-fg h-[34px] min-w-0 flex-1 bg-transparent text-sm outline-none"
         />
         <button
           type="submit"
           aria-label="Send to this agent"
-          disabled={!text.trim()}
+          disabled={!text.trim() && !attached.files.length}
           className="bg-acc text-accfg flex size-[34px] shrink-0 items-center justify-center rounded-full disabled:opacity-50"
         >
           <ArrowUpIcon className="size-3.5" strokeWidth={2.4} />

@@ -50,6 +50,20 @@
       "when": 1792854654912,
       "tag": "0006_worktree-fork-commit",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1792897087687,
+      "tag": "0007_attachments",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1792898685619,
+      "tag": "0008_session-mode",
+      "breakpoints": true
     }
   ]
 }

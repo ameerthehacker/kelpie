@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
-import { mergeUsage, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
+import { mkdirSync, realpathSync } from 'node:fs';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { basename, extname, join } from 'node:path';
+import { attachmentsBlock, mergeUsage, type Attachment, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
 import { claudeCode, type Adapter, type Run, type RunSpec } from '@kelpie/adapters';
-import type { OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
+import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary } from './agent-summary.js';
 
 export type TurnStatus = EventData<'turn.ended'>['status'];
@@ -33,6 +35,8 @@ export interface SessionInfo {
   /** An orchestrator's base branch and the commit it is pinned to, once chosen. */
   baseBranch: string | undefined;
   baseCommit: string | undefined;
+  /** The round-up's mode; a sub-agent reports its round-up's. */
+  mode: Mode;
 }
 
 /** What subscribers receive. `index` is the event's position in the session log (stable across runs and restarts). */
@@ -69,6 +73,13 @@ export interface SessionHooks {
   prepare?(session: Session): Promise<void>;
   /** A round-up (or one sub-agent) is being deleted: its processes are stopped, its rows not yet gone. */
   removing?(session: Session): Promise<void>;
+  /** A round-up's mode changed: bring its live processes in line. Without it, its own process switches to the mode. */
+  modeChanged?(session: Session): Promise<void>;
+}
+
+/** A file sent with a turn, and where the harness finds it. */
+export interface SentFile extends Attachment {
+  path: string;
 }
 
 export interface SendOptions {
@@ -76,6 +87,8 @@ export interface SendOptions {
   alsoInTx?: () => void;
   /** Extra `message` data the logged echo of this turn carries. */
   meta?: Record<string, unknown>;
+  /** Files listed in the turn by path (the harness reads them itself) and, for the UI, in its echo. */
+  attachments?: SentFile[];
 }
 
 export interface CreateOptions {
@@ -89,6 +102,7 @@ export interface CreateOptions {
   writes?: boolean;
   title?: string;
   model?: string;
+  mode?: Mode;
 }
 
 export interface SessionManagerOptions {
@@ -101,6 +115,8 @@ export interface SessionManagerOptions {
   /** A harness process idle this long is stopped; the next message resumes it. */
   idleMs?: number;
   hooks?: SessionHooks;
+  /** Each round-up's scratch folder (uploads, files passed to agents) goes in `<scratchDir>/<roundUpId>`. None without it. */
+  scratchDir?: string;
 }
 
 interface SessionContext {
@@ -108,6 +124,7 @@ interface SessionContext {
   defaults: SessionDefaults;
   adapter: Adapter;
   runsDir: string | undefined;
+  scratchDir: string | undefined;
   idleMs: number;
   hooks: SessionHooks;
   /** Set once the daemon is shutting down: nothing may start a harness process any more. */
@@ -116,11 +133,28 @@ interface SessionContext {
   reportUsage: (harness: string, usage: EventData<'rate_limit'>) => void;
   /** A sub-agent's summary may have changed. */
   agentChanged: (s: Session) => void;
+  /** Another round-up (a sub-agent's orchestrator). */
+  get: (id: string) => Session | undefined;
 }
 
 const STOPPED = 'Kelpie stopped while this run was active.';
 const AGENT_UPDATE_MS = 300;
 const TITLE_MAX = 60;
+
+/**
+ * A file name safe to put on disk and in a path the harness reads: no directories or odd characters,
+ * any script's letters kept, and the extension always (the harness goes by it, e.g. to show an image).
+ */
+export function safeName(name: string): string {
+  const base = basename(name.replace(/\\/g, '/'));
+  const ext = extname(base).replace(/[^\p{L}\p{N}.]+/gu, '').slice(0, 16);
+  const stem = base
+    .slice(0, base.length - extname(base).length)
+    .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+    .replace(/^[.-]+/, '')
+    .slice(-80);
+  return `${stem || 'file'}${ext}`;
+}
 
 export function titleFrom(text: string): string {
   const line = (text.trim().split('\n')[0] ?? '').replace(/\s+/g, ' ');
@@ -148,6 +182,8 @@ export class Session {
   private starting: Promise<void> | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private deleted = false;
+  /** Its process was started with settings that have since changed: end it once it is idle. */
+  private stale = false;
   /** As of the last logged `activity` event, so it never runs ahead of what subscribers have seen. */
   private busyState = false;
   private lastTurnState: TurnStatus | undefined;
@@ -184,6 +220,11 @@ export class Session {
 
   get cwd(): string {
     return this.row.cwd;
+  }
+
+  /** The round-up's scratch folder, shared by its orchestrator and agents; undefined if Kelpie keeps none. */
+  get scratch(): string | undefined {
+    return this.ctx.scratchDir && join(this.ctx.scratchDir, this.row.parentId ?? this.row.id);
   }
 
   /** Its harness is being started (its directory readied first). */
@@ -232,6 +273,32 @@ export class Session {
     this.update({ baseBranch: branch, baseCommit: commit });
   }
 
+  /** The round-up's mode: its own, or for a sub-agent its orchestrator's. */
+  get mode(): Mode {
+    const parent = this.row.parentId ? this.ctx.get(this.row.parentId) : undefined;
+    return parent ? parent.mode : this.row.mode;
+  }
+
+  /** Records a top-level round-up's mode (see SessionManager.setMode for what else follows). */
+  saveMode(mode: Mode): void {
+    this.update({ mode });
+  }
+
+  /** Switches the running harness process, if any, to a harness permission mode. */
+  async switchMode(harnessMode: string): Promise<boolean> {
+    return this.run && !this.run.exited ? this.run.setMode(harnessMode) : false;
+  }
+
+  /**
+   * Its process's settings (tools, system prompt) are out of date: it is ended now if idle, or as
+   * soon as it goes idle, and the next turn resumes the same conversation with fresh ones.
+   */
+  restartWhenIdle(): void {
+    if (!this.run || this.run.exited) return;
+    if (this.working) this.stale = true;
+    else void this.stop();
+  }
+
   get writes(): boolean {
     return this.row.writes;
   }
@@ -267,6 +334,7 @@ export class Session {
       kind,
       baseBranch: baseBranch ?? undefined,
       baseCommit: baseCommit ?? undefined,
+      mode: this.mode,
     };
   }
 
@@ -351,15 +419,19 @@ export class Session {
     while (this.stopping) await this.stopping;
     if (this.deleted) throw new Error('this round-up was deleted');
     if (this.ctx.closing) throw new Error('Kelpie is shutting down');
+    const files = opts.attachments ?? [];
+    // The paths are in the text itself, so a turn re-sent after a crash still carries its files.
+    const turn = files.length ? `${text.trim() ? `${text}\n\n` : ''}${attachmentsBlock(files)}` : text;
     // The harness echoes an empty turn as nothing, which would put the outbox out of step.
-    if (!text.trim()) throw new Error('a turn needs some text');
+    if (!turn.trim()) throw new Error('a turn needs some text');
+    const meta = files.length ? { ...opts.meta, attachments: files.map(({ path: _, ...a }) => a) } : opts.meta;
     this.load();
     this.ctx.store.atomically(() => {
       opts.alsoInTx?.();
-      this.ctx.store.enqueue(this.id, text, source, Date.now(), opts.meta);
+      this.ctx.store.enqueue(this.id, turn, source, Date.now(), meta);
     });
-    if (!this.row.title && source === 'user') this.update({ title: titleFrom(text) });
-    if (this.run && !this.run.exited) this.run.send(text);
+    if (!this.row.title && source === 'user') this.update({ title: titleFrom(text) || titleFrom(files.map((f) => f.name).join(', ')) });
+    if (this.run && !this.run.exited) this.run.send(turn);
     else await this.launch();
   }
 
@@ -418,11 +490,15 @@ export class Session {
     const { store, hooks } = this.ctx;
     const texts = store.undelivered(this.id).map((r) => r.text);
     if (!texts.length) return;
+    // The harness is given the scratch folder (--add-dir), so it must exist.
+    if (this.scratch) mkdirSync(this.scratch, { recursive: true });
     const runId = randomUUID();
     const resume = this.row.harnessSessionId ?? undefined;
     const hadHistory = store.firstSent(this.id)?.deliveredAt != null;
+    this.stale = false;
     const run = this.ctx.adapter.start({
       ...this.ctx.defaults,
+      permissionMode: this.mode,
       ...(this.row.model ? { model: this.row.model } : {}),
       ...hooks.specFor?.(this, { runId, fresh: !resume, hadHistory }),
       cwd: this.cwd,
@@ -526,6 +602,7 @@ export class Session {
         } else if (event.kind === 'activity') {
           this.busyState = event.data.busy;
           if (event.data.busy) clearTimeout(this.idleTimer);
+          else if (this.stale) void this.stop();
           else this.armIdle(run);
           changed = true;
         } else if (event.kind === 'rate_limit') {
@@ -613,10 +690,13 @@ export class SessionManager {
       defaults: opts.defaults ?? {},
       adapter: opts.adapter ?? claudeCode,
       runsDir: opts.runsDir,
+      // Real path: the harness matches its permission rules against resolved paths (/tmp is /private/tmp on macOS).
+      scratchDir: opts.scratchDir && (mkdirSync(opts.scratchDir, { recursive: true }), realpathSync(opts.scratchDir)),
       idleMs: opts.idleMs ?? 10 * 60_000,
       hooks: opts.hooks ?? {},
       closing: false,
       changed: (s) => this.notify({ type: 'session', session: s.info() }),
+      get: (id) => this.sessions.get(id),
       // A busy agent emits many events a second; the pane only needs a few updates.
       agentChanged: (s) => {
         if (this.agentTimers.has(s.id)) return;
@@ -661,6 +741,7 @@ export class SessionManager {
       ...(opts.role ? { role: opts.role } : {}),
       ...(opts.writes ? { writes: true } : {}),
       ...(opts.title ? { title: opts.title } : {}),
+      ...(opts.mode ? { mode: opts.mode } : {}),
     });
     const session = new Session(row, this.ctx);
     this.sessions.set(session.id, session);
@@ -705,8 +786,62 @@ export class SessionManager {
     this.sessions.delete(id);
     await Promise.all(this.children(id).map((c) => this.delete(c.id, true)));
     await session.delete();
+    // A round-up's scratch folder goes with it; a sub-agent's files stay for the rest of the round-up.
+    if (!session.parentId && session.scratch) {
+      await rm(session.scratch, { recursive: true, force: true }).catch((err) => console.error(`round-up ${id}: could not remove its scratch folder`, err));
+    }
     this.notify({ type: 'deleted', id });
     return true;
+  }
+
+  /** Saves a file the person uploaded into the round-up's scratch folder. */
+  async saveUpload(session: Session, file: { name: string; mime: string; bytes: Uint8Array }): Promise<AttachmentRow> {
+    const scratch = session.scratch;
+    if (!scratch) throw new Error('uploads need a scratch folder, and Kelpie was started without one');
+    const roundUpId = session.parentId ?? session.id;
+    const gone = () => !this.sessions.has(roundUpId);
+    if (gone()) throw new Error('this round-up was deleted');
+    const id = randomUUID();
+    const dir = join(scratch, 'uploads');
+    // The id prefix keeps two uploads of the same name apart.
+    const path = join(dir, `${id.slice(0, 8)}-${safeName(file.name)}`);
+    try {
+      await mkdir(dir, { recursive: true });
+      await writeFile(path, file.bytes, { flag: 'wx' });
+      return this.store.addAttachment({ id, roundUpId, name: file.name, mime: file.mime, size: file.bytes.length, path });
+    } catch (err) {
+      // Deleted while the file was written: its scratch folder was removed already, and must not come back.
+      await rm(gone() ? scratch : path, { recursive: true, force: true }).catch(() => {});
+      throw gone() ? new Error('this round-up was deleted') : err;
+    }
+  }
+
+  /** Uploads of the round-up `session` belongs to, in the order asked; unknown ids are left out. */
+  uploads(session: Session, ids: string[]): AttachmentRow[] {
+    return this.store.attachmentsOf(session.parentId ?? session.id, ids);
+  }
+
+  /** The modes the harness supports, in the order a person cycles through them. */
+  get modes(): readonly Mode[] {
+    return this.ctx.adapter.modes;
+  }
+
+  /** The harnesses round-ups can run on, and what each offers. */
+  harnesses(): { harness: string; modes: readonly Mode[] }[] {
+    return [{ harness: this.ctx.adapter.harness, modes: this.ctx.adapter.modes }];
+  }
+
+  /**
+   * Sets a top-level round-up's mode. Its agents follow it: the hooks bring their live processes
+   * in line, and every later start uses it.
+   */
+  async setMode(session: Session, mode: Mode): Promise<void> {
+    if (session.parentId) throw new Error("a sub-agent follows its round-up's mode");
+    if (!this.modes.includes(mode)) throw new Error(`${this.ctx.adapter.harness} has no ${mode} mode`);
+    if (session.mode === mode) return;
+    session.saveMode(mode);
+    if (this.ctx.hooks.modeChanged) await this.ctx.hooks.modeChanged(session);
+    else await session.switchMode(mode);
   }
 
   /** Each harness's latest subscription usage. */

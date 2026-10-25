@@ -9,6 +9,10 @@ import type { Session } from '../sessions.js';
 import { ToolError, type Orchestrator } from './orchestrator.js';
 
 const agentId = z.string().describe('The id spawn_agent returned.');
+const files = z
+  .array(z.string())
+  .optional()
+  .describe('Paths of files in your scratch folder (uploads, or files you wrote there) for the agent; they are listed in its message for it to read.');
 
 /** Tool results are JSON; refusals come back as errors the orchestrator can read and act on. */
 async function result(fn: () => unknown): Promise<CallToolResult> {
@@ -45,6 +49,7 @@ function server(orch: Orchestrator, parent: Session): McpServer {
         in: z.string().optional().describe("Read-only agents only: an agent id whose worktree to look at (e.g. to review its work). Default: your feature branch."),
         harness: Harness.optional().describe('Which coding agent runs it. Default claude-code.'),
         model: z.string().optional().describe('Model override; omit to use the default.'),
+        files,
       },
     },
     (input) => result(() => orch.spawn(parent, input)),
@@ -80,9 +85,9 @@ function server(orch: Orchestrator, parent: Session): McpServer {
     'message_agent',
     {
       description: 'Send a sub-agent a follow-up or an answer to its questions. It resumes its session with all its context.',
-      inputSchema: { agentId, text: z.string().min(1).describe('Self-contained: say what you need and why.') },
+      inputSchema: { agentId, text: z.string().min(1).describe('Self-contained: say what you need and why.'), files },
     },
-    ({ agentId, text }) => result(() => orch.message(parent, agentId, text)),
+    ({ agentId, text, files }) => result(() => orch.message(parent, agentId, text, files)),
   );
 
   mcp.registerTool(

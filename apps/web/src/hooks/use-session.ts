@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router';
-import type { KelpieEvent } from '@kelpie/protocol';
+import type { KelpieEvent, Mode } from '@kelpie/protocol';
 import { api, isGone } from '@/lib/api';
 import { buildChat, latestTodos, type ChatItem } from '@/lib/chat';
 import { logStream } from '@/lib/live-stream';
+import { uploadFile } from '@/lib/uploads';
 import { chatStatus, lastBusy, settlePending, type PendingMessage } from '@/lib/session-state';
 
 export type { ChatStatus } from '@/lib/session-state';
@@ -31,7 +32,7 @@ const belongs = (m: Pending, view: string) => m.view === view || m.created === v
  * while one is in flight), so everything they touch on completion is
  * checked against the view on screen now.
  */
-export function useSession(id: string | undefined, onCreated: (id: string) => void, draft: { model?: string; baseBranch?: string } = {}) {
+export function useSession(id: string | undefined, onCreated: (id: string) => void, draft: { model?: string; baseBranch?: string; mode?: Mode } = {}) {
   const [events, setEvents] = useState<KelpieEvent[]>([]);
   const [pending, setPending] = useState<Pending[]>([]);
   const [error, setError] = useState<string | undefined>();
@@ -85,19 +86,20 @@ export function useSession(id: string | undefined, onCreated: (id: string) => vo
   }, [id, view, markGone]);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, files: File[] = []) => {
       const pendingId = nextPendingId.current++;
       const from = viewRef.current;
       let tag = from;
       setError(undefined);
-      setPending((p) => [...p, { id: pendingId, text, view: from, sending: true }]);
+      const attachments = files.map((f) => ({ name: f.name, size: f.size, mime: f.type }));
+      setPending((p) => [...p, { id: pendingId, text, view: from, sending: true, ...(files.length ? { attachments } : {}) }]);
       try {
         // A draft, or a round-up the daemon no longer has: create one first, once per view.
         let target = from.startsWith('draft:') || goneRef.current === from ? undefined : from;
         if (!target) {
           if (creating.current?.view !== from) {
-            const { model, baseBranch } = draftRef.current;
-            const promise = api<{ id: string }>('POST', '/api/sessions', { ...(model ? { model } : {}), ...(baseBranch ? { baseBranch } : {}) }).then(({ id: created }) => {
+            const { model, baseBranch, mode } = draftRef.current;
+            const promise = api<{ id: string }>('POST', '/api/sessions', { ...(model ? { model } : {}), ...(baseBranch ? { baseBranch } : {}), ...(mode ? { mode } : {}) }).then(({ id: created }) => {
               // Every message sent from this view goes with it, and stays visible while the route changes.
               setPending((p) => p.map((m) => (m.view === from ? { ...m, created } : m)));
               // Only follow it there if the user is still looking at where they sent from.
@@ -110,7 +112,10 @@ export function useSession(id: string | undefined, onCreated: (id: string) => vo
           target = await creating.current!.promise;
           tag = target;
         }
-        await api('POST', `/api/sessions/${target}/messages`, { text });
+        // Files go up first (into the round-up's scratch folder), then the message names them.
+        const to = target;
+        const uploads = await Promise.all(files.map((f) => uploadFile(to, f)));
+        await api('POST', `/api/sessions/${to}/messages`, { text, ...(uploads.length ? { attachments: uploads.map((u) => u.id) } : {}) });
         // Off screen now: the daemon's log has it, and that view reloads from there.
         if (viewRef.current !== tag && viewRef.current !== from) setPending((p) => p.filter((m) => m.id !== pendingId));
         else setPending((p) => p.map((m) => (m.id === pendingId ? { ...m, sending: false } : m)));
@@ -134,7 +139,7 @@ export function useSession(id: string | undefined, onCreated: (id: string) => vo
 
   const visible = useMemo(() => pending.filter((m) => belongs(m, view)), [pending, view]);
   const items = useMemo(
-    () => [...buildChat(events), ...visible.map(({ id: pid, text }): ChatItem => ({ role: 'user', id: `pending-${pid}`, text }))],
+    () => [...buildChat(events), ...visible.map(({ id: pid, text, attachments }): ChatItem => ({ role: 'user', id: `pending-${pid}`, text, ...(attachments ? { attachments } : {}) }))],
     [events, visible],
   );
   const todos = useMemo(() => latestTodos(events), [events]);
