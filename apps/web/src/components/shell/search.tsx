@@ -9,6 +9,10 @@ import { Kbd } from '@/components/ui/kbd';
 import { roundUpPath, titleOf, type RoundUp } from '@/lib/round-ups';
 import { setTheme } from '@/lib/theme';
 
+// userAgentData isn't in TypeScript's DOM lib yet; platform is the fallback where it's missing.
+const platform = (navigator as Navigator & { userAgentData?: { platform: string } }).userAgentData?.platform ?? navigator.platform;
+const isMac = /mac|iphone|ipad/i.test(platform);
+
 /** The header's "Search ⌘K": jump to a round-up or one of this round-up's agents, or start a new one. */
 export function Search({ roundUps }: { roundUps: RoundUp[] | undefined }) {
   const [open, setOpen] = useState(false);
@@ -36,14 +40,21 @@ export function Search({ roundUps }: { roundUps: RoundUp[] | undefined }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        aria-label="Search (⌘K)"
+        aria-label={isMac ? 'Search (⌘K)' : 'Search (Ctrl+K)'}
+        aria-keyshortcuts="Meta+K Control+K"
         className="bg-chip text-mu hover:bg-raise flex h-[34px] shrink-0 items-center gap-2 rounded-full pr-2.5 pl-3 text-[13px]"
       >
         <SearchIcon className="size-3.5" strokeWidth={2} />
         <span className="max-sm:hidden">Search</span>
         {/* ⌘ as an icon: neither Geist face has the glyph, and the fallback font draws it small and off the baseline. */}
-        <Kbd className="border-ln2 bg-surf text-mu2 ml-1 gap-0.5 rounded-[calc(var(--radius)-7px)] border px-1.5 text-[11px] leading-none max-sm:hidden [&_svg:not([class*='size-'])]:size-2.5">
-          <CommandIcon strokeWidth={2.25} />K
+        <Kbd className="border-ln2 bg-surf text-mu2 dark:bg-white/5 ml-1 gap-0.5 rounded-xs border px-1.5 text-[11px] leading-none max-sm:hidden [&_svg:not([class*='size-'])]:size-2.5">
+          {isMac ? (
+            <>
+              <CommandIcon strokeWidth={2.25} />K
+            </>
+          ) : (
+            'Ctrl K'
+          )}
         </Kbd>
       </button>
       <CommandDialog open={open} onOpenChange={setOpen} title="Search" description="Jump to a round-up or an agent" className="top-[18vh] sm:max-w-2xl">
