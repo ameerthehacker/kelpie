@@ -1,4 +1,4 @@
-import { stripAttachments, type AgentUpdate, type Attachment, type EventOf, type KelpieEvent, type TodoItem, type ToolCategory } from '@kelpie/protocol';
+import { questionsOf, stripAttachments, type AgentUpdate, type Answers, type Attachment, type EventOf, type KelpieEvent, type Question, type TodoItem, type ToolCategory } from '@kelpie/protocol';
 
 export interface ToolView {
   type: 'tool';
@@ -26,7 +26,25 @@ export type AssistantPart =
   | { type: 'agents'; agents: AgentUpdate[]; ts: string }
   | { type: 'notice'; tone: 'error' | 'info'; text: string; ts: string }
   /** A plan put to the person (ExitPlanMode), and what became of it. */
-  | PlanView;
+  | PlanView
+  /** Questions put to the person (AskUserQuestion), and their answers. */
+  | QuestionView;
+
+export interface QuestionView {
+  type: 'question';
+  /** The AskUserQuestion call. */
+  callId?: string;
+  /** Known once it is put to the person. */
+  requestId?: string;
+  questions: Question[];
+  /**
+   * `asking`: called, not yet put to the person; `open`: waiting for them; then answered, skipped by
+   * them, refused by Kelpie, or no longer waiting (the run ended).
+   */
+  state: 'asking' | 'open' | 'answered' | 'skipped' | 'refused' | 'expired';
+  answers?: Answers;
+  ts: string;
+}
 
 export interface PlanView {
   type: 'plan';
@@ -50,6 +68,7 @@ export interface SpawnView {
 }
 
 const SPAWN_TOOL = 'mcp__kelpie__spawn_agent';
+const ASK_TOOL = 'AskUserQuestion';
 
 /** Who sent a turn: the person, the orchestrator (to its sub-agent), or Kelpie. */
 export type Sender = NonNullable<EventOf<'message'>['data']['source']>;
@@ -123,6 +142,8 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
   const tools = new Map<string, ToolView>();
   const spawns = new Map<string, SpawnView>();
   const plans = new Map<string, PlanView>();
+  /** By call id, and by request id once asked. */
+  const questions = new Map<string, QuestionView>();
 
   const assistant = (id: string): AssistantPart[] => {
     const last = items.at(-1);
@@ -160,6 +181,16 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
         // Todo lists live in the agent pane, by agent, not scattered through the chat; a plan put to
         // the person shows as its card.
         if (ev.data.category === 'todo' || ev.data.name === 'ExitPlanMode') break;
+        // Questions show as their card, from the call on (it is put to the person a moment later).
+        if (ev.data.name === ASK_TOOL) {
+          const qs = questionsOf(ev.data.input);
+          if (qs) {
+            const view: QuestionView = { type: 'question', callId: ev.data.callId, questions: qs, state: 'asking', ts: ev.ts };
+            questions.set(`call:${view.callId}`, view);
+            assistant(ev.id).push(view);
+            break;
+          }
+        }
         if (ev.data.name === SPAWN_TOOL) {
           const input = (ev.data.input ?? {}) as { title?: unknown };
           const view: SpawnView = { type: 'spawn', callId: ev.data.callId, title: typeof input.title === 'string' ? input.title : 'Agent', state: 'running' };
@@ -175,6 +206,9 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
       case 'tool.finished': {
         const spawn = spawns.get(ev.data.callId);
         if (spawn) settleSpawn(spawn, ev.data.ok, ev.data.output);
+        // Never put to the person (an older log, or the harness settled it): it ended as the tool did.
+        const asked = questions.get(`call:${ev.data.callId}`);
+        if (asked?.state === 'asking') asked.state = ev.data.ok ? 'answered' : 'refused';
         const view = tools.get(ev.data.callId);
         if (!view) break;
         view.state = ev.data.ok ? 'done' : 'error';
@@ -186,15 +220,27 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
         if (view) view.delta = { added: ev.data.added, removed: ev.data.removed };
         break;
       }
-      // Other permission requests are answered in the approvals tray, not in the chat.
+      // Plans and questions are answered in the chat; other permission requests in the approvals tray.
       case 'permission.requested':
-        if (ev.data.tool === 'ExitPlanMode') {
+        if (ev.data.questions?.length) {
+          const known = ev.data.callId ? questions.get(`call:${ev.data.callId}`) : undefined;
+          const view: QuestionView = known ?? { type: 'question', questions: ev.data.questions, state: 'open', ts: ev.ts };
+          Object.assign(view, { requestId: ev.data.requestId, questions: ev.data.questions, state: 'open' });
+          questions.set(`req:${view.requestId}`, view);
+          if (!known) assistant(ev.id).push(view);
+        } else if (ev.data.tool === 'ExitPlanMode') {
           const view: PlanView = { type: 'plan', requestId: ev.data.requestId, plan: ev.data.plan ?? '', state: 'open', ts: ev.ts };
           plans.set(view.requestId, view);
           assistant(ev.id).push(view);
         }
         break;
       case 'permission.resolved': {
+        const question = questions.get(`req:${ev.data.requestId}`);
+        if (question) {
+          question.state = ev.data.decision === 'allow' ? 'answered' : ev.data.by === 'person' ? 'skipped' : ev.data.by === 'kelpie' ? 'refused' : 'expired';
+          if (ev.data.answers) question.answers = ev.data.answers;
+          break;
+        }
         const view = plans.get(ev.data.requestId);
         if (!view) break;
         view.state = ev.data.decision === 'allow' ? 'approved' : ev.data.by === 'person' ? 'declined' : 'expired';
@@ -209,6 +255,7 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
         // Tools still open when the process is gone will never finish, even if a later run resumes the session.
         tools.forEach((t) => t.state === 'running' && (t.state = 'error'));
         spawns.forEach((s) => s.state === 'running' && (s.state = 'error'));
+        questions.forEach((q) => (q.state === 'asking' || q.state === 'open') && (q.state = 'expired'));
         if (ev.data.code) {
           const detail = ev.data.stderrTail.trim().split('\n').slice(-3).join('\n');
           assistant(ev.id).push({ type: 'notice', tone: 'error', text: `Agent process exited with code ${ev.data.code}${detail ? `: ${detail}` : ''}`, ts: ev.ts });

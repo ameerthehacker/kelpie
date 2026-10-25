@@ -5,6 +5,7 @@ import { useAgentPane } from '@/components/agents/pane-state';
 import { MessageResponse } from '@/components/ai-elements/message';
 import { AgentEvents, EventLine } from '@/components/chat/events';
 import { PlanCard } from '@/components/chat/plan-card';
+import { QuestionCard } from '@/components/chat/question-card';
 import { StepGroup } from '@/components/chat/steps';
 import type { AssistantPart, SpawnView, ToolView } from '@/lib/chat';
 
@@ -31,7 +32,7 @@ interface Props {
   streaming: boolean;
   /** Who did the steps: "Kelpie" for an orchestrator, the agent's title on its own page. */
   actor: string;
-  /** The round-up these are from, to answer a plan put to the person. */
+  /** The round-up these are from, to answer a plan or questions put to the person. */
   sessionId?: string | undefined;
 }
 
@@ -74,6 +75,8 @@ function BlockView({
       return <AgentEvents agents={part.agents} ts={part.ts} />;
     case 'plan':
       return <PlanCard plan={part} sessionId={sessionId} />;
+    case 'question':
+      return <QuestionCard questions={part.questions} state={part.state} answers={part.answers} sessionId={sessionId} requestId={part.requestId} autoFocus />;
     case 'notice':
       return (
         <EventLine tone={part.tone === 'error' ? 'fail' : 'muted'}>

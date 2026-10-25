@@ -2,9 +2,10 @@ import { ChevronDownIcon, ShieldAlertIcon, XIcon } from 'lucide-react';
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { useAnswerApprovals, useForgetRule, useRules, type Answer } from '@/hooks/use-approvals';
-import { approvalsSummary, groupApprovals, type ApprovalGroup, type PendingApproval } from '@/lib/approvals';
+import { approvalsSummary, groupApprovals, pendingQuestions, type ApprovalGroup, type PendingApproval } from '@/lib/approvals';
 import { cn } from '@/lib/utils';
 import { ApprovalRow, type GroupAnswer } from './approval-row';
+import { QuestionRow } from './question-row';
 
 const btn = 'h-7 shrink-0 rounded-full px-3 text-xs font-medium disabled:opacity-50';
 
@@ -33,11 +34,13 @@ export function useGroupAnswers() {
 
 /**
  * What a round-up's agents are waiting on the person for, docked above the composer. Requests for
- * the same thing are one row, however many agents ask. Keys, with the tray focused: j/k to move, a to
- * allow, r to allow for the round-up, d to deny.
+ * the same thing are one row, however many agents ask; questions queue after them, oldest first,
+ * each answered on its own. Keys, with the request rows focused: j/k to move, a to allow, r to allow
+ * for the round-up, d to deny. `inChat`: the session whose chat is on screen, its questions shown there.
  */
-export function ApprovalTray({ approvals, roundUpId }: { approvals: PendingApproval[]; roundUpId: string }) {
+export function ApprovalTray({ approvals, roundUpId, inChat }: { approvals: PendingApproval[]; roundUpId: string; inChat?: string | undefined }) {
   const groups = useMemo(() => groupApprovals(approvals), [approvals]);
+  const questions = useMemo(() => pendingQuestions(approvals).filter((q) => q.sessionId !== inChat), [approvals, inChat]);
   const rules = useRules(groups.length ? roundUpId : undefined);
   const forget = useForgetRule(roundUpId);
   const { run, busy, error } = useGroupAnswers();
@@ -45,7 +48,8 @@ export function ApprovalTray({ approvals, roundUpId }: { approvals: PendingAppro
   const [selected, setSelected] = useState(0);
   // Rows leave as they are answered (here or anywhere): keep the selection on a row.
   useEffect(() => setSelected((i) => Math.min(i, Math.max(0, groups.length - 1))), [groups.length]);
-  if (!groups.length) return null;
+  if (!groups.length && !questions.length) return null;
+  const shown = approvals.filter((a) => groups.some((g) => g.items.includes(a)) || questions.includes(a));
 
   const onKey = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLInputElement || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -72,7 +76,7 @@ export function ApprovalTray({ approvals, roundUpId }: { approvals: PendingAppro
         <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2.5 py-1 text-left">
           <ShieldAlertIcon className="text-wait size-4 shrink-0" strokeWidth={2} />
           <span className="font-medium">Waiting on you</span>
-          <span className="text-mu truncate text-xs">{approvalsSummary(approvals)}</span>
+          <span className="text-mu truncate text-xs">{approvalsSummary(shown)}</span>
           <ChevronDownIcon className={cn('text-mu2 size-4 shrink-0 transition-transform', !open && '-rotate-90')} />
         </CollapsibleTrigger>
         {groups.length > 1 && (
@@ -87,12 +91,21 @@ export function ApprovalTray({ approvals, roundUpId }: { approvals: PendingAppro
         )}
       </div>
       <CollapsibleContent>
-        <div tabIndex={0} onKeyDown={onKey} className="border-ln max-h-[min(20rem,40vh)] overflow-y-auto border-t px-1.5 py-1.5 outline-none" aria-label="Approvals (j/k to move, a allow, r allow for round-up, d deny)">
-          <ul className="flex flex-col gap-0.5">
-            {groups.map((g, i) => (
-              <ApprovalRow key={g.key} group={g} selected={i === selected} busy={busy} onSelect={() => setSelected(i)} onAnswer={(a) => void run([g], a)} />
-            ))}
-          </ul>
+        <div className="border-ln max-h-[min(28rem,50vh)] overflow-y-auto border-t px-1.5 py-1.5">
+          {groups.length > 0 && (
+            <ul tabIndex={0} onKeyDown={onKey} className="flex flex-col gap-0.5 rounded-xl outline-none" aria-label="Approvals (j/k to move, a allow, r allow for round-up, d deny)">
+              {groups.map((g, i) => (
+                <ApprovalRow key={g.key} group={g} selected={i === selected} busy={busy} onSelect={() => setSelected(i)} onAnswer={(a) => void run([g], a)} />
+              ))}
+            </ul>
+          )}
+          {questions.length > 0 && (
+            <ul aria-label="Questions" className="flex flex-col gap-0.5">
+              {questions.map((q, i) => (
+                <QuestionRow key={`${q.sessionId}:${q.requestId}`} item={q} defaultOpen={i === 0 && !groups.length} />
+              ))}
+            </ul>
+          )}
           {error && <p className="text-fail px-2.5 pt-1.5 text-xs">{error}</p>}
           {rules.length > 0 && (
             <div className="text-mu flex flex-wrap items-center gap-1.5 px-2.5 pt-2 pb-1 text-xs">

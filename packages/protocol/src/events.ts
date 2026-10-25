@@ -251,6 +251,28 @@ export type Question = z.infer<typeof Question>;
 export const Answers = z.record(z.string(), z.union([z.string(), z.array(z.string())]));
 export type Answers = z.infer<typeof Answers>;
 
+/** The questions in an AskUserQuestion call's input, as far as they are well formed; undefined if none is. */
+export function questionsOf(input: unknown): Question[] | undefined {
+  const list = (input as { questions?: unknown } | null | undefined)?.questions;
+  const qs: Question[] = [];
+  for (const q of Array.isArray(list) ? (list as unknown[]) : []) {
+    const o = (q ?? {}) as Record<string, unknown>;
+    if (typeof o.question !== 'string') continue;
+    const options = (Array.isArray(o.options) ? (o.options as unknown[]) : []).flatMap((opt) => {
+      const x = (opt ?? {}) as Record<string, unknown>;
+      if (typeof x.label !== 'string') return [];
+      return [{ label: x.label, ...(typeof x.description === 'string' && x.description ? { description: x.description } : {}) }];
+    });
+    qs.push({
+      question: o.question,
+      ...(typeof o.header === 'string' && o.header ? { header: o.header } : {}),
+      options,
+      ...(o.multiSelect === true ? { multiSelect: true } : {}),
+    });
+  }
+  return qs.length ? qs : undefined;
+}
+
 /**
  * The harness asks before using a tool (accept-edits mode, or anything its rules don't cover). The
  * turn waits until it is answered: by the person, by Kelpie's own rules, or not at all (the process
@@ -264,6 +286,8 @@ export const PermissionRequested = ev(
     /** One line on what it wants to do: a command, a path, a URL. */
     title: z.string(),
     input: z.unknown(),
+    /** The tool call it is about, when the harness says. */
+    callId: z.string().optional(),
     /**
      * The permission rule that would allow this and requests like it, e.g. `Bash(pnpm install)`, as
      * the harness suggests it. Requests with the same rule are grouped, and answered together.

@@ -83,6 +83,7 @@ exports[`fixture ask > matches the golden snapshot 1`] = `
   },
   {
     "data": {
+      "callId": "toolu_01XWRDKLPn16HHA2hgoiLySD",
       "input": {
         "questions": [
           {
@@ -313,6 +314,7 @@ exports[`fixture ask-auto > matches the golden snapshot 1`] = `
   },
   {
     "data": {
+      "callId": "toolu_01GokTEHTd2fepQWiNipFMkS",
       "input": {
         "questions": [
           {
@@ -543,6 +545,7 @@ exports[`fixture ask-skip > matches the golden snapshot 1`] = `
   },
   {
     "data": {
+      "callId": "toolu_019F3wMggDr6W4T4MEHkpc2z",
       "input": {
         "questions": [
           {
@@ -2278,6 +2281,7 @@ exports[`fixture permission > matches the golden snapshot 1`] = `
   },
   {
     "data": {
+      "callId": "toolu_01PmomrAuQ7NxsXyupaKKDPv",
       "input": {
         "command": "node -e "console.log(41+1)"",
         "description": "Run node command printing 41+1",
@@ -2476,6 +2480,7 @@ exports[`fixture permission-deny > matches the golden snapshot 1`] = `
   },
   {
     "data": {
+      "callId": "toolu_01ANy4ULCLrFPxtRKszpKsxM",
       "input": {
         "command": "node -e "console.log(41+1)"",
         "description": "Evaluate 41+1 with Node.js",
@@ -2966,6 +2971,7 @@ Run \`node -e "import('./src/math.js').then(m => console.log(m.sub(5, 3)))"\` an
   },
   {
     "data": {
+      "callId": "toolu_01VGnvXH1wU3HCV5bBaie8SX",
       "input": {
         "plan": "# Plan: add \`sub(a, b)\` to src/math.js
 
@@ -3259,6 +3265,7 @@ export function sub(a, b) {
   },
   {
     "data": {
+      "callId": "toolu_01RNRChRjSx3j4AYUCFQprkQ",
       "input": {
         "content": "export function add(a, b) {
   return a + b;

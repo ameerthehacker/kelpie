@@ -9,6 +9,7 @@ import { ApprovalRow } from '@/components/approvals/approval-row';
 import { useGroupAnswers } from '@/components/approvals/approval-tray';
 import { AttachButton, AttachmentChips, FileChips, useAttachedFiles } from '@/components/chat/attachments';
 import { EventLine } from '@/components/chat/events';
+import { QuestionCard } from '@/components/chat/question-card';
 import { ShowCommandsToggle, StepRow } from '@/components/chat/steps';
 import { useEventLog } from '@/hooks/use-agents';
 import { useApprovals } from '@/hooks/use-approvals';
@@ -337,7 +338,7 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
   );
 }
 
-/** What this agent is waiting on the person for, answered right here (the round-up's tray has it too). */
+/** What this agent is waiting on the person to allow, answered right here (the round-up's tray has it too; its questions are in its timeline). */
 function AgentApprovals({ agent: a }: { agent: AgentSummary }) {
   const all = useApprovals(a.parentId);
   const groups = useMemo(() => groupApprovals(all.filter((x) => x.sessionId === a.id)), [all, a.id]);
@@ -415,6 +416,8 @@ function AgentTimeline({ agent: a, events, error, pending }: { agent: AgentSumma
                       {p.text}
                     </p>
                   );
+                case 'question':
+                  return <QuestionCard key={key} questions={p.questions} state={p.state} answers={p.answers} sessionId={a.id} requestId={p.requestId} />;
                 default:
                   return null;
               }

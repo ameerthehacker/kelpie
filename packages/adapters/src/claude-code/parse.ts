@@ -1,4 +1,4 @@
-import type { EventData, EventKind, KelpieEvent, Question, TodoItem, UsageWindow } from '@kelpie/protocol';
+import { questionsOf, type EventData, type EventKind, type KelpieEvent, type TodoItem, type UsageWindow } from '@kelpie/protocol';
 import { applyTodoTool, fileDelta, flattenContent, toolCategory, toolTitle } from './tools.js';
 
 type Obj = Record<string, any>;
@@ -157,7 +157,7 @@ export class ClaudeCodeParser {
     const tool = String(req.tool_name ?? '');
     const input: Obj = req.input ?? {};
     this.permissions.set(requestId, input);
-    const questions = tool === 'AskUserQuestion' ? askedQuestions(input) : undefined;
+    const questions = tool === 'AskUserQuestion' ? questionsOf(input) : undefined;
     // A question is the person's to answer each time: never a rule to allow by.
     const rule = questions ? undefined : suggestedRule(req.permission_suggestions);
     // The plan is in the call, or (when the model wrote it out first) its latest message.
@@ -173,7 +173,16 @@ export class ClaudeCodeParser {
     return [
       this.emit(
         'permission.requested',
-        { requestId, tool, title, input, ...(rule ? { rule } : {}), ...(plan ? { plan } : {}), ...(questions ? { questions } : {}) },
+        {
+          requestId,
+          tool,
+          title,
+          input,
+          ...(typeof req.tool_use_id === 'string' ? { callId: req.tool_use_id } : {}),
+          ...(rule ? { rule } : {}),
+          ...(plan ? { plan } : {}),
+          ...(questions ? { questions } : {}),
+        },
         x,
       ),
     ];
@@ -367,25 +376,6 @@ export function suggestedRule(suggestions: unknown): string | undefined {
     .flatMap((s) => s.rules as Obj[]);
   const r = rules.length === 1 ? rules[0] : undefined;
   return typeof r?.toolName === 'string' ? (r.ruleContent ? `${r.toolName}(${r.ruleContent})` : r.toolName) : undefined;
-}
-
-/** AskUserQuestion's questions, as far as they are well formed; undefined if none is. */
-export function askedQuestions(input: Obj): Question[] | undefined {
-  const qs: Question[] = [];
-  for (const q of Array.isArray(input.questions) ? (input.questions as unknown[]) : []) {
-    if (!q || typeof q !== 'object' || typeof (q as Obj).question !== 'string') continue;
-    const o = q as Obj;
-    const options = (Array.isArray(o.options) ? (o.options as unknown[]) : [])
-      .filter((opt): opt is Obj => !!opt && typeof opt === 'object' && typeof (opt as Obj).label === 'string')
-      .map((opt) => ({ label: String(opt.label), ...(typeof opt.description === 'string' && opt.description ? { description: opt.description } : {}) }));
-    qs.push({
-      question: o.question,
-      ...(typeof o.header === 'string' && o.header ? { header: o.header } : {}),
-      options,
-      ...(o.multiSelect === true ? { multiSelect: true } : {}),
-    });
-  }
-  return qs.length ? qs : undefined;
 }
 
 function blocks(content: unknown): Obj[] {
