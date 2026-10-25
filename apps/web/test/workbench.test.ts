@@ -1,21 +1,27 @@
-import { describe, expect, it } from 'vitest';
-import type { WorkbenchCard, WorkbenchItem } from '@kelpie/protocol';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DONE_FOR, type WorkbenchCard, type WorkbenchItem } from '@kelpie/protocol';
+import { HttpError } from '../src/lib/api.js';
 import type { PendingApproval } from '../src/lib/approvals.js';
 import {
+  boardOf,
   calloutOf,
   cardApprovals,
   chatWhen,
   columns,
-  DONE_FOR,
   dropCard,
   footer,
   needsYouTotal,
   onBoard,
   pillOf,
   primaryAction,
+  reviewTurn,
   tally,
   topItems,
   upsertCard,
+  WORKBENCH,
+  workbenchQuery,
+  workbenchStream,
 } from '../src/lib/workbench.js';
 
 // A Sunday.
@@ -124,13 +130,23 @@ describe('workbench cards', () => {
     expect(primaryAction(card({ items: [item({ status: 'draft' })] }))).toBeUndefined();
     expect(primaryAction(card({ stage: 'done', items: [item({ status: 'review' })] }))).toBeUndefined();
   });
+
+  it('asks for a review with a link to the card', () => {
+    expect(reviewTurn(card({ id: 'c 1', title: 'Dark mode' }))).toBe(
+      'Walk me through reviewing “Dark mode” (/workbench/c%201): what changed, what I should check first, and anything you\'re unsure of.',
+    );
+  });
 });
 
 describe('the board', () => {
   it('drops removed cards and done ones after a day', () => {
     expect(onBoard(card({}), NOW)).toBe(true);
     expect(onBoard(card({ archived: true }), NOW)).toBe(false);
-    expect(onBoard(card({ stage: 'done', updatedAt: NOW - DONE_FOR + MIN }), NOW)).toBe(true);
+    expect(onBoard(card({ stage: 'done', doneAt: NOW - DONE_FOR + MIN }), NOW)).toBe(true);
+    expect(onBoard(card({ stage: 'done', doneAt: NOW - DONE_FOR - MIN }), NOW)).toBe(false);
+    // A later write (an item merged) doesn't keep a done card on the board.
+    expect(onBoard(card({ stage: 'done', doneAt: NOW - DONE_FOR - MIN, updatedAt: NOW }), NOW)).toBe(false);
+    // Without `doneAt`, its last change stands in.
     expect(onBoard(card({ stage: 'done', updatedAt: NOW - DONE_FOR - MIN }), NOW)).toBe(false);
     // Only done cards age off.
     expect(onBoard(card({ stage: 'review', updatedAt: NOW - 30 * DONE_FOR }), NOW)).toBe(true);
@@ -141,7 +157,7 @@ describe('the board', () => {
       card({ id: 'a', stage: 'blocked', updatedAt: NOW - 5 * MIN }),
       card({ id: 'b', stage: 'blocked', updatedAt: NOW - MIN }),
       card({ id: 'c', stage: 'ready' }),
-      card({ id: 'old', stage: 'done', updatedAt: NOW - 2 * DONE_FOR }),
+      card({ id: 'old', stage: 'done', doneAt: NOW - 2 * DONE_FOR }),
     ];
     const cols = columns(cards, NOW);
     expect(cols.blocked.map((c) => c.id)).toEqual(['b', 'a']);
@@ -164,5 +180,78 @@ describe('the board', () => {
     expect(upsertCard(list, card({ id: 'a', archived: true })).map((c) => c.id)).toEqual(['b']);
     expect(upsertCard(undefined, card({ id: 'z' })).map((c) => c.id)).toEqual(['z']);
     expect(dropCard(list, 'a')?.map((c) => c.id)).toEqual(['b']);
+  });
+});
+
+describe('the board from the daemon', () => {
+  const msg = (data: unknown) => ({ id: '', event: '', data: JSON.stringify(data) });
+  const deferred = <T,>() => {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  };
+  /** A client whose board is being fetched (by a mounted view, as the sidebar's is), answering `first` then `later`. */
+  const fetching = (later: WorkbenchCard[] = []) => {
+    const client = new QueryClient();
+    const first = deferred<WorkbenchCard[]>();
+    const queryFn = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(later);
+    const stop = new QueryObserver(client, { queryKey: WORKBENCH, queryFn }).subscribe(() => {});
+    return { client, first, queryFn, stop, board: () => client.getQueryData<WorkbenchCard[]>(WORKBENCH)?.map((c) => c.id) };
+  };
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  it('keeps the list current from the stream', () => {
+    const client = new QueryClient();
+    const on = workbenchStream(client);
+    on.workbench(msg([card({ id: 'a' }), card({ id: 'b' })]));
+    on.card(msg(card({ id: 'c' })));
+    on['card-removed'](msg({ id: 'a' }));
+    expect(client.getQueryData<WorkbenchCard[]>(WORKBENCH)?.map((c) => c.id)).toEqual(['c', 'b']);
+  });
+
+  it('lets the snapshot win over a fetch that answers after it', async () => {
+    const { client, first, stop, board } = fetching();
+    workbenchStream(client).workbench(msg([card({ id: 'new' })]));
+    first.resolve([card({ id: 'stale' })]);
+    await settle();
+    expect(board()).toEqual(['new']);
+    stop();
+  });
+
+  it('fetches again when a card changes or goes during a fetch', async () => {
+    const { client, first, queryFn, stop, board } = fetching([card({ id: 'b' })]);
+    // The first answer predates the removal of `a`; the second has it.
+    workbenchStream(client)['card-removed'](msg({ id: 'a' }));
+    first.resolve([card({ id: 'a' }), card({ id: 'b' })]);
+    await settle();
+    expect(queryFn).toHaveBeenCalledTimes(2);
+    expect(board()).toEqual(['b']);
+    stop();
+  });
+});
+
+describe('a daemon without the Workbench', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('gets a calm, empty board, asked for once', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'not found' }), { status: 404 }));
+    vi.stubGlobal('fetch', fetch);
+    const client = new QueryClient();
+    await client.prefetchQuery(workbenchQuery);
+    const state = client.getQueryState(WORKBENCH);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(boardOf(state?.data as WorkbenchCard[] | undefined, state?.error ?? null)).toEqual({ cards: [], unavailable: true });
+    // Its snapshot fills the board once the daemon has one.
+    workbenchStream(client).workbench({ id: '', event: '', data: JSON.stringify([card({ id: 'a' })]) });
+    const after = client.getQueryState(WORKBENCH);
+    expect(boardOf(after?.data as WorkbenchCard[] | undefined, after?.error ?? null).cards?.map((c) => c.id)).toEqual(['a']);
+  });
+
+  it('still shows other errors', () => {
+    expect(workbenchQuery.retry(0, new HttpError('not found', 404))).toBe(false);
+    expect(workbenchQuery.retry(0, new HttpError('Internal Server Error', 500))).toBe(true);
+    expect(workbenchQuery.retry(1, new HttpError('Internal Server Error', 500))).toBe(false);
+    expect(boardOf(undefined, new HttpError('Internal Server Error', 500))).toEqual({ cards: undefined, error: 'Internal Server Error', unavailable: false });
+    expect(boardOf([card({})], null).cards).toHaveLength(1);
   });
 });

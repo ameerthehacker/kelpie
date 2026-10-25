@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CardArchive, CardCreate, CardPatch, CardUpdate } from '../src/index.js';
+import { CardArchive, CardCreate, CardPatch, CardUpdate, workbenchPath } from '../src/index.js';
 
 describe('CardPatch', () => {
   it('accepts a typical patch', () => {
@@ -39,5 +39,13 @@ describe('CardArchive', () => {
   it('takes only a boolean', () => {
     expect(CardArchive.parse({ archived: true })).toEqual({ archived: true });
     expect(CardArchive.safeParse({ archived: 'yes' }).success).toBe(false);
+  });
+});
+
+describe('workbenchPath', () => {
+  it('links the board, or one card on it', () => {
+    expect(workbenchPath()).toBe('/workbench');
+    expect(workbenchPath('c1')).toBe('/workbench/c1');
+    expect(workbenchPath('a/b')).toBe('/workbench/a%2Fb');
   });
 });

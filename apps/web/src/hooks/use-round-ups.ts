@@ -11,9 +11,7 @@ import { APPROVALS } from './use-approvals';
 import type { PendingApproval } from '@/lib/approvals';
 import { attention } from './use-attention';
 import { dropSession, SUB_AGENTS, upsertSubAgent } from './use-round-up-status';
-import type { CardRemoved, WorkbenchCard } from '@kelpie/protocol';
-import { dropCard, upsertCard } from '@/lib/workbench';
-import { WORKBENCH } from './use-workbench';
+import { workbenchStream } from '@/lib/workbench';
 
 const ROUND_UPS = ['round-ups'] as const;
 
@@ -82,9 +80,7 @@ export function useRoundUps() {
             attention.approvals(roundUpId, approvals);
           },
           // The Workbench: every card on the board as the stream connects, then each card as it changes.
-          workbench: (msg) => queryClient.setQueryData(WORKBENCH, JSON.parse(msg.data) as WorkbenchCard[]),
-          card: (msg) => queryClient.setQueryData<WorkbenchCard[]>(WORKBENCH, (list) => upsertCard(list, JSON.parse(msg.data) as WorkbenchCard)),
-          'card-removed': (msg) => queryClient.setQueryData<WorkbenchCard[]>(WORKBENCH, (list) => dropCard(list, (JSON.parse(msg.data) as CardRemoved).id)),
+          ...workbenchStream(queryClient),
           deleted: (msg) => {
             const { id } = JSON.parse(msg.data) as { id: string };
             queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => rows?.filter((r) => r.id !== id));

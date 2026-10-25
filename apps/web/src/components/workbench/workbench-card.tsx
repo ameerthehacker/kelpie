@@ -1,5 +1,5 @@
 import { ArchiveIcon, MessageCircleIcon, MoreHorizontalIcon, SquareArrowOutUpRightIcon } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import type { WorkbenchCard } from '@kelpie/protocol';
 import { Button } from '@/components/ui/button';
@@ -27,12 +27,17 @@ interface Props {
   /** Every open approval; the card picks its own agents' out. */
   approvals: PendingApproval[];
   now: number;
+  /** The board was opened at its link: it can take focus. */
+  linked?: boolean;
   /** Opened by its link: shown with a ring for a moment. */
   highlight?: boolean;
 }
 
-/** One feature on the board: where its work stands, what waits on the person, and the one thing to do next. */
-export function BoardCard({ card, approvals: all, now, highlight }: Props) {
+/**
+ * One feature on the board: where its work stands, what waits on the person, and the one thing to
+ * do next. Memoised: a `card` event replaces only that card, so the others needn't render again.
+ */
+export const BoardCard = memo(function BoardCard({ card, approvals: all, now, linked, highlight }: Props) {
   const navigate = useNavigate();
   const { archive, merge, say } = useCardActions();
   const approvals = useMemo(() => cardApprovals(card, all), [card, all]);
@@ -84,8 +89,9 @@ export function BoardCard({ card, approvals: all, now, highlight }: Props) {
     <article
       id={`card-${card.id}`}
       aria-label={card.title}
+      tabIndex={linked ? -1 : undefined}
       className={cn(
-        'group/card bg-surf border-ln relative flex flex-col gap-3 rounded-[18px] border p-3.5 shadow-[0_1px_2px_rgba(20,30,25,0.04)] transition-shadow duration-500',
+        'group/card bg-surf border-ln relative flex flex-col gap-3 rounded-[18px] border p-3.5 shadow-[0_1px_2px_rgba(20,30,25,0.04)] transition-shadow duration-500 outline-none',
         highlight && 'ring-acc ring-2 ring-offset-2 ring-offset-well',
       )}
     >
@@ -189,4 +195,4 @@ export function BoardCard({ card, approvals: all, now, highlight }: Props) {
       </Dialog>
     </article>
   );
-}
+});

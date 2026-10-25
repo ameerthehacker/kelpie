@@ -1,9 +1,55 @@
+import type { EventSourceMessage } from '@microsoft/fetch-event-source';
+import type { QueryClient } from '@tanstack/react-query';
 import { differenceInCalendarDays, format, isSameDay } from 'date-fns';
-import type { ItemStatus, Stage, WorkbenchCard, WorkbenchItem } from '@kelpie/protocol';
+import { DONE_FOR, workbenchPath, type CardRemoved, type ItemStatus, type Stage, type WorkbenchCard, type WorkbenchItem } from '@kelpie/protocol';
+import { api, isGone } from './api.js';
 import type { PendingApproval } from './approvals.js';
 
 export const WORKBENCH_ROUTE = '/workbench/:cardId';
-export const workbenchPath = (cardId?: string) => (cardId ? `/workbench/${encodeURIComponent(cardId)}` : '/workbench');
+
+/** Every card on the Workbench: fetched once, then kept live by the daemon's event stream (see `workbenchStream`). */
+export const WORKBENCH = ['workbench'] as const;
+
+/**
+ * The board's query. A daemon without the Workbench answers 404: that isn't retried, and isn't
+ * fetched again on every mount; the stream's `workbench` snapshot fills the board once there is one.
+ */
+export const workbenchQuery = {
+  queryKey: WORKBENCH,
+  queryFn: () => api<WorkbenchCard[]>('GET', '/api/workbench'),
+  retry: (failures: number, err: Error) => !isGone(err) && failures < 1,
+  retryOnMount: false,
+};
+
+const NO_CARDS: WorkbenchCard[] = [];
+
+/** The board as the page shows it: a daemon without the Workbench gets an empty board and a note, not an error. */
+export function boardOf(data: WorkbenchCard[] | undefined, error: Error | null): { cards?: WorkbenchCard[]; error?: string; unavailable: boolean } {
+  if (data === undefined && isGone(error)) return { cards: NO_CARDS, unavailable: true };
+  return { cards: data, error: error?.message, unavailable: false };
+}
+
+/** The Workbench's handlers on the daemon's event stream (see use-round-ups). */
+export function workbenchStream(queryClient: QueryClient) {
+  // A list being fetched may predate this change: fetch it again rather than lose it. Cancelled
+  // first, as a first load (no data yet) would otherwise take the refetch as the same fetch.
+  const change = (f: (list: WorkbenchCard[] | undefined) => WorkbenchCard[] | undefined) => {
+    if (queryClient.getQueryState(WORKBENCH)?.fetchStatus === 'fetching') {
+      void queryClient.cancelQueries({ queryKey: WORKBENCH });
+      void queryClient.refetchQueries({ queryKey: WORKBENCH });
+    } else queryClient.setQueryData<WorkbenchCard[]>(WORKBENCH, f);
+  };
+  return {
+    // Every card on the board as the stream connects; it wins over a fetch still on its way.
+    workbench: (msg: EventSourceMessage) => {
+      void queryClient.cancelQueries({ queryKey: WORKBENCH });
+      queryClient.setQueryData(WORKBENCH, JSON.parse(msg.data) as WorkbenchCard[]);
+    },
+    // Then each card as it changes.
+    card: (msg: EventSourceMessage) => change((list) => upsertCard(list, JSON.parse(msg.data) as WorkbenchCard)),
+    'card-removed': (msg: EventSourceMessage) => change((list) => dropCard(list, (JSON.parse(msg.data) as CardRemoved).id)),
+  };
+}
 
 /** The board's columns, left to right, with the dot each shows. */
 export const STAGES: { stage: Stage; label: string; dot: string }[] = [
@@ -110,12 +156,13 @@ export function primaryAction(card: Pick<WorkbenchCard, 'needsYou' | 'callout' |
 
 export const PRIMARY_LABEL: Record<PrimaryAction, string> = { answer: 'Answer', merge: 'Merge', review: 'Review with Kelpie' };
 
-/** How long a done card stays on the board. */
-export const DONE_FOR = 24 * 60 * 60_000;
-
-/** Whether a card shows on the board: not removed by the person, and not done for over a day. */
-export const onBoard = (card: Pick<WorkbenchCard, 'archived' | 'stage' | 'updatedAt'>, now: number) =>
-  !card.archived && !(card.stage === 'done' && now - card.updatedAt > DONE_FOR);
+/**
+ * Whether a card shows on the board: not removed by the person, and not done for over a day. The
+ * daemon leaves those out already; this keeps a card from staying once its day is up.
+ */
+export const onBoard = (card: Pick<WorkbenchCard, 'archived' | 'stage' | 'updatedAt' | 'doneAt'>, now: number) =>
+  // A done card should always have `doneAt`; without one, its last change stands in.
+  !card.archived && !(card.stage === 'done' && now - (card.doneAt ?? card.updatedAt) > DONE_FOR);
 
 /** The board's cards by column, newest change first in each. */
 export function columns(cards: readonly WorkbenchCard[], now: number): Record<Stage, WorkbenchCard[]> {

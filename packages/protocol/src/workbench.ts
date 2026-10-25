@@ -4,7 +4,16 @@ import { z } from 'zod';
  * Workbench: the person's board of features. A round-up's orchestrator creates a card per feature
  * it takes on (`create_card`) and keeps each current (`update_card`); one round-up can have
  * several. Kelpie derives the live parts (agents, approvals, merged) itself.
+ *
+ * The board hides archived cards and cards done for over 24 hours (`DONE_FOR`): the daemon leaves
+ * them out of `GET /api/workbench` and the `workbench` snapshot, and the web app filters too.
  */
+
+/** A card's page in the web app: the board, scrolled to that card. Tool results link to it. */
+export const workbenchPath = (cardId?: string) => (cardId ? `/workbench/${encodeURIComponent(cardId)}` : '/workbench');
+
+/** How long a card stays on the board after it reaches `done`, in ms. */
+export const DONE_FOR = 24 * 60 * 60_000;
 
 /** The card's column: Blocked, Building, In review, Ready to merge, Done. Set by the orchestrator. */
 export const Stage = z.enum(['blocked', 'building', 'review', 'ready', 'done']);
@@ -110,17 +119,35 @@ export interface WorkbenchCard {
   agents: { total: number; working: number };
   /** Open approvals of the agents linked to this card's items. */
   needsYou: number;
-  /** The person removed it from the board; it comes back when the stage moves off `done`. */
+  /**
+   * The person removed it from the board. The daemon clears it (its `archivedAt`) when an update
+   * sets a stage other than `done`, so the card comes back.
+   */
   archived: boolean;
   /** Epoch ms. */
   createdAt: number;
   /** Epoch ms of the last stored change. */
   updatedAt: number;
+  /**
+   * Epoch ms the stage became `done`: set by the daemon when it does, cleared when it leaves `done`.
+   * The card drops off the board `DONE_FOR` after it; later writes (an item merged…) don't reset it.
+   */
+  doneAt?: number;
 }
 
-/** Body of `PATCH /api/workbench/:cardId`, which answers with the card (or 404). */
+/**
+ * Body of `PATCH /api/workbench/:cardId`, which answers with the card (or 404).
+ *
+ * `POST /api/workbench/:cardId/merge` (no body) lands the card's work and answers 200 with the
+ * updated `WorkbenchCard`, or 4xx with a `MergeError`.
+ */
 export const CardArchive = z.object({ archived: z.boolean() });
 export type CardArchive = z.infer<typeof CardArchive>;
+
+/** Why a merge didn't happen, for the person: uncommitted changes in the main checkout, a conflict, nothing to merge… */
+export interface MergeError {
+  error: string;
+}
 
 /** `card-removed`: the card is gone (e.g. its round-up was deleted). */
 export interface CardRemoved {
@@ -130,7 +157,7 @@ export interface CardRemoved {
 
 /** The Workbench's events on `/api/events`, by SSE event name, with their JSON payloads. */
 export interface WorkbenchEvents {
-  /** Snapshot on connect: every card not archived. */
+  /** Snapshot on connect: every card on the board (not archived, not done for over `DONE_FOR`). */
   workbench: WorkbenchCard[];
   /** A card changed (or was created). */
   card: WorkbenchCard;
