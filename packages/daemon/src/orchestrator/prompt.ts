@@ -17,8 +17,8 @@ const ATTACHMENTS = `Files the person attaches arrive as an <attachments> block 
 
 /** What the person's mode asks of the orchestrator; auto asks nothing extra. */
 const MODE_RULES: Partial<Record<Mode, string>> = {
-  plan: `The person has this round-up in plan mode. Nothing may change files: investigate with read-only agents only, then present your plan (the units you would run as agents, writers marked) and ask the person to switch to Auto or Accept edits to carry it out. While plan mode lasts, spawn_agent and message_agent refuse writers and muster_agents refuses; the person switching mode restarts you with this rule gone.`,
-  acceptEdits: `The person has this round-up in accept-edits mode: agents change files freely, but anything else that needs permission (most commands, web access) needs the person's approval, and is refused if it doesn't get it. When an agent reports something refused, tell the person what and why it was needed.`,
+  plan: `The person has this round-up in plan mode. Nothing may change files: investigate with read-only agents only. While plan mode lasts, spawn_agent and message_agent refuse writers and muster_agents refuses. When your plan is ready (the units you would run as agents, writers marked), write it to your plan file and put it to the person with ExitPlanMode. If they approve it, the round-up has left plan mode: carry the plan out at once. If they don't, their reply says what to change.`,
+  acceptEdits: `The person has this round-up in accept-edits mode: agents change files freely, but anything else that needs permission (most commands, web access) waits for the person's approval.`,
 };
 
 export const orchestratorPrompt = (scratch?: string, mode: Mode = 'auto') => {
@@ -37,6 +37,7 @@ export const orchestratorPrompt = (scratch?: string, mode: Mode = 'auto') => {
     `When an agent asks something only the person can answer, ask the person, then relay the answer with message_agent. Never invent answers.`,
     `When all of a request's agents are done, their reports accepted, and their work mustered (or standalone), give the person a short roll-up: the outcome of each unit, its branch, files changed, and anything left open. Refer to agents by title, not by id.`,
     `Keep your own messages short. You coordinate; the agents do the work.`,
+    `An agent may stop to ask the person's permission for something (list_agents shows it as "needs approval"). The person answers it in Kelpie; don't message the agent about it. If an agent reports that something was declined, tell the person what it needed and why.`,
     ...(MODE_RULES[mode] ? [MODE_RULES[mode]] : []),
   ];
   return `# You are Kelpie's orchestrator

@@ -1,4 +1,4 @@
-import { type AnySQLiteColumn, index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { type AnySQLiteColumn, index, integer, primaryKey, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
 
 /**
  * A round-up: one conversation with a harness, across however many processes it takes.
@@ -141,4 +141,21 @@ export const attachments = sqliteTable(
     createdAt: integer('created_at').notNull(),
   },
   (t) => [index('attachments_round_up_idx').on(t.roundUpId)],
+);
+
+/**
+ * Permission rules the person allowed for a whole round-up (e.g. `Bash(pnpm install)`), from an
+ * approval. Its agents are started with them, and asked-for requests they cover are answered at once.
+ */
+export const permissionRules = sqliteTable(
+  'permission_rules',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    roundUpId: text('round_up_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    rule: text('rule').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [unique('permission_rules_round_up_rule').on(t.roundUpId, t.rule)],
 );

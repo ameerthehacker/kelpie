@@ -224,6 +224,40 @@ export const Other = ev(
   }),
 );
 
+/**
+ * The harness asks before using a tool (accept-edits mode, or anything its rules don't cover). The
+ * turn waits until it is answered: by the person, by Kelpie's own rules, or not at all (the process
+ * ended or the turn was interrupted).
+ */
+export const PermissionRequested = ev(
+  'permission.requested',
+  z.object({
+    requestId: z.string(),
+    tool: z.string(),
+    /** One line on what it wants to do: a command, a path, a URL. */
+    title: z.string(),
+    input: z.unknown(),
+    /**
+     * The permission rule that would allow this and requests like it, e.g. `Bash(pnpm install)`, as
+     * the harness suggests it. Requests with the same rule are grouped, and answered together.
+     */
+    rule: z.string().optional(),
+    /** For a plan put to the person (ExitPlanMode): the plan, as markdown. */
+    plan: z.string().optional(),
+  }),
+);
+
+export const PermissionResolved = ev(
+  'permission.resolved',
+  z.object({
+    requestId: z.string(),
+    decision: z.enum(['allow', 'deny']),
+    /** The person; Kelpie's rules (or a rule the person saved); or nobody: the run ended or the turn was cancelled. */
+    by: z.enum(['person', 'kelpie', 'expired', 'cancelled']),
+    message: z.string().optional(),
+  }),
+);
+
 export const KelpieEvent = z.discriminatedUnion('kind', [
   SessionStarted,
   Message,
@@ -237,6 +271,8 @@ export const KelpieEvent = z.discriminatedUnion('kind', [
   Activity,
   TurnEnded,
   ProcessExited,
+  PermissionRequested,
+  PermissionResolved,
   Other,
 ]);
 export type KelpieEvent = z.infer<typeof KelpieEvent>;

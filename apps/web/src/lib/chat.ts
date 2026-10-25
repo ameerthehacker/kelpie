@@ -24,7 +24,19 @@ export type AssistantPart =
   | SpawnView
   /** Sub-agents Kelpie told the orchestrator about. */
   | { type: 'agents'; agents: AgentUpdate[]; ts: string }
-  | { type: 'notice'; tone: 'error' | 'info'; text: string; ts: string };
+  | { type: 'notice'; tone: 'error' | 'info'; text: string; ts: string }
+  /** A plan put to the person (ExitPlanMode), and what became of it. */
+  | PlanView;
+
+export interface PlanView {
+  type: 'plan';
+  requestId: string;
+  plan: string;
+  state: 'open' | 'approved' | 'declined' | 'expired';
+  /** The person's note, when they sent it back. */
+  message?: string;
+  ts: string;
+}
 
 export interface SpawnView {
   type: 'spawn';
@@ -110,6 +122,7 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
   const items: ChatItem[] = [];
   const tools = new Map<string, ToolView>();
   const spawns = new Map<string, SpawnView>();
+  const plans = new Map<string, PlanView>();
 
   const assistant = (id: string): AssistantPart[] => {
     const last = items.at(-1);
@@ -144,8 +157,9 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
         if (!ev.data.redacted) assistant(ev.id).push({ type: 'reasoning', text: ev.data.text, ts: ev.ts });
         break;
       case 'tool.started': {
-        // Todo lists live in the agent pane, by agent, not scattered through the chat.
-        if (ev.data.category === 'todo') break;
+        // Todo lists live in the agent pane, by agent, not scattered through the chat; a plan put to
+        // the person shows as its card.
+        if (ev.data.category === 'todo' || ev.data.name === 'ExitPlanMode') break;
         if (ev.data.name === SPAWN_TOOL) {
           const input = (ev.data.input ?? {}) as { title?: unknown };
           const view: SpawnView = { type: 'spawn', callId: ev.data.callId, title: typeof input.title === 'string' ? input.title : 'Agent', state: 'running' };
@@ -170,6 +184,21 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
       case 'file.changed': {
         const view = tools.get(ev.data.callId);
         if (view) view.delta = { added: ev.data.added, removed: ev.data.removed };
+        break;
+      }
+      // Other permission requests are answered in the approvals tray, not in the chat.
+      case 'permission.requested':
+        if (ev.data.tool === 'ExitPlanMode') {
+          const view: PlanView = { type: 'plan', requestId: ev.data.requestId, plan: ev.data.plan ?? '', state: 'open', ts: ev.ts };
+          plans.set(view.requestId, view);
+          assistant(ev.id).push(view);
+        }
+        break;
+      case 'permission.resolved': {
+        const view = plans.get(ev.data.requestId);
+        if (!view) break;
+        view.state = ev.data.decision === 'allow' ? 'approved' : ev.data.by === 'person' ? 'declined' : 'expired';
+        if (ev.data.by === 'person' && ev.data.message) view.message = ev.data.message;
         break;
       }
       case 'turn.ended':

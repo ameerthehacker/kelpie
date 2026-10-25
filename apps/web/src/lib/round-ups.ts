@@ -66,7 +66,11 @@ export function roundUpSummary(r: RoundUp, agents: readonly { status: string }[]
   const when = relativeTime(r.updatedAt, now);
   if (!agents.length) return r.busy ? 'Working' : statusLine(r, now).text;
   const n = (status: string) => agents.filter((a) => a.status === status).length;
-  const moving = [n('working') && `${n('working')} working`, n('failed') && `${n('failed')} failed`].filter(Boolean);
+  const moving = [
+    n('needs-approval') && `${n('needs-approval')} waiting on you`,
+    n('working') && `${n('working')} working`,
+    n('failed') && `${n('failed')} failed`,
+  ].filter(Boolean);
   if (moving.length) return moving.join(' · ');
   return n('done') === agents.length ? `Done · ${when}` : `Idle · ${when}`;
 }

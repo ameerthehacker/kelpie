@@ -52,6 +52,12 @@ export interface Run {
   readonly exited: boolean;
   /** Sends a user turn; if one is running, the harness queues it. Throws once the run is stopping or exited. */
   send(text: string): void;
+  /**
+   * Answers a permission request the harness made (`permission.requested`); false if it is no longer
+   * open (answered already, or the turn moved on). `rules` are permission rules to allow from now on
+   * in this process (e.g. what the person chose to allow for the round-up).
+   */
+  answer(requestId: string, answer: PermissionAnswer): boolean;
   /** Switches the live process to a permission mode (a harness value, e.g. `acceptEdits`); false if it refused or never answered. */
   setMode(mode: string): Promise<boolean>;
   /**
@@ -63,6 +69,10 @@ export interface Run {
   stop(): Promise<RunExit>;
   readonly done: Promise<RunExit>;
 }
+
+export type PermissionAnswer =
+  | { allow: true; by: 'person' | 'kelpie'; rules?: string[] }
+  | { allow: false; by: 'person' | 'kelpie'; message: string };
 
 export interface Adapter {
   readonly harness: Harness;

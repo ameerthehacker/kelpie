@@ -4,6 +4,7 @@ import { AgentPills } from '@/components/agents/agent-pills';
 import { useAgentPane } from '@/components/agents/pane-state';
 import { MessageResponse } from '@/components/ai-elements/message';
 import { AgentEvents, EventLine } from '@/components/chat/events';
+import { PlanCard } from '@/components/chat/plan-card';
 import { StepGroup } from '@/components/chat/steps';
 import type { AssistantPart, SpawnView, ToolView } from '@/lib/chat';
 
@@ -30,10 +31,12 @@ interface Props {
   streaming: boolean;
   /** Who did the steps: "Kelpie" for an orchestrator, the agent's title on its own page. */
   actor: string;
+  /** The round-up these are from, to answer a plan put to the person. */
+  sessionId?: string | undefined;
 }
 
 /** An assistant reply: text, steps, agents started and reported on, and notices, in order. */
-export function AssistantParts({ parts, streaming, actor }: Props) {
+export function AssistantParts({ parts, streaming, actor, sessionId }: Props) {
   const pane = useAgentPane();
   // Kelpie's tools name agents by id; steps say their titles.
   const nameOf = useMemo(() => {
@@ -41,10 +44,22 @@ export function AssistantParts({ parts, streaming, actor }: Props) {
     return (id: string) => titles.get(id);
   }, [pane?.agents]);
   const list = blocks(parts);
-  return list.map((block, i) => <BlockView key={i} block={block} streaming={streaming && i === list.length - 1} actor={actor} nameOf={nameOf} />);
+  return list.map((block, i) => <BlockView key={i} block={block} streaming={streaming && i === list.length - 1} actor={actor} nameOf={nameOf} sessionId={sessionId} />);
 }
 
-function BlockView({ block: part, streaming, actor, nameOf }: { block: Block; streaming: boolean; actor: string; nameOf: (id: string) => string | undefined }) {
+function BlockView({
+  block: part,
+  streaming,
+  actor,
+  nameOf,
+  sessionId,
+}: {
+  block: Block;
+  streaming: boolean;
+  actor: string;
+  nameOf: (id: string) => string | undefined;
+  sessionId: string | undefined;
+}) {
   switch (part.type) {
     case 'text':
       return <MessageResponse isAnimating={streaming}>{part.text}</MessageResponse>;
@@ -57,6 +72,8 @@ function BlockView({ block: part, streaming, actor, nameOf }: { block: Block; st
       return <AgentPills spawns={part.spawns} />;
     case 'agents':
       return <AgentEvents agents={part.agents} ts={part.ts} />;
+    case 'plan':
+      return <PlanCard plan={part} sessionId={sessionId} />;
     case 'notice':
       return (
         <EventLine tone={part.tone === 'error' ? 'fail' : 'muted'}>

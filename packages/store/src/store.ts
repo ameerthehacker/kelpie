@@ -17,6 +17,7 @@ export type OutboxRow = typeof schema.outbox.$inferSelect;
 export type OutboxSource = OutboxRow['source'];
 export type AttachmentRow = typeof schema.attachments.$inferSelect;
 export type NewAttachment = Omit<AttachmentRow, 'createdAt'>;
+export type PermissionRuleRow = typeof schema.permissionRules.$inferSelect;
 
 const MIGRATIONS = join(import.meta.dirname, '../drizzle');
 
@@ -257,6 +258,21 @@ export class Store {
       .where(and(eq(schema.attachments.roundUpId, roundUpId), inArray(schema.attachments.id, ids)))
       .all();
     return ids.flatMap((id) => rows.filter((r) => r.id === id));
+  }
+
+  /** Saves a rule for a round-up; saving one it has already is a no-op. */
+  addRule(roundUpId: string, rule: string, now = Date.now()): void {
+    this.db.insert(schema.permissionRules).values({ roundUpId, rule, createdAt: now }).onConflictDoNothing().run();
+  }
+
+  /** A round-up's saved rules, oldest first. */
+  rulesOf(roundUpId: string): PermissionRuleRow[] {
+    return this.db.select().from(schema.permissionRules).where(eq(schema.permissionRules.roundUpId, roundUpId)).orderBy(asc(schema.permissionRules.id)).all();
+  }
+
+  /** Removes one of a round-up's rules; false if it has no such rule. */
+  deleteRule(roundUpId: string, id: number): boolean {
+    return this.db.delete(schema.permissionRules).where(and(eq(schema.permissionRules.id, id), eq(schema.permissionRules.roundUpId, roundUpId))).run().changes > 0;
   }
 
   close(): void {

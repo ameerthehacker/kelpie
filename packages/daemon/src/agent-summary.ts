@@ -12,7 +12,8 @@ export interface AgentSummary {
   /** The model the harness reports, once it has started. */
   model: string | undefined;
   writes: boolean;
-  status: 'working' | 'done' | 'failed' | 'stopped' | 'idle';
+  /** `needs-approval`: working, but waiting on the person to allow something. */
+  status: 'working' | 'needs-approval' | 'done' | 'failed' | 'stopped' | 'idle';
   /** One line on what it is doing, or what it last said. */
   now: string;
   /** Its own todo list, from its own session. */
@@ -48,4 +49,4 @@ export function nowOf(e: KelpieEvent): string | undefined {
 }
 
 /** Kinds that can change what the pane shows for an agent. */
-export const SUMMARY_KINDS = new Set<KelpieEvent['kind']>(['session.started', 'activity', 'todos', 'tool.started', 'message', 'turn.ended']);
+export const SUMMARY_KINDS = new Set<KelpieEvent['kind']>(['session.started', 'activity', 'todos', 'tool.started', 'message', 'turn.ended', 'permission.requested', 'permission.resolved']);

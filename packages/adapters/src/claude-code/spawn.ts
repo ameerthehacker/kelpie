@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Readable } from 'node:stream';
 import type { KelpieEvent } from '@kelpie/protocol';
-import type { Adapter, Run, RunExit, RunSpec } from '../types.js';
+import type { Adapter, PermissionAnswer, Run, RunExit, RunSpec } from '../types.js';
 import { ClaudeCodeParser } from './parse.js';
 
 type Obj = Record<string, any>;
@@ -46,6 +46,8 @@ export function claudeArgs(spec: RunSpec): string[] {
     // Echoes each stdin turn as the CLI takes it in: our record of sent turns, and how queued turns are tracked.
     '--replay-user-messages',
     '--permission-mode', spec.permissionMode ?? 'acceptEdits',
+    // Anything its rules don't settle is asked of us (a can_use_tool control request), not refused.
+    '--permission-prompt-tool', 'stdio',
     '--tools', (spec.tools ?? DEFAULT_TOOLS).join(','),
     // Only Kelpie-provided MCP servers; keeps the user's global connectors out of agents.
     '--strict-mcp-config',
@@ -138,6 +140,19 @@ class ClaudeCodeRun implements Run {
     this.child.stdin.write(userTurn(text));
   }
 
+  answer(requestId: string, answer: PermissionAnswer): boolean {
+    const input = this.parser.permissionInput(requestId);
+    if (!input || this.exit || this.stopping) return false;
+    const response = answer.allow
+      ? { behavior: 'allow', updatedInput: input, ...(answer.rules?.length ? { updatedPermissions: [{ type: 'addRules', rules: answer.rules.map(ruleParts), behavior: 'allow', destination: 'session' }] } : {}) }
+      : { behavior: 'deny', message: answer.message };
+    this.child.stdin.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response } }) + '\n');
+    this.parser
+      .noteAnswered(requestId, { decision: answer.allow ? 'allow' : 'deny', by: answer.by, ...(answer.allow ? {} : { message: answer.message }) })
+      .forEach((ev) => this.emit(ev));
+    return true;
+  }
+
   async setMode(mode: string): Promise<boolean> {
     if (this.exit || this.stopping) return false;
     const res = await this.control({ subtype: 'set_permission_mode', mode });
@@ -197,8 +212,9 @@ class ClaudeCodeRun implements Run {
       const res = o.response ?? {};
       this.controls.get(res.request_id)?.(res);
       this.controls.delete(res.request_id);
-    } else if (o.type === 'control_request') {
-      // We register no permission or hook callbacks, so nothing should ask; refuse rather than hang the CLI.
+    } else if (o.type === 'control_request' && o.request?.subtype !== 'can_use_tool') {
+      // Permission requests become events and wait for an answer. We register no hook callbacks, so
+      // nothing else should ask; refuse rather than hang the CLI.
       this.child.stdin.write(
         JSON.stringify({ type: 'control_response', response: { subtype: 'error', request_id: o.request_id, error: 'unsupported by kelpie' } }) + '\n',
       );
@@ -238,6 +254,12 @@ class ClaudeCodeRun implements Run {
     const timeout = new Promise<boolean>((r) => (timer = setTimeout(() => r(false), ms)));
     return Promise.race([this.done.then(() => true), timeout]).finally(() => clearTimeout(timer));
   }
+}
+
+/** A permission rule string, `Bash(pnpm install)` or `WebSearch`, as the CLI's rule object. */
+function ruleParts(rule: string): { toolName: string; ruleContent?: string } {
+  const m = /^([^(]+)\((.*)\)$/s.exec(rule);
+  return m ? { toolName: m[1]!, ruleContent: m[2]! } : { toolName: rule };
 }
 
 export const claudeCode: Adapter = {

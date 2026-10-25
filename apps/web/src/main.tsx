@@ -18,6 +18,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: null },
       { path: 'r/:roundUpId', element: null },
+      { path: 'approvals', element: null },
     ],
   },
   { path: '*', element: <Navigate to="/" replace /> },

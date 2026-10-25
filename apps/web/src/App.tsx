@@ -1,5 +1,5 @@
 import { PanelLeftIcon } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Mode } from '@kelpie/protocol';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMatch, useNavigate } from 'react-router';
@@ -9,6 +9,8 @@ import { PlanDock, TodoDock } from '@/components/agents/plan-dock';
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation';
 import { Shimmer } from '@/components/ai-elements/shimmer';
 import { AssistantParts } from '@/components/chat/assistant-part';
+import { ApprovalTray } from '@/components/approvals/approval-tray';
+import { ApprovalsPage } from '@/components/approvals/approvals-page';
 import { AttachmentChips } from '@/components/chat/attachments';
 import { Composer } from '@/components/chat/composer';
 import { KelpieLogo } from '@/components/shell/brand';
@@ -17,6 +19,7 @@ import { AppSidebar } from '@/components/shell/sidebar';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useAgents } from '@/hooks/use-agents';
+import { useApprovals } from '@/hooks/use-approvals';
 import { useBranches } from '@/hooks/use-branches';
 import { useHarnesses } from '@/hooks/use-harnesses';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -84,6 +87,7 @@ function EmptyState({ cwd }: { cwd: string | undefined }) {
 
 export function App() {
   const roundUpId = useMatch(ROUND_UP_ROUTE)?.params.roundUpId;
+  const onApprovals = !!useMatch('/approvals');
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const isMobile = useIsMobile();
@@ -109,6 +113,9 @@ export function App() {
     enabled: !!roundUpId && !!roundUps && !listed,
   });
   const current = listed ?? (direct.data?.id === roundUpId ? direct.data : undefined);
+  // On a sub-agent's own page, only what that agent is asking.
+  const roundUpApprovals = useApprovals(current?.role === 'agent' ? current.parentId : roundUpId);
+  const approvals = useMemo(() => (current?.role === 'agent' ? roundUpApprovals.filter((a) => a.sessionId === roundUpId) : roundUpApprovals), [roundUpApprovals, current?.role, roundUpId]);
   const cwd = current?.cwd ?? (roundUpId ? undefined : defaultCwd);
   // An orchestrator's agents; a sub-agent's own page has none. Wait for the role: a sub-agent
   // opened directly is not known to be one until its own fetch answers.
@@ -211,49 +218,56 @@ export function App() {
               <AgentsButton />
             </header>
 
-            <Conversation key={roundUpId ?? 'new'} className="min-h-0 flex-1">
-              <ConversationContent className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
-                {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} />}
-                {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
-                {items.map((item) =>
-                  item.role === 'user' ? (
-                    <div key={item.id} className="flex flex-col items-end gap-1.5">
-                      <AttachmentChips sessionId={roundUpId} attachments={item.attachments} className="max-w-[78%]" />
-                      {item.text && <div className="bg-raise max-w-[78%] rounded-[20px] px-4 py-[11px] break-words whitespace-pre-wrap">{item.text}</div>}
-                    </div>
-                  ) : (
-                    <div key={item.id} className="flex min-w-0 flex-col gap-3.5">
-                      <AssistantParts parts={item.parts} streaming={busy && item === last} actor={actor} />
-                    </div>
-                  ),
-                )}
-                {working && <Shimmer className="text-sm">Working…</Shimmer>}
-              </ConversationContent>
-              <ConversationScrollButton />
-            </Conversation>
+            {onApprovals ? (
+              <ApprovalsPage roundUps={roundUps} />
+            ) : (
+              <>
+                <Conversation key={roundUpId ?? 'new'} className="min-h-0 flex-1">
+                  <ConversationContent className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
+                    {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} />}
+                    {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
+                    {items.map((item) =>
+                      item.role === 'user' ? (
+                        <div key={item.id} className="flex flex-col items-end gap-1.5">
+                          <AttachmentChips sessionId={roundUpId} attachments={item.attachments} className="max-w-[78%]" />
+                          {item.text && <div className="bg-raise max-w-[78%] rounded-[20px] px-4 py-[11px] break-words whitespace-pre-wrap">{item.text}</div>}
+                        </div>
+                      ) : (
+                        <div key={item.id} className="flex min-w-0 flex-col gap-3.5">
+                          <AssistantParts parts={item.parts} streaming={busy && item === last} actor={actor} sessionId={roundUpId} />
+                        </div>
+                      ),
+                    )}
+                    {working && <Shimmer className="text-sm">Working…</Shimmer>}
+                  </ConversationContent>
+                  <ConversationScrollButton />
+                </Conversation>
 
-            <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
-              {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
-              {/* The plan sits outside the chat flow, always in view while agents work. */}
-              {agents?.length ? <PlanDock /> : <TodoDock todos={todos} />}
-              <Composer
-                status={status}
-                busy={busy}
-                send={send}
-                interrupt={interrupt}
-                model={model}
-                onModel={changeModel}
-                base={base}
-                onBase={changeBase}
-                branches={branches}
-                baseLocked={baseLocked}
-                baseClearable={!roundUpId}
-                // A sub-agent follows its round-up's mode; it is changed there.
-                mode={mode}
-                modes={current?.role === 'agent' ? [] : modes}
-                onMode={changeMode}
-              />
-            </div>
+                <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
+                  {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
+                  {/* The plan sits outside the chat flow, always in view while agents work. */}
+                  {roundUpId && <ApprovalTray approvals={approvals} roundUpId={current?.role === 'agent' ? (current.parentId ?? roundUpId) : roundUpId} />}
+                  {agents?.length ? <PlanDock /> : <TodoDock todos={todos} />}
+                  <Composer
+                    status={status}
+                    busy={busy}
+                    send={send}
+                    interrupt={interrupt}
+                    model={model}
+                    onModel={changeModel}
+                    base={base}
+                    onBase={changeBase}
+                    branches={branches}
+                    baseLocked={baseLocked}
+                    baseClearable={!roundUpId}
+                    // A sub-agent follows its round-up's mode; it is changed there.
+                    mode={mode}
+                    modes={current?.role === 'agent' ? [] : modes}
+                    onMode={changeMode}
+                  />
+                </div>
+              </>
+            )}
           </main>
           <AgentPaneSlot />
         </div>

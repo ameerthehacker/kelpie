@@ -109,6 +109,7 @@ function Segments({ agents }: { agents: AgentSummary[] }) {
             'h-1 flex-1 rounded-full',
             a.status === 'done' && 'bg-done',
             a.status === 'working' && 'bg-run animate-k-pulse',
+            a.status === 'needs-approval' && 'bg-wait animate-k-pulse',
             a.status === 'failed' && 'bg-fail',
             (a.status === 'idle' || a.status === 'stopped') && 'bg-ln2',
           )}

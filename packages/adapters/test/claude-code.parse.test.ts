@@ -156,6 +156,61 @@ describe('claude-code mapping', () => {
     ]);
   });
 
+  it('turns the CLI asking before a command into a permission request, with the rule that would allow it', () => {
+    const [req] = of(replay('permission'), 'permission.requested');
+    expect(req?.data).toMatchObject({ tool: 'Bash', title: 'node -e "console.log(41+1)"', rule: 'Bash(node -e "console.log(41+1)")' });
+    // The echo of our own answer is not news.
+    expect(of(replay('permission'), 'other').some((e) => JSON.stringify(e.data).includes('control_response'))).toBe(false);
+  });
+
+  it('puts a plan to the person as a permission request carrying the plan', () => {
+    const [req] = of(replay('plan'), 'permission.requested');
+    expect(req?.data.tool).toBe('ExitPlanMode');
+    expect(req?.data.title).toBe('Approve the plan');
+    expect(req?.data.plan).toMatch(/sub/);
+  });
+
+  it('gives a compound command no rule, so allowing one part can never let the rest through', () => {
+    const parser = newParser();
+    const [req] = of(
+      parser.parse({
+        type: 'control_request',
+        request_id: 'x',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'Bash',
+          input: { command: 'pnpm install && rm -rf ~/x' },
+          permission_suggestions: [{ type: 'addRules', behavior: 'allow', destination: 'localSettings', rules: [{ toolName: 'Bash', ruleContent: 'pnpm install' }, { toolName: 'Bash', ruleContent: 'rm -rf ~/x' }] }],
+        },
+      }),
+      'permission.requested',
+    );
+    expect(req?.data.rule).toBeUndefined();
+  });
+
+  it("falls back on the turn's own last message for a plan, never an earlier turn's", () => {
+    const parser = newParser();
+    const plan = () => of(parser.parse({ type: 'control_request', request_id: String(Math.random()), request: { subtype: 'can_use_tool', tool_name: 'ExitPlanMode', input: {} } }), 'permission.requested')[0]?.data.plan;
+    parser.parse({ type: 'assistant', message: { content: [{ type: 'text', text: '1. Add sub' }] } });
+    expect(plan()).toBe('1. Add sub');
+    parser.parse({ type: 'result', subtype: 'success', usage: {} });
+    expect(plan()).toBeUndefined();
+  });
+
+  it('closes a permission request once: answered, cancelled by the CLI, or left open when the process ends', () => {
+    const parser = newParser();
+    const ask = (id: string) => parser.parse({ type: 'control_request', request_id: id, request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls' } } });
+    ask('a');
+    ask('b');
+    ask('c');
+    expect(parser.permissionInput('a')).toEqual({ command: 'ls' });
+    expect(parser.noteAnswered('a', { decision: 'allow', by: 'person' }).map((e) => e.data)).toEqual([{ requestId: 'a', decision: 'allow', by: 'person' }]);
+    expect(parser.noteAnswered('a', { decision: 'deny', by: 'person' })).toEqual([]);
+    expect(of(parser.parse({ type: 'control_cancel_request', request_id: 'b' }), 'permission.resolved').map((e) => e.data.by)).toEqual(['cancelled']);
+    expect(of(parser.noteExited(), 'permission.resolved').map((e) => [e.data.requestId, e.data.by])).toEqual([['c', 'expired']]);
+    expect(parser.permissionInput('c')).toBeUndefined();
+  });
+
   it('keeps unknown events as `other`', () => {
     const parser = new ClaudeCodeParser({ runId: 'r' });
     expect(parser.parse({ type: 'brand_new_thing', x: 1 })[0]).toMatchObject({ kind: 'other', data: { type: 'brand_new_thing' } });

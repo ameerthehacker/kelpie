@@ -7,7 +7,9 @@
 // way the real CLI does for an unknown session; FAKE_EXIT_DELAY (ms) keeps it
 // alive that long after stdin closes, like a slow shutdown. FAKE_EVERY_TURN=1 answers
 // each later turn too (echo, "ok", result), and FAKE_STDIN_FILE gets a line of JSON
-// { resume, text } per user turn received.
+// { resume, text } per user turn received. FAKE_ASK=<command> asks permission to run that Bash
+// command (can_use_tool) before the first turn's output, and goes on once answered; FAKE_ANSWER_FILE
+// gets a line of JSON per answer. FAKE_ASK_TOOL=ExitPlanMode asks to put FAKE_ASK as a plan instead.
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -26,8 +28,16 @@ if (process.env.FAKE_RESUME_FAIL === '1' && args.includes('--resume')) {
   process.exit(1);
 }
 
+const ASK_ID = 'fake-ask-1';
+let asking = false;
 for await (const line of createInterface({ input: process.stdin })) {
   const msg = JSON.parse(line);
+  if (msg.type === 'control_response' && msg.response?.request_id === ASK_ID && asking) {
+    asking = false;
+    if (process.env.FAKE_ANSWER_FILE) appendFileSync(process.env.FAKE_ANSWER_FILE, JSON.stringify(msg.response.response) + '\n');
+    lines.forEach(out);
+    continue;
+  }
   if (msg.type === 'control_request') {
     if (!hang) out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } });
   } else if (msg.type === 'user' && process.env.FAKE_STDIN_FILE) {
@@ -40,7 +50,15 @@ for await (const line of createInterface({ input: process.stdin })) {
     out({ type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id, total_cost_usd: 0, usage: {} });
   } else if (msg.type === 'user' && !printed) {
     printed = true;
-    if (hang) {
+    if (process.env.FAKE_ASK && !hang) {
+      const command = process.env.FAKE_ASK;
+      asking = true;
+      const request =
+        process.env.FAKE_ASK_TOOL === 'ExitPlanMode'
+          ? { subtype: 'can_use_tool', tool_name: 'ExitPlanMode', input: { plan: command } }
+          : { subtype: 'can_use_tool', tool_name: 'Bash', input: { command }, permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: command }], behavior: 'allow', destination: 'localSettings' }] };
+      out({ type: 'control_request', request_id: ASK_ID, request });
+    } else if (hang) {
       lines.filter((l) => !l.includes('"type":"result"')).slice(0, 3).forEach(out);
     } else {
       lines.forEach(out);

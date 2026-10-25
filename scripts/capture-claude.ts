@@ -15,7 +15,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { claudeArgs, userTurn } from '@kelpie/adapters';
+import { claudeArgs, userTurn, type RunSpec } from '@kelpie/adapters';
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '../packages/adapters/fixtures/claude-code');
 const MODEL = process.env.KELPIE_CAPTURE_MODEL ?? 'haiku';
@@ -30,6 +30,10 @@ interface Scenario {
   interruptWhen?: (o: Obj) => boolean;
   /** Send all remaining turns at once, mid-turn, the first time this matches. */
   queueWhen?: (o: Obj) => boolean;
+  /** Settings for this scenario beyond the defaults (e.g. no Bash allow, so the CLI asks). */
+  spec?: Partial<RunSpec>;
+  /** How to answer the CLI's permission requests (can_use_tool). */
+  answer?: 'allow' | 'deny';
 }
 
 const usesTool = (name: string) => (o: Obj) =>
@@ -84,6 +88,23 @@ const SCENARIOS: Record<string, Scenario> = {
     ],
     queueWhen: usesTool('Bash'),
   },
+  // The CLI asks before running a command its rules don't allow: answered yes, and no.
+  permission: {
+    turns: ['Run exactly `node -e "console.log(41+1)"` with Bash and tell me the output in one line.'],
+    spec: { allowedTools: [] },
+    answer: 'allow',
+  },
+  'permission-deny': {
+    turns: ['Run exactly `node -e "console.log(41+1)"` with Bash. If it is refused, do not retry; say so in one line.'],
+    spec: { allowedTools: [] },
+    answer: 'deny',
+  },
+  // Plan mode: the plan is put to the person with ExitPlanMode.
+  plan: {
+    turns: ['Plan adding an exported sub(a, b) to src/math.js in two lines, then present it with ExitPlanMode. Do not change anything.'],
+    spec: { permissionMode: 'plan', tools: ['Read', 'Glob', 'Write', 'ExitPlanMode'], allowedTools: [] },
+    answer: 'allow',
+  },
   // A background sub-agent: when it finishes, the CLI starts a turn by itself.
   'background-agent': {
     turns: [
@@ -110,7 +131,7 @@ function makeRepo(): string {
 
 async function capture(name: string, s: Scenario): Promise<void> {
   const cwd = makeRepo();
-  const args = claudeArgs({ cwd, model: MODEL, allowedTools: ['Bash'], ...(s.resume ? { resume: s.resume() } : {}) });
+  const args = claudeArgs({ cwd, model: MODEL, allowedTools: ['Bash'], ...s.spec, ...(s.resume ? { resume: s.resume() } : {}) });
   const child = spawn('claude', args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
   const lines: string[] = [];
   let stderr = '';
@@ -125,6 +146,10 @@ async function capture(name: string, s: Scenario): Promise<void> {
     lines.push(line);
     const o = JSON.parse(line) as Obj;
     if (o.type === 'system' && o.subtype === 'init') sessions[name] = o.session_id;
+    if (o.type === 'control_request' && o.request?.subtype === 'can_use_tool') {
+      const response = s.answer === 'allow' ? { behavior: 'allow', updatedInput: o.request.input } : { behavior: 'deny', message: 'The person denied this.' };
+      child.stdin.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: o.request_id, response } }) + '\n');
+    }
     if (s.interruptWhen && !interrupted && s.interruptWhen(o)) {
       interrupted = true;
       child.stdin.write(JSON.stringify({ type: 'control_request', request_id: 'kelpie-int-1', request: { subtype: 'interrupt' } }) + '\n');

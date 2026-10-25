@@ -5,10 +5,14 @@ import { useNavigate } from 'react-router';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { HarnessMark } from '@/components/harness-mark';
 import { MessageResponse } from '@/components/ai-elements/message';
+import { ApprovalRow } from '@/components/approvals/approval-row';
+import { useGroupAnswers } from '@/components/approvals/approval-tray';
 import { AttachButton, AttachmentChips, FileChips, useAttachedFiles } from '@/components/chat/attachments';
 import { EventLine } from '@/components/chat/events';
 import { ShowCommandsToggle, StepRow } from '@/components/chat/steps';
 import { useEventLog } from '@/hooks/use-agents';
+import { useApprovals } from '@/hooks/use-approvals';
+import { groupApprovals } from '@/lib/approvals';
 import { useNow } from '@/hooks/use-now';
 import { byAttention, elapsed, STATUS_LABEL, STATUS_ORDER, type AgentStatus, type AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
@@ -116,8 +120,8 @@ export function AgentPane({ agents }: { agents: AgentSummary[] }) {
   );
 }
 
-const GROUP_LABEL: Record<AgentStatus, string> = { failed: 'Failed', working: 'Working', stopped: 'Stopped', idle: 'Idle', done: 'Done' };
-const FLEET: Record<AgentStatus, string> = { failed: 'bg-fail', working: 'bg-run', stopped: 'bg-ln2', idle: 'bg-ln2', done: 'bg-done' };
+const GROUP_LABEL: Record<AgentStatus, string> = { 'needs-approval': 'Needs approval', failed: 'Failed', working: 'Working', stopped: 'Stopped', idle: 'Idle', done: 'Done' };
+const FLEET: Record<AgentStatus, string> = { 'needs-approval': 'bg-wait', failed: 'bg-fail', working: 'bg-run', stopped: 'bg-ln2', idle: 'bg-ln2', done: 'bg-done' };
 const PER_GROUP = 6;
 
 /** Every agent: a filter, status chips, the fleet map (one square each), and the agents grouped by status. */
@@ -184,7 +188,7 @@ function AgentList({ agents }: { agents: AgentSummary[] }) {
               onClick={() => pane.openAgent(a.id)}
               aria-label={`${a.title}: ${STATUS_LABEL[a.status]}`}
               title={`${a.title} — ${STATUS_LABEL[a.status]}`}
-              className={cn('size-[11px] rounded-[3px]', FLEET[a.status], a.status === 'working' && 'animate-k-pulse', !matches(a) && 'opacity-20')}
+              className={cn('size-[11px] rounded-[3px]', FLEET[a.status], (a.status === 'working' || a.status === 'needs-approval') && 'animate-k-pulse', !matches(a) && 'opacity-20')}
             />
           ))}
         </div>
@@ -286,7 +290,7 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
             {a.branch && <BranchLine agent={a} />}
           </div>
           <div className="flex gap-0.5">
-            <button type="button" onClick={pause} disabled={a.status !== 'working'} aria-label="Pause agent" title="Pause" className={cn(iconButton, 'disabled:opacity-40')}>
+            <button type="button" onClick={pause} disabled={a.status !== 'working' && a.status !== 'needs-approval'} aria-label="Pause agent" title="Pause" className={cn(iconButton, 'disabled:opacity-40')}>
               <PauseIcon className="size-3.5" strokeWidth={2.2} />
             </button>
             <button type="button" onClick={() => navigate(roundUpPath(a.id))} aria-label="Open full session" title="Open full session" className={iconButton}>
@@ -318,6 +322,7 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
         {error && <p className="text-fail text-xs">{error}</p>}
       </div>
 
+      <AgentApprovals agent={a} />
       <AgentTimeline agent={a} events={log.events} error={log.error} pending={pending} />
       <AgentMessage
         agent={a}
@@ -329,6 +334,26 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
         }}
       />
     </div>
+  );
+}
+
+/** What this agent is waiting on the person for, answered right here (the round-up's tray has it too). */
+function AgentApprovals({ agent: a }: { agent: AgentSummary }) {
+  const all = useApprovals(a.parentId);
+  const groups = useMemo(() => groupApprovals(all.filter((x) => x.sessionId === a.id)), [all, a.id]);
+  const { run, busy, error } = useGroupAnswers();
+  const [selected, setSelected] = useState(0);
+  if (!groups.length) return null;
+  return (
+    <section aria-label="Waiting on you" className="border-ln border-t px-3.5 py-2">
+      <div className="text-wait px-1 pb-1 text-xs font-medium">Waiting on you</div>
+      <ul className="flex flex-col gap-0.5">
+        {groups.map((g, i) => (
+          <ApprovalRow key={g.key} group={g} selected={i === selected} busy={busy} onSelect={() => setSelected(i)} onAnswer={(ans) => void run([g], ans)} />
+        ))}
+      </ul>
+      {error && <p className="text-fail px-1 pt-1 text-xs">{error}</p>}
+    </section>
   );
 }
 
@@ -478,7 +503,7 @@ export function AgentsButton() {
   if (!pane || pane.agents.length === 0) return null;
   const listOn = pane.open && !pane.active;
   const failed = pane.agents.filter((a) => a.status === 'failed').length;
-  const working = pane.agents.filter((a) => a.status === 'working').length;
+  const working = pane.agents.filter((a) => a.status === 'working' || a.status === 'needs-approval').length;
   const total = pane.agents.length;
   return (
     <button

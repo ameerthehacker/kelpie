@@ -99,11 +99,13 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     sse(c, (send) => {
       send({ event: 'sessions', data: JSON.stringify(sessions.list()) });
       send({ event: 'usage', data: JSON.stringify(sessions.usage()) });
+      send({ event: 'approvals-snapshot', data: JSON.stringify(sessions.approvals()) });
       return sessions.watch((u) => {
         if (u.type === 'session') send({ event: 'session', data: JSON.stringify(u.session) });
         else if (u.type === 'deleted') send({ event: 'deleted', data: JSON.stringify({ id: u.id }) });
         else if (u.type === 'agent') send({ event: 'agent', data: JSON.stringify(u.agent) });
-        else send({ event: 'usage', data: JSON.stringify(u.usage) });
+        else if (u.type === 'approvals') send({ event: 'approvals', data: JSON.stringify({ roundUpId: u.roundUpId, approvals: u.approvals }) });
+        else if (u.type === 'usage') send({ event: 'usage', data: JSON.stringify(u.usage) });
       });
     }),
   );
@@ -128,6 +130,42 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
       }
     }
     return c.json(session.info(), 201);
+  });
+
+  // What round-ups are waiting on the person for: one round-up's (with its saved rules), or every one's.
+  // `/api/events` sends an `approvals` event with a round-up's whole list whenever it changes.
+  app.get('/api/approvals', (c) => {
+    const roundUp = c.req.query('roundUp');
+    if (roundUp && !sessions.get(roundUp)) return c.json({ error: 'no such session' }, 404);
+    return c.json({ approvals: sessions.approvals(roundUp), ...(roundUp ? { rules: sessions.rules(roundUp) } : {}) });
+  });
+
+  // Answers a batch: { items: [{ sessionId, requestId }], decision: 'allow' | 'deny', message?, remember?, mode? }.
+  // Each item is answered on its own; the result says which went through.
+  app.post('/api/approvals', async (c) => {
+    const body = await jsonBody<{ items?: unknown; decision?: unknown; message?: unknown; remember?: unknown; mode?: unknown }>(c);
+    const items = Array.isArray(body.items) ? body.items : [];
+    const valid = items.length > 0 && items.length <= 500 && items.every((i) => typeof i?.sessionId === 'string' && typeof i?.requestId === 'string');
+    if (!valid) return c.json({ error: 'items must be 1-500 { sessionId, requestId }' }, 400);
+    if (body.decision !== 'allow' && body.decision !== 'deny') return c.json({ error: 'decision must be allow or deny' }, 400);
+    if (body.message !== undefined && (typeof body.message !== 'string' || body.message.length > 2000)) return c.json({ error: 'message must be text (at most 2000 characters)' }, 400);
+    const mode = body.mode === undefined ? undefined : Mode.safeParse(body.mode);
+    if (mode && (!mode.success || mode.data === 'plan')) return c.json({ error: 'mode, approving a plan, must be auto or acceptEdits' }, 400);
+    const results = await sessions.answerApprovals({
+      items: items as { sessionId: string; requestId: string }[],
+      allow: body.decision === 'allow',
+      ...(typeof body.message === 'string' ? { message: body.message } : {}),
+      remember: body.remember === true,
+      ...(mode?.success ? { mode: mode.data } : {}),
+    });
+    return c.json({ results });
+  });
+
+  // Forgets a rule saved for a round-up.
+  app.delete('/api/sessions/:id/rules/:rule', (c) => {
+    const s = sessions.get(c.req.param('id'));
+    if (!s) return c.json({ error: 'no such session' }, 404);
+    return sessions.deleteRule(s.roundUpId, Number(c.req.param('rule'))) ? c.body(null, 204) : c.json({ error: 'no such rule' }, 404);
   });
 
   // The branches a round-up may start from (remote first), for the composer's base-branch picker.

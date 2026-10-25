@@ -1,11 +1,12 @@
-import { MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, PencilIcon, PlusIcon, SunIcon, Trash2Icon } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, PencilIcon, PlusIcon, ShieldAlertIcon, SunIcon, Trash2Icon } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { HarnessMark } from '@/components/harness-mark';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useApprovals } from '@/hooks/use-approvals';
 import { useNow } from '@/hooks/use-now';
 import { useUsage } from '@/hooks/use-usage';
 import { harnessOf } from '@/lib/harnesses';
@@ -22,10 +23,12 @@ interface RowProps {
   onNavigate: () => void;
   onRename: (id: string, title: string) => Promise<unknown>;
   onDelete: (roundUp: RoundUp) => void;
+  /** How many things it is waiting on the person for. */
+  waiting: number;
 }
 
 /** A round-up in the list: its title, and a pulsing dot while it works. Rename and delete on its menu. */
-function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete }: RowProps) {
+function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, waiting }: RowProps) {
   const [editing, setEditing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const status = statusLine(roundUp, now);
@@ -71,7 +74,16 @@ function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete }: Ro
         </span>
         <span className="sr-only">{status.text}</span>
       </Link>
-      {roundUp.busy && <span aria-hidden="true" className="bg-run animate-k-pulse absolute top-1/2 right-3 size-[7px] -translate-y-1/2 rounded-full group-hover/row:opacity-0" />}
+      {waiting > 0 ? (
+        <span
+          title={`${waiting} waiting on you`}
+          className="bg-wait absolute top-1/2 right-2 min-w-5 -translate-y-1/2 rounded-full px-1.5 text-center text-[11px] leading-5 font-semibold text-white group-hover/row:opacity-0"
+        >
+          {waiting}
+        </span>
+      ) : (
+        roundUp.busy && <span aria-hidden="true" className="bg-run animate-k-pulse absolute top-1/2 right-3 size-[7px] -translate-y-1/2 rounded-full group-hover/row:opacity-0" />
+      )}
       <DropdownMenu>
         <DropdownMenuTrigger
           aria-label={`Options for ${titleOf(roundUp)}`}
@@ -180,6 +192,12 @@ interface SidebarProps {
 /** The round-ups, usage and theme: the design's left-hand panel. */
 export function AppSidebar({ roundUps, currentId, onNavigate, onRename, onDelete, onHide, className }: SidebarProps) {
   const now = useNow();
+  const approvals = useApprovals();
+  const waiting = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const a of approvals) counts.set(a.roundUpId, (counts.get(a.roundUpId) ?? 0) + 1);
+    return counts;
+  }, [approvals]);
   const [confirming, setConfirming] = useState<RoundUp | undefined>();
 
   return (
@@ -197,12 +215,28 @@ export function AppSidebar({ roundUps, currentId, onNavigate, onRename, onDelete
         New round-up
       </Link>
 
+      {approvals.length > 0 && (
+        <Link to="/approvals" onClick={onNavigate} className="bg-wbg text-fg hover:bg-hov -mt-2 mb-2 flex h-9 items-center gap-2.5 rounded-xl px-3 text-sm">
+          <ShieldAlertIcon className="text-wait size-4" strokeWidth={2} />
+          <span className="flex-1">Waiting on you</span>
+          <span className="text-wait text-xs font-semibold">{approvals.length}</span>
+        </Link>
+      )}
       <div className="text-mu2 px-2.5 pb-1 text-xs">Round-ups</div>
       <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1">
         {roundUps === undefined && Array.from({ length: 3 }, (_, i) => <Skeleton key={i} className="my-1 h-[30px] rounded-[10px]" />)}
         {roundUps?.length === 0 && <p className="text-mu2 px-2.5 py-2 text-xs">Nothing yet. Your round-ups show up here.</p>}
         {roundUps?.map((r) => (
-          <RoundUpRow key={r.id} roundUp={r} active={r.id === currentId} now={now} onNavigate={onNavigate} onRename={onRename} onDelete={setConfirming} />
+          <RoundUpRow
+            key={r.id}
+            roundUp={r}
+            active={r.id === currentId}
+            now={now}
+            onNavigate={onNavigate}
+            onRename={onRename}
+            onDelete={setConfirming}
+            waiting={waiting.get(r.id) ?? 0}
+          />
         ))}
       </div>
 

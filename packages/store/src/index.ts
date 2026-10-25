@@ -1,1 +1,1 @@
-export { openStore, Store, type AttachmentRow, type NewAttachment, type NewSession, type NewWorktree, type OutboxRow, type OutboxSource, type SessionPatch, type SessionRow, type StoreOptions, type WorktreePatch, type WorktreeRow } from './store.js';
+export { openStore, Store, type AttachmentRow, type NewAttachment, type NewSession, type NewWorktree, type OutboxRow, type OutboxSource, type PermissionRuleRow, type SessionPatch, type SessionRow, type StoreOptions, type WorktreePatch, type WorktreeRow } from './store.js';

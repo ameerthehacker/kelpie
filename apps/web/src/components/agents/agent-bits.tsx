@@ -10,6 +10,7 @@ export function StatusDot({ status, className }: { status: AgentStatus; classNam
       className={cn(
         'inline-block size-[7px] shrink-0 rounded-full',
         status === 'working' && 'bg-run animate-k-pulse',
+        status === 'needs-approval' && 'bg-wait animate-k-pulse',
         status === 'done' && 'bg-done',
         status === 'failed' && 'bg-fail',
         (status === 'stopped' || status === 'idle') && 'border-mu2 border-[1.5px]',

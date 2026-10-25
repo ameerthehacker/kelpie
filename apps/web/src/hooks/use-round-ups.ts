@@ -7,6 +7,8 @@ import { byRecent, type RoundUp } from '@/lib/round-ups';
 import { AGENTS, agentsKey, upsertAgent } from './use-agents';
 import type { HarnessUsage } from '@/lib/usage';
 import { USAGE } from './use-usage';
+import { APPROVALS } from './use-approvals';
+import type { PendingApproval } from '@/lib/approvals';
 
 const ROUND_UPS = ['round-ups'] as const;
 
@@ -47,6 +49,12 @@ export function useRoundUps() {
             // A list being fetched may predate this update: fetch it again rather than lose it.
             if (queryClient.getQueryState(key)?.fetchStatus === 'fetching') void queryClient.invalidateQueries({ queryKey: key });
             else queryClient.setQueryData<AgentSummary[]>(key, (list) => upsertAgent(list, agent));
+          },
+          // Every round-up's open approvals as the stream connects, then each round-up's list as it changes.
+          'approvals-snapshot': (msg) => queryClient.setQueryData(APPROVALS, JSON.parse(msg.data) as PendingApproval[]),
+          approvals: (msg) => {
+            const { roundUpId, approvals } = JSON.parse(msg.data) as { roundUpId: string; approvals: PendingApproval[] };
+            queryClient.setQueryData<PendingApproval[]>(APPROVALS, (all = []) => [...all.filter((a) => a.roundUpId !== roundUpId), ...approvals]);
           },
           deleted: (msg) => {
             const { id } = JSON.parse(msg.data) as { id: string };

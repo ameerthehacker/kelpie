@@ -2,8 +2,8 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { basename, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
-import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type RunSpec } from '@kelpie/adapters';
-import { Harness, type AgentUpdate, type KelpieEvent, type Mode } from '@kelpie/protocol';
+import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer, type RunSpec } from '@kelpie/adapters';
+import { Harness, type AgentUpdate, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import type { RunContext, SentFile, Session, SessionHooks, SessionManager } from '../sessions.js';
 import { logLines, report, type AgentReport, type LogPage } from './digest.js';
@@ -54,7 +54,7 @@ export interface OrchestratorOptions {
 /** The harness mode an agent runs in: plan mode only stops new work that writes, so readers (and work under way) run in auto. */
 const agentMode = (mode: Mode) => (mode === 'acceptEdits' ? 'acceptEdits' : 'auto');
 const PLANNING =
-  'The person has this round-up in plan mode: no agent may change files. Investigate with read-only agents, present your plan, and ask the person to switch to Auto or Accept edits to carry it out.';
+  'The person has this round-up in plan mode: no agent may change files. Investigate with read-only agents, then write your plan to your plan file and put it to the person with ExitPlanMode; once they approve it, writers can start.';
 
 const NO_BASE =
   'No base branch is set for this round-up. Ask the person which branch to start from (list_branches shows the options), call set_base_branch with their answer, then spawn the writer.';
@@ -71,7 +71,8 @@ export interface AgentInfo {
   branch?: string;
   deliver?: 'muster' | 'standalone';
   worktree?: WorktreeRow['state'];
-  status: 'working' | 'idle' | 'waiting';
+  /** `needs approval`: working, but waiting on the person to allow something it asked for. */
+  status: 'working' | 'needs approval' | 'idle' | 'waiting';
   lastTurn: string | undefined;
   updatedAt: string;
   costUsd: number;
@@ -182,10 +183,12 @@ export class Orchestrator implements SessionHooks {
       this.warnedUnfenced = true;
       console.warn(`kelpie: the scratch folder ${scratch} is inside ${cwd}; orchestrators can't be kept out of that directory. Set KELPIE_HOME outside it.`);
     }
+    const planning = session.mode === 'plan';
     return {
-      tools: scratch ? SCRATCH_TOOLS : ORCHESTRATOR_TOOLS,
-      // Its own tools are all allowed or denied by rule; the mode is for its agents (and its prompt).
-      permissionMode: 'acceptEdits',
+      // In plan mode it puts its plan to the person with ExitPlanMode, which only works in the harness's own plan mode.
+      tools: [...(scratch ? SCRATCH_TOOLS : ORCHESTRATOR_TOOLS), ...(planning ? ['ExitPlanMode'] : [])],
+      // Otherwise its own tools are all settled by rule (or by `decide`); the mode is for its agents (and its prompt).
+      permissionMode: planning ? 'plan' : 'acceptEdits',
       // Its file tools reach the scratch folder and nothing else: the repo it runs in is denied
       // outright, and anything outside both is refused for want of a permission.
       allowedTools: ['mcp__kelpie', ...(scratch ? FILE_TOOLS.map((t) => `${t}(${under(scratch)})`) : [])],
@@ -226,7 +229,13 @@ export class Orchestrator implements SessionHooks {
    * whose prompt says what the mode means, starts afresh (same conversation) once it is idle.
    */
   async modeChanged(session: Session): Promise<void> {
+    // Its tools and prompt follow the mode: they change when it next starts. Leaving plan mode, its
+    // harness leaves it at once; entering it waits for the restart, which brings ExitPlanMode (until
+    // then Kelpie's own refusals keep writers out).
     session.restartWhenIdle();
+    if (session.mode !== 'plan') {
+      void session.switchMode('acceptEdits').catch((err) => console.error(`orchestrator ${session.id}: could not switch mode`, err));
+    }
     const mode = agentMode(session.mode);
     // Not awaited: a wedged harness must not hold up the person's change. One that misses it keeps
     // its old mode until its next start, which reads the round-up's.
@@ -236,6 +245,32 @@ export class Orchestrator implements SessionHooks {
         (err) => console.error(`agent ${child.id}: could not switch mode`, err),
       );
     }
+  }
+
+  /**
+   * Answers what the orchestrator's harness asks by policy: its kelpie tools, and its file tools in
+   * its scratch folder, are always fine; anything else is refused. Its plan goes to the person. An
+   * agent's requests all go to the person.
+   */
+  decide(session: Session, req: EventData<'permission.requested'>): PermissionAnswer | undefined {
+    if (session.role !== 'orchestrator') return undefined;
+    if (req.tool === 'ExitPlanMode') {
+      return session.mode === 'plan' ? undefined : { allow: false, by: 'kelpie', message: 'This round-up is not in plan mode any more: carry on with the work.' };
+    }
+    if (req.tool.startsWith('mcp__kelpie__')) return { allow: true, by: 'kelpie' };
+    const input = (req.input ?? {}) as { file_path?: unknown };
+    const scratch = session.scratch;
+    if (scratch && SCRATCH_TOOLS.includes(req.tool) && typeof input.file_path === 'string') {
+      const path = resolve(scratch, input.file_path);
+      if (path.startsWith(scratch + sep)) return { allow: true, by: 'kelpie' };
+    }
+    return {
+      allow: false,
+      by: 'kelpie',
+      message: scratch
+        ? `You may only use your kelpie tools, and Read/Write inside your scratch folder (${scratch}). Give repo work to an agent.`
+        : 'You may only use your kelpie tools. Give this work to an agent.',
+    };
   }
 
   /**
@@ -710,7 +745,7 @@ export class Orchestrator implements SessionHooks {
       writes: c.writes,
       kind: c.kind,
       ...(row ? { branch: row.branch, worktree: row.state, ...(row.deliver ? { deliver: row.deliver } : {}) } : {}),
-      status: this.isWorking(c) ? 'working' : this.waiting.has(c.id) ? 'waiting' : 'idle',
+      status: this.isWorking(c) ? (c.approvals().length ? 'needs approval' : 'working') : this.waiting.has(c.id) ? 'waiting' : 'idle',
       lastTurn: c.lastTurn,
       updatedAt: new Date(info.updatedAt).toISOString(),
       costUsd: Math.round(this.store.costOf(c.id) * 10_000) / 10_000,

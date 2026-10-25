@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import { attachmentsBlock, mergeUsage, type Attachment, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
-import { claudeCode, type Adapter, type Run, type RunSpec } from '@kelpie/adapters';
+import { attachmentsBlock, mergeUsage, type Attachment, type EventOf, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
+import { claudeCode, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary } from './agent-summary.js';
 
@@ -45,13 +45,42 @@ export interface SessionUpdate {
   event: KelpieEvent;
 }
 
+/** A harness waiting on the person: a permission request still open, with whose it is. */
+export interface PendingApproval {
+  roundUpId: string;
+  sessionId: string;
+  /** The agent asking (or the round-up itself, for its plan). */
+  agentTitle: string;
+  requestId: string;
+  tool: string;
+  title: string;
+  input: unknown;
+  rule?: string;
+  plan?: string;
+  /** When it was asked (ISO). */
+  ts: string;
+}
+
+/** What answering a batch of approvals did to each one. */
+export interface ApprovalResult {
+  sessionId: string;
+  requestId: string;
+  ok: boolean;
+  error?: string;
+}
+
+/** The message an agent gets when the person says no without one. */
+export const DENIED = "The person declined this. Don't retry it or work around it; say in your report what you needed it for.";
+
 /** What the round-up list stream carries. */
 export type ManagerUpdate =
   | { type: 'session'; session: SessionInfo }
   | { type: 'deleted'; id: string }
   | { type: 'usage'; usage: HarnessUsage[] }
   /** A sub-agent's summary changed (throttled). */
-  | { type: 'agent'; agent: AgentSummary };
+  | { type: 'agent'; agent: AgentSummary }
+  /** What a round-up (its orchestrator and agents) is waiting on the person for, now. */
+  | { type: 'approvals'; roundUpId: string; approvals: PendingApproval[] };
 
 export type SessionDefaults = Omit<RunSpec, 'cwd' | 'prompt' | 'resume' | 'runId' | 'runDir'>;
 
@@ -75,6 +104,11 @@ export interface SessionHooks {
   removing?(session: Session): Promise<void>;
   /** A round-up's mode changed: bring its live processes in line. Without it, its own process switches to the mode. */
   modeChanged?(session: Session): Promise<void>;
+  /**
+   * Answers a harness's permission request by policy, before the person is asked; undefined leaves it
+   * to the person. (Rules the person saved for the round-up are applied before this.) Must not throw.
+   */
+  decide?(session: Session, request: EventData<'permission.requested'>): PermissionAnswer | undefined;
 }
 
 /** A file sent with a turn, and where the harness finds it. */
@@ -135,6 +169,8 @@ interface SessionContext {
   agentChanged: (s: Session) => void;
   /** Another round-up (a sub-agent's orchestrator). */
   get: (id: string) => Session | undefined;
+  /** What the session is waiting on the person for changed. */
+  approvalsChanged: (s: Session) => void;
 }
 
 const STOPPED = 'Kelpie stopped while this run was active.';
@@ -184,6 +220,8 @@ export class Session {
   private deleted = false;
   /** Its process was started with settings that have since changed: end it once it is idle. */
   private stale = false;
+  /** Permission requests its harness is waiting on, by request id. Only a live process can ask. */
+  private readonly asking = new Map<string, EventOf<'permission.requested'>>();
   /** As of the last logged `activity` event, so it never runs ahead of what subscribers have seen. */
   private busyState = false;
   private lastTurnState: TurnStatus | undefined;
@@ -273,6 +311,27 @@ export class Session {
     this.update({ baseBranch: branch, baseCommit: commit });
   }
 
+  /** The top-level round-up it belongs to: its own id, or its orchestrator's. */
+  get roundUpId(): string {
+    return this.row.parentId ?? this.row.id;
+  }
+
+  /** What its harness is waiting on the person for. */
+  approvals(): PendingApproval[] {
+    return [...this.asking.values()].map(({ ts, data }) => ({ roundUpId: this.roundUpId, sessionId: this.id, agentTitle: this.row.title, ...data, ts }));
+  }
+
+  /** One request still waiting, if it is. */
+  approval(requestId: string): PendingApproval | undefined {
+    return this.approvals().find((a) => a.requestId === requestId);
+  }
+
+  /** Answers a permission request its harness is waiting on; false if it is no longer waiting. */
+  answer(requestId: string, answer: PermissionAnswer): boolean {
+    if (!this.asking.has(requestId) || !this.run || this.run.exited) return false;
+    return this.run.answer(requestId, answer);
+  }
+
   /** The round-up's mode: its own, or for a sub-agent its orchestrator's. */
   get mode(): Mode {
     const parent = this.row.parentId ? this.ctx.get(this.row.parentId) : undefined;
@@ -349,7 +408,7 @@ export class Session {
       harness,
       model: this.modelState ?? this.row.model ?? undefined,
       writes,
-      status: this.working ? 'working' : t === 'completed' ? 'done' : t === 'failed' ? 'failed' : t === 'interrupted' ? 'stopped' : 'idle',
+      status: this.working ? (this.asking.size ? 'needs-approval' : 'working') : t === 'completed' ? 'done' : t === 'failed' ? 'failed' : t === 'interrupted' ? 'stopped' : 'idle',
       now: this.nowState,
       todos: this.todosState,
       kind: this.row.kind,
@@ -362,6 +421,32 @@ export class Session {
   private worktreeSummary(): Pick<AgentSummary, 'branch' | 'deliver' | 'worktree'> {
     const wt = this.ctx.store.worktreeOf(this.id);
     return wt ? { branch: wt.branch, worktree: wt.state, ...(wt.deliver ? { deliver: wt.deliver } : {}) } : {};
+  }
+
+  /**
+   * Keeps track of what the harness is asking, and answers what the round-up's saved rules or the
+   * hooks' policy settle; the rest waits for the person.
+   */
+  private permissions(run: Run, event: KelpieEvent): void {
+    if (event.kind === 'permission.requested') {
+      this.asking.set(event.data.requestId, event);
+      let auto: PermissionAnswer | undefined;
+      try {
+        const rule = event.data.rule;
+        const saved = !!rule && !!this.row.parentId && this.ctx.store.rulesOf(this.roundUpId).some((r) => r.rule === rule);
+        auto = saved ? { allow: true, by: 'kelpie' } : this.ctx.hooks.decide?.(this, event.data);
+      } catch (err) {
+        console.error(`session ${this.id}: permission policy failed`, err);
+      }
+      // Answered at once, it never reaches the person (its resolved event follows on the stream).
+      if (auto && run.answer(event.data.requestId, auto)) return;
+      this.ctx.approvalsChanged(this);
+    } else if (event.kind === 'permission.resolved') {
+      if (this.asking.delete(event.data.requestId)) this.ctx.approvalsChanged(this);
+    } else if (event.kind === 'process.exited' && this.asking.size) {
+      this.asking.clear();
+      this.ctx.approvalsChanged(this);
+    }
   }
 
   /** Folds an event into a sub-agent's summary; true if the pane should hear about it. */
@@ -393,9 +478,15 @@ export class Session {
     const ts = new Date().toISOString();
     const close = <K extends EventKind>(kind: K, data: EventData<K>) =>
       ({ id: randomUUID(), runId: last.runId, seq: ++seq, ts, harness: last.harness, kind, data }) as KelpieEvent;
-    const closing = busy
-      ? [close('turn.ended', { status: 'interrupted', error: STOPPED }), close('activity', { busy: false })]
-      : [];
+    // Requests the dead process was still asking: nobody can answer them now (the resumed agent asks again).
+    const asked = store.recentEvents(this.id, ['permission.requested', 'permission.resolved'], 500).reverse();
+    const open = new Set<string>();
+    for (const e of asked) {
+      if (e.kind === 'permission.requested') open.add(e.data.requestId);
+      else if (e.kind === 'permission.resolved') open.delete(e.data.requestId);
+    }
+    const closing = [...open].map((requestId) => close('permission.resolved', { requestId, decision: 'deny', by: 'expired' }));
+    if (busy) closing.push(close('turn.ended', { status: 'interrupted', error: STOPPED }), close('activity', { busy: false }));
     closing.push(close('process.exited', { code: null, signal: null, stderrTail: STOPPED }));
     let idx = store.eventCount(this.id);
     // Keep the round-up's place in the list: this is housekeeping, not activity.
@@ -496,11 +587,17 @@ export class Session {
     const resume = this.row.harnessSessionId ?? undefined;
     const hadHistory = store.firstSent(this.id)?.deliveredAt != null;
     this.stale = false;
-    const run = this.ctx.adapter.start({
+    const spec: Partial<RunSpec> = {
       ...this.ctx.defaults,
       permissionMode: this.mode,
       ...(this.row.model ? { model: this.row.model } : {}),
       ...hooks.specFor?.(this, { runId, fresh: !resume, hadHistory }),
+    };
+    // What the person allowed for the whole round-up, its agents may do without asking.
+    const saved = this.row.parentId ? store.rulesOf(this.row.parentId).map((r) => r.rule) : [];
+    if (saved.length) spec.allowedTools = [...(spec.allowedTools ?? []), ...saved];
+    const run = this.ctx.adapter.start({
+      ...spec,
       cwd: this.cwd,
       prompt: texts[0]!,
       runId,
@@ -652,6 +749,7 @@ export class Session {
           }
         }
         if (changed) this.ctx.changed(this);
+        this.permissions(run, event);
         if (this.track(event)) this.ctx.agentChanged(this);
         try {
           this.ctx.hooks.observe?.(this, index, event);
@@ -697,6 +795,7 @@ export class SessionManager {
       closing: false,
       changed: (s) => this.notify({ type: 'session', session: s.info() }),
       get: (id) => this.sessions.get(id),
+      approvalsChanged: (s) => this.notify({ type: 'approvals', roundUpId: s.roundUpId, approvals: this.approvals(s.roundUpId) }),
       // A busy agent emits many events a second; the pane only needs a few updates.
       agentChanged: (s) => {
         if (this.agentTimers.has(s.id)) return;
@@ -819,6 +918,71 @@ export class SessionManager {
   /** Uploads of the round-up `session` belongs to, in the order asked; unknown ids are left out. */
   uploads(session: Session, ids: string[]): AttachmentRow[] {
     return this.store.attachmentsOf(session.parentId ?? session.id, ids);
+  }
+
+  /** What round-ups are waiting on the person for (one round-up's, or every one's), oldest first. */
+  approvals(roundUpId?: string): PendingApproval[] {
+    return [...this.sessions.values()]
+      .filter((s) => !roundUpId || s.roundUpId === roundUpId)
+      .flatMap((s) => s.approvals())
+      .sort((a, b) => a.ts.localeCompare(b.ts));
+  }
+
+  /**
+   * The person's answer to a batch of approvals. Each is answered on its own: one already answered
+   * or gone is reported, and the rest still go through. `remember` saves each one's rule for its
+   * round-up, so its agents are no longer asked (and others asking the same now are answered too).
+   * `mode`, for a plan, takes the round-up out of plan mode as the plan is approved.
+   */
+  async answerApprovals(opts: { items: { sessionId: string; requestId: string }[]; allow: boolean; message?: string; remember?: boolean; mode?: Mode }): Promise<ApprovalResult[]> {
+    const results: ApprovalResult[] = [];
+    const saved = new Map<string, Set<string>>();
+    for (const { sessionId, requestId } of opts.items) {
+      const session = this.sessions.get(sessionId);
+      const pending = session?.approval(requestId);
+      if (!session || !pending) {
+        results.push({ sessionId, requestId, ok: false, error: 'no longer waiting: answered already, or its run ended' });
+        continue;
+      }
+      if (opts.allow && pending.tool === 'ExitPlanMode') {
+        // Approving a plan ends plan mode: without a mode to go to, the orchestrator would be told to
+        // carry the plan out and then be refused every writer.
+        if (!opts.mode) {
+          results.push({ sessionId, requestId, ok: false, error: 'approving a plan needs the mode to carry it out in (auto or acceptEdits)' });
+          continue;
+        }
+        const roundUp = this.sessions.get(session.roundUpId);
+        if (roundUp) await this.setMode(roundUp, opts.mode);
+      }
+      const rule = opts.allow && opts.remember && session.parentId ? pending.rule : undefined;
+      const ok = session.answer(
+        requestId,
+        opts.allow ? { allow: true, by: 'person', ...(rule ? { rules: [rule] } : {}) } : { allow: false, by: 'person', message: opts.message?.trim() || DENIED },
+      );
+      // Saved only once it went through: a rule for a request nobody was asking any more is not the person's choice.
+      if (ok && rule) {
+        this.store.addRule(session.roundUpId, rule);
+        saved.set(session.roundUpId, (saved.get(session.roundUpId) ?? new Set()).add(rule));
+      }
+      results.push({ sessionId, requestId, ok, ...(ok ? {} : { error: 'no longer waiting: its run ended' }) });
+    }
+    // Others in the round-up asking for what was just allowed for all of it.
+    for (const [roundUpId, rules] of saved) {
+      for (const a of this.approvals(roundUpId)) {
+        if (a.rule && rules.has(a.rule) && a.sessionId !== a.roundUpId) this.sessions.get(a.sessionId)?.answer(a.requestId, { allow: true, by: 'kelpie', rules: [a.rule] });
+      }
+    }
+    return results;
+  }
+
+  /** The rules the person saved for a round-up. */
+  rules(roundUpId: string): { id: number; rule: string; createdAt: number }[] {
+    return this.store.rulesOf(roundUpId).map(({ id, rule, createdAt }) => ({ id, rule, createdAt }));
+  }
+
+  /** Forgets one saved rule. Agents running now keep it until they next start. */
+  deleteRule(roundUpId: string, id: number): boolean {
+    return this.store.deleteRule(roundUpId, id);
   }
 
   /** The modes the harness supports, in the order a person cycles through them. */

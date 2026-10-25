@@ -48,6 +48,10 @@ export class ClaudeCodeParser {
   private unconsumed = 0;
   private inTurn = false;
   private lastBusy = false;
+  /** The latest assistant text: what a plan put to the person says, when ExitPlanMode carries none. */
+  private lastText = '';
+  /** Permission requests waiting for an answer, with the input they asked about. */
+  private readonly permissions = new Map<string, Obj>();
 
   constructor(opts: ParserOptions) {
     this.runId = opts.runId;
@@ -82,11 +86,24 @@ export class ClaudeCodeParser {
     return this.activity();
   }
 
-  /** The process is gone: nothing is running or queued any more. */
+  /** The process is gone: nothing is running or queued any more, and nothing still asking will be answered. */
   noteExited(): KelpieEvent[] {
     this.unconsumed = 0;
     this.inTurn = false;
-    return this.activity();
+    const expired = [...this.permissions.keys()].map((requestId) => this.emit('permission.resolved', { requestId, decision: 'deny', by: 'expired' }));
+    this.permissions.clear();
+    return [...expired, ...this.activity()];
+  }
+
+  /** The input a still-open permission request asked about; undefined once it is answered or gone. */
+  permissionInput(requestId: string): Obj | undefined {
+    return this.permissions.get(requestId);
+  }
+
+  /** A permission request has been answered (by the spawner, on stdin). */
+  noteAnswered(requestId: string, data: Omit<EventData<'permission.resolved'>, 'requestId'>): KelpieEvent[] {
+    if (!this.permissions.delete(requestId)) return [];
+    return [this.emit('permission.resolved', { requestId, ...data })];
   }
 
   parse(o: Obj, rawLine?: number): KelpieEvent[] {
@@ -118,12 +135,30 @@ export class ClaudeCodeParser {
         return this.result(o, x);
       case 'rate_limit_event':
         return [this.rateLimit(o, x)];
-      // Answers to our own control requests; the spawner consumes these.
+      // Answers to our own control requests (and echoes of our answers to its); the spawner consumes these.
       case 'control_response':
-      case 'control_request':
         return [];
+      case 'control_request':
+        return o.request?.subtype === 'can_use_tool' ? this.permission(o, x) : [];
+      // The CLI gave up on a request (the turn was interrupted).
+      case 'control_cancel_request':
+        return this.noteAnswered(String(o.request_id), { decision: 'deny', by: 'cancelled' });
     }
     return [this.emit('other', { type: String(o.type), raw: o }, x)];
+  }
+
+  /** The CLI asking before it uses a tool; the turn waits until the spawner answers. */
+  private permission(o: Obj, x: EmitExtra): KelpieEvent[] {
+    const req: Obj = o.request;
+    const requestId = String(o.request_id);
+    const tool = String(req.tool_name ?? '');
+    const input: Obj = req.input ?? {};
+    this.permissions.set(requestId, input);
+    const rule = suggestedRule(req.permission_suggestions);
+    // The plan is in the call, or (when the model wrote it out first) its latest message.
+    const plan = tool === 'ExitPlanMode' ? (typeof input.plan === 'string' && input.plan.trim() ? input.plan : this.lastText) || undefined : undefined;
+    const title = tool === 'ExitPlanMode' ? 'Approve the plan' : toolTitle(tool, input, this.cwd) || String(req.description ?? tool);
+    return [this.emit('permission.requested', { requestId, tool, title, input, ...(rule ? { rule } : {}), ...(plan ? { plan } : {}) }, x)];
   }
 
   private system(o: Obj, x: EmitExtra): KelpieEvent[] {
@@ -156,7 +191,10 @@ export class ClaudeCodeParser {
     for (const block of blocks(o.message?.content)) {
       switch (block.type) {
         case 'text':
-          if (block.text) out.push(this.emit('message', { role: 'assistant', text: String(block.text) }, x));
+          if (block.text) {
+            if (!x.parentCallId) this.lastText = String(block.text);
+            out.push(this.emit('message', { role: 'assistant', text: String(block.text) }, x));
+          }
           break;
         case 'thinking':
         case 'redacted_thinking': {
@@ -230,6 +268,8 @@ export class ClaudeCodeParser {
 
   private result(o: Obj, x: EmitExtra): KelpieEvent[] {
     this.inTurn = false;
+    // A plan put to the person next turn must not fall back on this turn's words.
+    this.lastText = '';
     const u: Obj = o.usage ?? {};
     let costUsd: number | undefined;
     if (typeof o.total_cost_usd === 'number') {
@@ -296,6 +336,20 @@ export class ClaudeCodeParser {
 }
 
 const epochToIso = (seconds: number) => new Date(seconds * 1000).toISOString();
+
+/**
+ * The rule the CLI suggests for allowing a request, as a permission rule string: `Bash(pnpm install)`,
+ * `WebSearch`. Only when it suggests exactly one: a compound command (`a && b`) gets a rule per part,
+ * and allowing it by any one of them would let the rest through unseen.
+ */
+export function suggestedRule(suggestions: unknown): string | undefined {
+  if (!Array.isArray(suggestions)) return undefined;
+  const rules = (suggestions as Obj[])
+    .filter((s) => s?.type === 'addRules' && s.behavior === 'allow' && Array.isArray(s.rules))
+    .flatMap((s) => s.rules as Obj[]);
+  const r = rules.length === 1 ? rules[0] : undefined;
+  return typeof r?.toolName === 'string' ? (r.ruleContent ? `${r.toolName}(${r.ruleContent})` : r.toolName) : undefined;
+}
 
 function blocks(content: unknown): Obj[] {
   if (typeof content === 'string') return [{ type: 'text', text: content }];

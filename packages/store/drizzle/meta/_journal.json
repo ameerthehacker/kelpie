@@ -64,6 +64,13 @@
       "when": 1792898685619,
       "tag": "0008_session-mode",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1792903530993,
+      "tag": "0009_permission-rules",
+      "breakpoints": true
     }
   ]
 }
