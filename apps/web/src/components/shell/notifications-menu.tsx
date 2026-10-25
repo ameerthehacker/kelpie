@@ -94,21 +94,23 @@ export function NotificationPrompt() {
     } catch {}
   };
   return (
-    <div className="bg-chip text-fg2 mx-0.5 flex items-center gap-2 rounded-xl py-2 pr-1.5 pl-3 text-[13px]">
-      <BellIcon className="text-mu2 size-3.5 shrink-0" strokeWidth={1.9} />
-      <span className="flex-1 leading-tight">Get a ping when agents need you</span>
+    <div className="bg-chip text-fg2 mx-0.5 flex flex-col gap-2 rounded-xl py-2.5 pr-1.5 pl-3 text-[13px]">
+      <div className="flex items-start gap-2">
+        <BellIcon className="text-mu2 mt-0.5 size-3.5 shrink-0" strokeWidth={1.9} />
+        <span className="flex-1 leading-snug">Get a ping when agents need you, with a sound.</span>
+        <button type="button" onClick={dismiss} aria-label="Dismiss" className="text-mu2 hover:text-fg -mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md">
+          <XIcon className="size-3.5" />
+        </button>
+      </div>
       <button
         type="button"
         onClick={() => {
           unlockAudio();
           void enableNotifications().then(dismiss);
         }}
-        className="bg-surf hover:bg-raise text-fg rounded-lg px-2 py-1 text-xs font-medium"
+        className="bg-surf hover:bg-raise text-fg ml-5.5 self-start rounded-lg px-2.5 py-1 text-xs font-medium"
       >
-        Turn on
-      </button>
-      <button type="button" onClick={dismiss} aria-label="Dismiss" className="text-mu2 hover:text-fg flex size-6 items-center justify-center rounded-md">
-        <XIcon className="size-3.5" />
+        Turn on notifications
       </button>
     </div>
   );
