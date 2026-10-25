@@ -55,7 +55,17 @@ export interface Anchored {
   side: Side;
   line: number;
   lineText: string;
+  /** The commits it was made on: they say which of an agent's rounds it belongs to. */
+  commitSha: string;
+  baseSha: string;
 }
+
+/**
+ * Which of an agent's rounds: by number, or the one these commits identify (`commitSha` its head,
+ * else `baseSha` its fork, which stays the same while the round's work goes on and is mustered).
+ * Nothing matching, or nothing given, is the default round.
+ */
+export type RoundPick = number | { commitSha?: string; baseSha?: string };
 
 export type AnchorResult =
   | { ok: true; view: View; diffHunk: string; owner: AgentRef | null }
@@ -184,9 +194,9 @@ export class Changes {
   /**
    * The diff a session's Changes show: a round-up's feature branch, or an agent's round (by default
    * its work under way, else its latest delivery). 'none' when there is nothing to diff; undefined
-   * for an unknown session.
+   * for an unknown session. `round` picks another of an agent's rounds (see RoundPick).
    */
-  async view(sessionId: string, round?: number): Promise<View | 'none' | undefined> {
+  async view(sessionId: string, round?: RoundPick): Promise<View | 'none' | undefined> {
     const session = this.store.getSession(sessionId);
     if (!session) return undefined;
     if (!session.parentId) {
@@ -226,8 +236,14 @@ export class Changes {
     }
     if (!rounds.length) return 'none';
     const active = rounds.find((r) => r.state === 'active');
-    const picked = round === undefined ? (active ?? rounds.at(-1)!) : rounds.find((r) => r.index === round);
-    if (!picked) throw new NoSuchRound(`no round ${round}: this agent has ${rounds.length}`);
+    const fallback = active ?? rounds.at(-1)!;
+    let picked: Round | undefined;
+    if (typeof round === 'number') {
+      picked = rounds.find((r) => r.index === round);
+      if (!picked) throw new NoSuchRound(`no round ${round}: this agent has ${rounds.length}`);
+    } else {
+      picked = (round?.commitSha && rounds.find((r) => r.headSha === round.commitSha)) || (round?.baseSha && rounds.find((r) => r.baseSha === round.baseSha)) || fallback;
+    }
     const live = picked.state === 'active' && workdir !== undefined;
     const dirty = live ? (await runGit(workdir!, ['status', '--porcelain'])).stdout.trim().length > 0 : false;
     return {
@@ -305,11 +321,12 @@ export class Changes {
   // ── anchors and threads ──────────────────────────────────────────────
 
   /**
-   * Checks a new comment's anchor against the diff as it is now, and works out what its thread
-   * keeps: the excerpt, and whose change the line is. `stale` if the line no longer says `lineText`.
+   * Checks a new comment's anchor against the diff it was made on (for an agent, the round whose head
+   * is `commitSha`; else its default round), and works out what its thread keeps: the excerpt, and
+   * whose change the line is. `stale` if the line no longer says `lineText`.
    */
-  async anchor(viewSessionId: string, a: { path: string; side: Side; line: number; lineText: string }): Promise<AnchorResult> {
-    const view = await this.view(viewSessionId);
+  async anchor(viewSessionId: string, a: { path: string; side: Side; line: number; lineText: string; commitSha?: string }): Promise<AnchorResult> {
+    const view = await this.view(viewSessionId, { ...(a.commitSha ? { commitSha: a.commitSha } : {}) });
     if (!view || view === 'none') return { ok: false, reason: 'none' };
     if (!safePath(a.path)) return { ok: false, reason: 'file' };
     const raw = await this.diff(view);
@@ -327,8 +344,9 @@ export class Changes {
   }
 
   /**
-   * Finds threads in the diffs as they are now. Returns a function giving a thread's current line, or
-   * undefined when it is outdated; views and file contents are read once for all the threads asked about.
+   * Finds threads in the diffs as they are now: the feature's, or for an agent's thread the round it
+   * was made on. Returns a function giving a thread's current line, or undefined when it is outdated;
+   * views and file contents are read once for all the threads asked about.
    */
   locator(): (t: Anchored) => Promise<number | undefined> {
     const views = new Map<string, Promise<View | 'none' | undefined>>();
@@ -336,10 +354,11 @@ export class Changes {
     return async (t) => {
       const id = t.view === 'feature' ? t.roundUpId : t.viewSessionId;
       if (!id) return undefined;
-      if (!views.has(id)) views.set(id, this.view(id).catch(() => undefined));
-      const view = await views.get(id);
+      const which = t.view === 'agent' ? `${id}\0${t.commitSha}\0${t.baseSha}` : id;
+      if (!views.has(which)) views.set(which, this.view(id, t.view === 'agent' ? { commitSha: t.commitSha, baseSha: t.baseSha } : undefined).catch(() => undefined));
+      const view = await views.get(which);
       if (!view || view === 'none') return undefined;
-      const key = `${id}\0${t.side}\0${t.path}`;
+      const key = `${view.sessionId}\0${view.baseSha}\0${view.headSha}\0${t.side}\0${t.path}`;
       if (!files.has(key)) files.set(key, this.threadContent(view, t.side, t.path).catch(() => null));
       const content = await files.get(key);
       return content === null || content === undefined ? undefined : findLine(content, t.line, t.lineText);

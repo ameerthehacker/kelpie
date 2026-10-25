@@ -141,6 +141,47 @@ describe('reviews', () => {
     expect(docs.id).toBeTruthy();
   });
 
+  it("checks a comment on one of an agent's rounds against that round, and finds its thread there", async () => {
+    const ctx = start();
+    const { parent, api } = await mustered(ctx);
+    const since = ctx.store.getSession(api.id)!.notifiedIdx;
+    await ctx.orch.message(parent, api.id, 'one more thing');
+    await reported(ctx, api, since);
+    // Round 2, under way: line 2 is rewritten (committed), and line 3 uncommitted.
+    commit(api.cwd, 'app.txt', lines({ 2: 'L2 api v2', 18: 'L18 docs' }));
+    writeFileSync(join(api.cwd, 'app.txt'), lines({ 2: 'L2 api v2', 3: 'L3 wip', 18: 'L18 docs' }));
+    const changes = (await ctx.orch.changes.of(api.id))!;
+    expect(changes.rounds!.map((r) => [r.index, r.state])).toEqual([
+      [1, 'mustered'],
+      [2, 'active'],
+    ]);
+    const [one, two] = changes.rounds!;
+    const on = (commitSha: string, line: number, lineText: string) =>
+      ctx.api('POST', `/api/sessions/${parent.id}/review/comments`, { anchor: { view: 'agent', viewSessionId: api.id, path: 'app.txt', side: 'additions', line, commitSha, lineText }, body: 'hm' });
+
+    // Made on round 1 (its head names it): checked there, though round 2 changed the line since.
+    const old = await on(one!.headSha, 2, 'L2 api');
+    expect(old.status).toBe(201);
+    expect(old.body.thread).toMatchObject({ view: 'agent', viewSessionId: api.id, agent: { id: api.id }, currentLine: 2, outdated: false, commitSha: one!.headSha });
+    expect(old.body.thread.diffHunk).toContain('+L2 api');
+    expect(ctx.store.thread(old.body.thread.id)!.baseSha).toBe(one!.baseSha);
+    // On round 2, dirty: its HEAD names it, and the worktree's lines count.
+    const now = await on(two!.headSha, 3, 'L3 wip');
+    expect(now.status).toBe(201);
+    expect(ctx.store.thread(now.body.thread.id)!.baseSha).toBe(two!.baseSha);
+    // A commit that names no round falls back to the default one, where line 2 no longer says that.
+    expect((await on('deadbeef', 2, 'L2 api')).status).toBe(409);
+    expect((await on('deadbeef', 2, 'L2 api v2')).status).toBe(201);
+
+    // Round 2 goes on (a new HEAD, then mustered): its thread is still found in its round, and round 1's in round 1.
+    commit(api.cwd, 'app.txt', lines({ 1: 'L1 top', 2: 'L2 api v2', 3: 'L3 wip', 18: 'L18 docs' }));
+    expect((await ctx.orch.muster(parent, [api.id])).merged).toEqual(['API']);
+    const state = await ctx.orch.reviews.state(parent.id);
+    const thread = (id: string) => state.threads.find((t) => t.id === id)!;
+    expect(thread(old.body.thread.id)).toMatchObject({ currentLine: 2, outdated: false });
+    expect(thread(now.body.thread.id)).toMatchObject({ currentLine: 3, outdated: false });
+  });
+
   it('streams review and changes events', async () => {
     const ctx = start();
     const seen: ManagerUpdate[] = [];
