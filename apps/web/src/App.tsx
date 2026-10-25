@@ -6,11 +6,12 @@ import { useMatch, useNavigate } from 'react-router';
 import { AgentPaneSlot, AgentsButton } from '@/components/agents/agent-pane';
 import { AgentPaneProvider } from '@/components/agents/pane-state';
 import { PlanDock, TodoDock } from '@/components/agents/plan-dock';
-import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation';
+import { ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation';
 import { AssistantParts } from '@/components/chat/assistant-part';
 import { ApprovalTray } from '@/components/approvals/approval-tray';
 import { ApprovalsPage } from '@/components/approvals/approvals-page';
 import { AttachmentChips } from '@/components/chat/attachments';
+import { ChatLog } from '@/components/chat/chat-log';
 import { Composer } from '@/components/chat/composer';
 import { WorkingStatus } from '@/components/chat/working-status';
 import { KelpieLogo } from '@/components/shell/brand';
@@ -227,7 +228,7 @@ export function App() {
               <ApprovalsPage roundUps={roundUps} />
             ) : (
               <>
-                <Conversation key={roundUpId ?? 'new'} className="min-h-0 flex-1">
+                <ChatLog key={roundUpId ?? 'new'} id={roundUpId} content={items} className="min-h-0 flex-1">
                   <ConversationContent className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
                     {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} />}
                     {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
@@ -247,7 +248,7 @@ export function App() {
                     {busy && <WorkingStatus events={events} agents={agents ?? NO_AGENTS} />}
                   </ConversationContent>
                   <ConversationScrollButton />
-                </Conversation>
+                </ChatLog>
 
                 <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
                   {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
