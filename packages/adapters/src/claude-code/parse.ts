@@ -1,5 +1,5 @@
 import type { EventData, EventKind, KelpieEvent, TodoItem, UsageWindow } from '@kelpie/protocol';
-import { applyTodoTool, fileDelta, flattenContent, toolCategory, toolTitle } from './tools.js';
+import { applyTodoTool, fileDelta, flattenContent, isChromeTool, toolCategory, toolTitle } from './tools.js';
 
 type Obj = Record<string, any>;
 
@@ -154,7 +154,8 @@ export class ClaudeCodeParser {
     const tool = String(req.tool_name ?? '');
     const input: Obj = req.input ?? {};
     this.permissions.set(requestId, input);
-    const rule = suggestedRule(req.permission_suggestions);
+    // None for Claude in Chrome: allowing one action in the person's browser allows no other.
+    const rule = isChromeTool(tool) ? undefined : suggestedRule(req.permission_suggestions);
     // The plan is in the call, or (when the model wrote it out first) its latest message.
     const plan = tool === 'ExitPlanMode' ? (typeof input.plan === 'string' && input.plan.trim() ? input.plan : this.lastText) || undefined : undefined;
     const title = tool === 'ExitPlanMode' ? 'Approve the plan' : toolTitle(tool, input, this.cwd) || String(req.description ?? tool);

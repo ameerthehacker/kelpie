@@ -55,6 +55,9 @@ export interface OrchestratorOptions {
 const agentMode = (mode: Mode) => (mode === 'acceptEdits' ? 'acceptEdits' : 'auto');
 const PLANNING =
   'The person has this round-up in plan mode: no agent may change files. Investigate with read-only agents, then write your plan to your plan file and put it to the person with ExitPlanMode; once they approve it, writers can start.';
+/** Agents run in auto mode: one in the person's browser could change things on the sites they are signed in to. */
+const PLANNING_BROWSER =
+  'The person has this round-up in plan mode: no agent may drive their browser, where it could change things on sites they are signed in to. Investigate with read-only agents without browser (WebFetch reads public pages), then put your plan to the person with ExitPlanMode; once they approve it, browser agents can start.';
 
 const NO_BASE =
   'No base branch is set for this round-up. Ask the person which branch to start from (list_branches shows the options), call set_base_branch with their answer, then spawn the writer.';
@@ -135,6 +138,8 @@ export class Orchestrator implements SessionHooks {
    * a moment, and the cap must count them meanwhile.
    */
   private readonly starting = new Map<string, number>();
+  /** Orchestrators with a browser writer cleared but not made yet: it has the browser meanwhile. */
+  private readonly startingBrowser = new Set<string>();
   private readonly worktrees: Worktrees | undefined;
   private warnedUnfenced = false;
 
@@ -304,6 +309,7 @@ export class Orchestrator implements SessionHooks {
     if (!harness.success) throw new ToolError(`unknown harness "${input.harness}"; available: ${Harness.options.join(', ')}`);
     if (!input.task.trim()) throw new ToolError('task is empty: give the agent a complete brief');
     if (input.writes && parent.mode === 'plan') throw new ToolError(PLANNING);
+    if (input.browser && parent.mode === 'plan') throw new ToolError(PLANNING_BROWSER);
     const files = this.filesFrom(parent, input.files);
     const send = (child: Session) => child.send(input.task, 'orchestrator', files.length ? { attachments: files } : {});
     // One line: it heads notifications and the UI.
@@ -319,6 +325,7 @@ export class Orchestrator implements SessionHooks {
     const repo = this.worktrees ? await this.worktrees.repoOf(parent.cwd) : undefined;
     // After the only await before an agent exists or is counted as starting: no second call slips past.
     this.checkCap(parent);
+    if (input.browser) this.checkBrowser(parent);
 
     // Outside git (or without worktrees), writers share the round-up's directory, one at a time.
     if (!repo || !this.worktrees) {
@@ -342,6 +349,7 @@ export class Orchestrator implements SessionHooks {
     const id = randomUUID();
     // Counted from here: creating the worktree takes a moment, and the cap must count this agent meanwhile.
     this.starting.set(parent.id, (this.starting.get(parent.id) ?? 0) + 1);
+    if (input.browser) this.startingBrowser.add(parent.id);
     try {
       // Room for the writer's worktree, and for the feature branch's if this is the first writer;
       // never by sweeping the feature branch it is about to be cut from.
@@ -365,6 +373,7 @@ export class Orchestrator implements SessionHooks {
       const n = (this.starting.get(parent.id) ?? 1) - 1;
       if (n > 0) this.starting.set(parent.id, n);
       else this.starting.delete(parent.id);
+      if (input.browser) this.startingBrowser.delete(parent.id);
     }
   }
 
@@ -504,9 +513,12 @@ export class Orchestrator implements SessionHooks {
     const files = this.filesFrom(parent, paths);
     // A writer picked up again would carry on changing files.
     if (child.writes && parent.mode === 'plan') throw new ToolError(PLANNING);
+    // So would one in the person's browser.
+    if (child.browser && parent.mode === 'plan') throw new ToolError(PLANNING_BROWSER);
     if (!this.isWorking(child)) {
       this.checkCap(parent);
       if (child.writes) this.checkWriter(child.cwd, child.id);
+      if (child.browser) this.checkBrowser(parent, child.id);
     }
     // A message picks up an agent still waiting to resume after a restart: no restart turn later.
     this.waiting.delete(child.id);
@@ -569,6 +581,7 @@ export class Orchestrator implements SessionHooks {
       }
       if (this.working(parent) >= this.maxAgents) continue;
       if (agent.writes && this.busyWriter(agent.cwd, agent.id)) continue;
+      if (agent.browser && this.browserInUse(parent, agent.id)) continue;
       this.waiting.delete(id);
       try {
         await agent.resumeAfterRestart(AGENT_RESTARTED);
@@ -740,6 +753,22 @@ export class Orchestrator implements SessionHooks {
     if (writer) {
       throw new ToolError(
         `writing agent "${writer.title}" is still working in this repo, and only one writer may work at a time. Read-only agents can still run. End your turn; you will be notified when it finishes.`,
+      );
+    }
+  }
+
+  /** What has the person's browser in this round-up, besides `except`: one agent drives it at a time. */
+  private browserInUse(parent: Session, except?: string): string | undefined {
+    if (this.startingBrowser.has(parent.id)) return 'another browser agent is starting';
+    const agent = this.manager.children(parent.id).find((c) => c.browser && c.id !== except && this.isWorking(c));
+    return agent && `browser agent "${agent.title}" is still working`;
+  }
+
+  private checkBrowser(parent: Session, except?: string): void {
+    const busy = this.browserInUse(parent, except);
+    if (busy) {
+      throw new ToolError(
+        `${busy}, and only one agent may drive the person's browser at a time. Agents without browser can still run. End your turn; you will be notified when it finishes.`,
       );
     }
   }
