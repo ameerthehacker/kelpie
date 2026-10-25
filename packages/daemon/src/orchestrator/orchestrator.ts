@@ -2,10 +2,10 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
-import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer, type RunSpec } from '@kelpie/adapters';
+import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
 import { Harness, type AgentUpdate, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
-import type { RunContext, SentFile, Session, SessionHooks, SessionManager } from '../sessions.js';
+import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
 import { logLines, report, type AgentReport, type LogPage } from './digest.js';
 import { GitError, type Branch, type Worktrees } from '../worktrees.js';
 import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, musterPrompt, orchestratorPrompt, type WorkPlace } from './prompt.js';
@@ -161,7 +161,7 @@ export class Orchestrator implements SessionHooks {
 
   // ── hooks ────────────────────────────────────────────────────────────
 
-  specFor(session: Session, run: RunContext): Partial<RunSpec> {
+  specFor(session: Session, run: RunContext): Partial<SessionDefaults> {
     const preface = run.fresh && run.hadHistory ? freshPreface(session.role, this.store.firstSent(session.id)?.text) : '';
     const scratch = session.scratch;
     if (session.role === 'agent') {

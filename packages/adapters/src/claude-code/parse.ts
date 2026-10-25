@@ -58,7 +58,7 @@ export class ClaudeCodeParser {
   constructor(opts: ParserOptions) {
     this.runId = opts.runId;
     this.now = opts.now ?? (() => new Date().toISOString());
-    this.todos = opts.todos ?? [];
+    this.todos = [...(opts.todos ?? [])];
   }
 
   get harnessSessionId(): string | undefined {

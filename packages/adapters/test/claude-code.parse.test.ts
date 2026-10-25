@@ -151,9 +151,23 @@ describe('claude-code mapping', () => {
       { id: '1', text: 'Count lines', status: 'pending' as const },
       { id: '2', text: 'Report', status: 'pending' as const },
     ];
+    const seed = structuredClone(todos);
     const parser = new ClaudeCodeParser({ runId: 'r', todos });
     const evs = resumed.flatMap((o, i) => parser.parse(o, i + 1));
     expect(of(evs, 'todos').at(-1)!.data.items.map((t) => `${t.id}:${t.status}`)).toEqual(['1:completed', '2:completed']);
+    expect(todos).toEqual(seed); // the caller's list is left as it was
+  });
+
+  it('replaces a todo whose id is created again, rather than listing it twice', () => {
+    const items = [
+      { id: '1', text: 'old', status: 'completed' as const },
+      { id: '2', text: 'other', status: 'pending' as const },
+    ];
+    expect(applyTodoTool('TaskCreate', { subject: 'new' }, { task: { id: '1' } }, items)).toEqual([
+      { id: '1', text: 'new', status: 'pending' },
+      { id: '2', text: 'other', status: 'pending' },
+    ]);
+    expect(items[0]!.text).toBe('old');
   });
 
   it('ignores updates to todos it never saw created', () => {
