@@ -186,15 +186,14 @@ export function applyTodoTool(name: string, input: Obj, result: Obj | undefined,
     case 'TaskCreate': {
       const id = result?.task?.id;
       if (id == null) return undefined;
-      return [
-        ...items,
-        {
-          id: String(id),
-          text: String(input.subject ?? result?.task?.subject ?? ''),
-          status: 'pending',
-          ...(input.activeForm ? { activeText: String(input.activeForm) } : {}),
-        },
-      ];
+      const item: TodoItem = {
+        id: String(id),
+        text: String(input.subject ?? result?.task?.subject ?? ''),
+        status: 'pending',
+        ...(input.activeForm ? { activeText: String(input.activeForm) } : {}),
+      };
+      // An id already listed is stale (e.g. kept from a session the CLI has since lost): ids are unique.
+      return items.some((t) => t.id === item.id) ? items.map((t) => (t.id === item.id ? item : t)) : [...items, item];
     }
     case 'TaskUpdate': {
       if (result && result.success === false) return undefined;

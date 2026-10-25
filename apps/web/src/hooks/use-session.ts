@@ -147,5 +147,5 @@ export function useSession(id: string | undefined, onCreated: (id: string) => vo
   const busy = useMemo(() => !gone && lastBusy(events), [events, gone]);
   const status = chatStatus({ inFlight: visible.filter((m) => m.sending).length, pending: visible.length, busy, error });
 
-  return { items, todos, status, busy: busy || status === 'submitted', error, send, interrupt };
+  return { events, items, todos, status, busy: busy || status === 'submitted', error, send, interrupt };
 }

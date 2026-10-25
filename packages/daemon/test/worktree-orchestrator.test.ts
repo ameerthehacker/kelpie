@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -58,7 +58,7 @@ afterEach(async () => {
   await Promise.all(managers.splice(0).map((m) => m.stopAll()));
 });
 
-function setup(env: Record<string, string> = {}, maxAgents = 6) {
+function setup(env: Record<string, string> = {}, maxAgents = 6, scratch = false) {
   const { checkout, release } = repo();
   const store = openStore(':memory:');
   const argsFile = join(tmp('kelpie-args-'), 'args.jsonl');
@@ -70,6 +70,7 @@ function setup(env: Record<string, string> = {}, maxAgents = 6) {
     runsDir: tmp('kelpie-runs-'),
     defaults: { bin: FAKE, env: { FAKE_FIXTURE: FIXTURE, FAKE_ARGS_FILE: argsFile, ...env } },
     hooks: orch,
+    ...(scratch ? { scratchDir: tmp('kelpie-scratch-') } : {}),
   });
   orch.attach(sessions);
   managers.push(sessions);
@@ -93,7 +94,15 @@ async function orchestrator(ctx: ReturnType<typeof setup>) {
     const text = res.content[0]!.text;
     return { error: res.isError ? text : undefined, data: res.isError ? undefined : JSON.parse(text) };
   };
-  return { parent, call };
+  return { parent, call, argv };
+}
+
+/** A variadic flag's values: everything after it up to the next flag. */
+function flag(args: string[], name: string): string[] {
+  const i = args.indexOf(name);
+  if (i < 0) return [];
+  const end = args.findIndex((a, j) => j > i && a.startsWith('--'));
+  return args.slice(i + 1, end < 0 ? undefined : end);
 }
 
 const idle = (s: Session) => s.events().some((e: KelpieEvent) => e.kind === 'turn.ended') && !s.working;
@@ -132,8 +141,18 @@ describe('worktrees for writing agents', () => {
 
     expect((await call('set_base_branch', { branch: 'origin/main' })).error).toMatch(/can't change now/);
     const { data: list } = await call('list_agents');
-    expect(list).toMatchObject({ baseBranch: 'origin/release', featureBranch: home.branch });
+    expect(list).toMatchObject({ baseBranch: 'origin/release', featureBranch: home.branch, featureCheckout: home.path });
     expect(list.agents.find((x: { agentId: string }) => x.agentId === b.data.agentId)).toMatchObject({ branch: wb.branch, deliver: 'standalone', worktree: 'active' });
+
+    // The orchestrator may read the feature branch's worktree (outside its cwd, so the harness asks), never change it.
+    const ask = (tool: string, input: Record<string, unknown>) => ctx.orch.decide(parent, { requestId: 'q', tool, title: tool, input });
+    expect(ask('Read', { file_path: join(home.path, 'app.txt') })).toMatchObject({ allow: true });
+    expect(ask('Grep', { pattern: 'two', path: home.path })).toMatchObject({ allow: true });
+    expect(ask('Glob', { pattern: '**/*.txt', path: join(home.path, 'src') })).toMatchObject({ allow: true });
+    expect(ask('Write', { file_path: join(home.path, 'app.txt'), content: 'x' })).toMatchObject({ allow: false });
+    expect(ask('Edit', { file_path: join(home.path, 'app.txt') })).toMatchObject({ allow: false });
+    // A writer's own worktree is its business: the orchestrator reads that work once it is mustered.
+    expect(ask('Read', { file_path: join(wa.path, 'app.txt') })).toMatchObject({ allow: false });
   });
 
   it('musters clean branches itself, hands a conflict to Muster, and believes git about the outcome', async () => {
@@ -221,6 +240,31 @@ describe('worktrees for writing agents', () => {
     const argv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[starts]);
     expect(argv).toContain('--resume');
     expect(ctx.store.worktreeOf(agent.id)!.state).toBe('active');
+  });
+
+  it('brings back a swept feature branch worktree when the orchestrator lists its agents, so featureCheckout is there to read', async () => {
+    const ctx = setup({ FAKE_EVERY_TURN: '1' });
+    const { call } = await orchestrator(ctx);
+    expect((await call('list_agents')).data.featureCheckout).toBeUndefined(); // no writer yet
+    await call('set_base_branch', { branch: 'origin/main' });
+    const { data } = await call('spawn_agent', { title: 'API', task: 'x', writes: true });
+    const agent = ctx.sessions.get(data.agentId)!;
+    await waitFor(() => idle(agent));
+    const home = ctx.store.worktreeOf(agent.parentId!)!;
+    await ctx.worktrees.remove(home);
+    expect(existsSync(home.path)).toBe(false);
+    const { data: list } = await call('list_agents');
+    expect(list.featureCheckout).toBe(home.path);
+    expect(existsSync(join(home.path, 'app.txt'))).toBe(true);
+  });
+
+  it("denies the orchestrator edits in Kelpie's worktrees and its repo by rule, in case settings allow them", async () => {
+    const ctx = setup({ FAKE_HANG: '1' }, 6, true);
+    const { parent, argv } = await orchestrator(ctx);
+    const root = join(realpathSync(dirname(ctx.worktrees.root)), basename(ctx.worktrees.root)); // not made yet
+    const cwd = realpathSync(ctx.checkout);
+    expect(parent.scratch!.startsWith(cwd)).toBe(false);
+    expect(flag(argv, '--disallowedTools')).toEqual([`Edit(/${cwd}/**)`, `Write(/${cwd}/**)`, `Edit(/${root}/**)`, `Write(/${root}/**)`]);
   });
 
   it('lists branches and takes a base branch over HTTP, fixed once a writer has started', async () => {

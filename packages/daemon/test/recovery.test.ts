@@ -197,7 +197,7 @@ describe('recovery after Kelpie stops', () => {
     const hs = agents.map((a) => store.getSession(a.id)!.harnessSessionId);
     expect(hs).toContain(resumed![resumed!.indexOf('--resume') + 1]);
     const parent = second.sessions.get(orchSession.id)!;
-    expect(second.orch.list(parent).agents.map((a) => a.status).sort()).toEqual(['waiting', 'working']);
+    expect((await second.orch.list(parent)).agents.map((a) => a.status).sort()).toEqual(['waiting', 'working']);
   });
 
   it('drops a turn its process died before reading, instead of retrying it forever', async () => {
@@ -225,7 +225,7 @@ describe('recovery after Kelpie stops', () => {
     const agent = sessions.get('a')!;
     await waitFor(() => agent.events().filter((e) => e.kind === 'process.exited').length === 2);
     expect(store.getSession('a')!.resumePending).toBe(false);
-    expect(orch.list(sessions.get('orch')!).agents[0]!.status).toBe('idle');
+    expect((await orch.list(sessions.get('orch')!)).agents[0]!.status).toBe('idle');
     // The orchestrator is told (its own process can't start here either, so the turn is then dropped).
     await waitFor(() => store.getSession('a')!.notifiedIdx > 0);
   });

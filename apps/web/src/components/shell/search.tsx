@@ -1,18 +1,25 @@
-import { MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SunIcon } from 'lucide-react';
+import { CommandIcon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SunIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { StatusDot } from '@/components/agents/agent-bits';
 import { useAgentPane } from '@/components/agents/pane-state';
 import { HarnessMark } from '@/components/harness-mark';
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
-import { roundUpPath, titleOf, type RoundUp } from '@/lib/round-ups';
+import { Kbd } from '@/components/ui/kbd';
+import { useRoundUpStatus } from '@/hooks/use-round-up-status';
+import { ROUND_UP_STATUS_LABEL, roundUpPath, titleOf, type RoundUp } from '@/lib/round-ups';
 import { setTheme } from '@/lib/theme';
+
+// userAgentData isn't in TypeScript's DOM lib yet; platform is the fallback where it's missing.
+const platform = (navigator as Navigator & { userAgentData?: { platform: string } }).userAgentData?.platform ?? navigator.platform;
+const isMac = /mac|iphone|ipad/i.test(platform);
 
 /** The header's "Search ⌘K": jump to a round-up or one of this round-up's agents, or start a new one. */
 export function Search({ roundUps }: { roundUps: RoundUp[] | undefined }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const pane = useAgentPane();
+  const statusOf = useRoundUpStatus();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -35,12 +42,22 @@ export function Search({ roundUps }: { roundUps: RoundUp[] | undefined }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        aria-label="Search (⌘K)"
-        className="bg-chip text-mu hover:bg-raise flex h-[34px] shrink-0 items-center gap-2 rounded-full pr-2 pl-3 text-[13px]"
+        aria-label={isMac ? 'Search (⌘K)' : 'Search (Ctrl+K)'}
+        aria-keyshortcuts="Meta+K Control+K"
+        className="bg-chip text-mu hover:bg-raise flex h-[34px] shrink-0 items-center gap-2 rounded-full pr-2.5 pl-3 text-[13px]"
       >
         <SearchIcon className="size-3.5" strokeWidth={2} />
         <span className="max-sm:hidden">Search</span>
-        <span className="bg-raise text-mu rounded-md px-1.5 py-px font-mono text-[11px] max-sm:hidden">⌘K</span>
+        {/* ⌘ as an icon: neither Geist face has the glyph, and the fallback font draws it small and off the baseline. */}
+        <Kbd className="border-ln2 bg-surf text-mu2 dark:bg-white/5 ml-1 gap-0.5 rounded-xs border px-1.5 text-[11px] leading-none max-sm:hidden [&_svg:not([class*='size-'])]:size-2.5">
+          {isMac ? (
+            <>
+              <CommandIcon strokeWidth={2.25} />K
+            </>
+          ) : (
+            'Ctrl K'
+          )}
+        </Kbd>
       </button>
       <CommandDialog open={open} onOpenChange={setOpen} title="Search" description="Jump to a round-up or an agent" className="top-[18vh] sm:max-w-2xl">
         {/* This CommandDialog leaves the cmdk root to its children. */}
@@ -61,12 +78,15 @@ export function Search({ roundUps }: { roundUps: RoundUp[] | undefined }) {
             )}
             {!!roundUps?.length && (
               <CommandGroup heading="Round-ups">
-                {roundUps.map((r) => (
-                  <CommandItem key={r.id} value={`round-up ${titleOf(r)} ${r.id}`} onSelect={run(() => navigate(roundUpPath(r.id)))}>
-                    <span className="min-w-0 flex-1 truncate">{titleOf(r)}</span>
-                    {r.busy && <StatusDot status="working" />}
-                  </CommandItem>
-                ))}
+                {roundUps.map((r) => {
+                  const status = statusOf(r);
+                  return (
+                    <CommandItem key={r.id} value={`round-up ${titleOf(r)} ${r.id}`} onSelect={run(() => navigate(roundUpPath(r.id)))}>
+                      <span className="min-w-0 flex-1 truncate">{titleOf(r)}</span>
+                      {status && <StatusDot status={status} label={ROUND_UP_STATUS_LABEL[status]} />}
+                    </CommandItem>
+                  );
+                })}
               </CommandGroup>
             )}
             <CommandGroup heading="Actions">
