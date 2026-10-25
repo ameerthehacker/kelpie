@@ -1,0 +1,58 @@
+import { useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router';
+
+export type RoundUpTab = 'conversation' | 'changes';
+
+/**
+ * Where the person is in a round-up's changes, kept in the query string so it survives a reload
+ * and the back button: `?tab=changes`, and full screen as `?full=feature|<agentId>&file=<path>`.
+ */
+export function useChangesNav() {
+  const [params, setParams] = useSearchParams();
+  const tab: RoundUpTab = params.get('tab') === 'changes' ? 'changes' : 'conversation';
+  const full = params.get('full') ?? undefined;
+  const file = params.get('file') ?? undefined;
+  const roundParam = params.get('round');
+  const round = roundParam ? Number(roundParam) : undefined;
+
+  const update = useCallback(
+    (change: (p: URLSearchParams) => void, replace = false) =>
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          change(next);
+          return next;
+        },
+        { replace },
+      ),
+    [setParams],
+  );
+
+  return useMemo(
+    () => ({
+      tab,
+      full,
+      file,
+      setTab: (t: RoundUpTab) => update((p) => (t === 'changes' ? p.set('tab', 'changes') : p.delete('tab'))),
+      round,
+      /** `full`: 'feature', or an agent's id (and the round of its work on show). */
+      openFull: (which: string, path?: string, round?: number) =>
+        update((p) => {
+          p.set('full', which);
+          if (path) p.set('file', path);
+          else p.delete('file');
+          if (round !== undefined) p.set('round', String(round));
+          else p.delete('round');
+        }),
+      /** Moving between files in full screen does not stack up history. */
+      showFile: (path: string) => update((p) => p.set('file', path), true),
+      closeFull: () =>
+        update((p) => {
+          p.delete('full');
+          p.delete('file');
+          p.delete('round');
+        }),
+    }),
+    [tab, full, file, round, update],
+  );
+}

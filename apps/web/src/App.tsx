@@ -10,6 +10,9 @@ import { ConversationContent, ConversationScrollButton } from '@/components/ai-e
 import { AssistantParts } from '@/components/chat/assistant-part';
 import { ApprovalTray } from '@/components/approvals/approval-tray';
 import { ApprovalsPage } from '@/components/approvals/approvals-page';
+import { ChangesTab } from '@/components/changes/changes-tab';
+import { FullScreen } from '@/components/changes/full-screen';
+import { TabStrip } from '@/components/changes/tab-strip';
 import { AttachmentChips } from '@/components/chat/attachments';
 import { ChatLog } from '@/components/chat/chat-log';
 import { Composer } from '@/components/chat/composer';
@@ -23,6 +26,8 @@ import { useAgents } from '@/hooks/use-agents';
 import { useApprovals } from '@/hooks/use-approvals';
 import { useAttention } from '@/hooks/use-attention';
 import { useBranches } from '@/hooks/use-branches';
+import { useChanges } from '@/hooks/use-changes';
+import { useChangesNav, type RoundUpTab } from '@/hooks/use-changes-nav';
 import { useHarnesses } from '@/hooks/use-harnesses';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useNow } from '@/hooks/use-now';
@@ -72,6 +77,23 @@ function TitleBlock({ roundUp, agents }: { roundUp: RoundUp; agents: AgentSummar
         <span>{roundUpSummary(roundUp, agents, now)}</span>
       </div>
     </div>
+  );
+}
+
+/** An orchestrator round-up's two views: the conversation, and the feature branch's changes under review. */
+function RoundUpTabs({ roundUpId, value, onChange }: { roundUpId: string; value: RoundUpTab; onChange: (tab: RoundUpTab) => void }) {
+  const files = useChanges(roundUpId, { patches: false }).data;
+  return (
+    <TabStrip
+      label="Round-up views"
+      tabs={[
+        { id: 'conversation', label: 'Conversation' },
+        { id: 'changes', label: 'Changes', ...(files?.state === 'ready' ? { count: files.stats.files } : {}) },
+      ]}
+      value={value}
+      onChange={onChange}
+      className="-mt-3"
+    />
   );
 }
 
@@ -135,6 +157,11 @@ export function App() {
   // notified of while away (cleared as they come back).
   const unseen = useAttention();
   const allApprovals = useApprovals();
+  const nav = useChangesNav();
+  // The Changes tab (and full screen) are an orchestrator's: its feature branch, under review.
+  const reviewable = !!roundUpId && current?.role === 'orchestrator';
+  const onChanges = reviewable && nav.tab === 'changes';
+  const tabs = reviewable && <RoundUpTabs roundUpId={roundUpId} value={nav.tab} onChange={nav.setTab} />;
   const waiting = allApprovals.length + unseen.filter((i) => i.kind !== 'approval' && i.kind !== 'plan').length;
 
   useEffect(() => {
@@ -226,11 +253,26 @@ export function App() {
 
             {onApprovals ? (
               <ApprovalsPage roundUps={roundUps} />
+            ) : onChanges ? (
+              <>
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
+                    {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} />}
+                    {tabs}
+                    <ChangesTab roundUpId={roundUpId} repo={current?.cwd.split('/').slice(-2).join('/')} />
+                  </div>
+                </div>
+                <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
+                  {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
+                  <ApprovalTray approvals={approvals} roundUpId={roundUpId} />
+                </div>
+              </>
             ) : (
               <>
                 <ChatLog key={roundUpId ?? 'new'} id={roundUpId} content={items} className="min-h-0 flex-1">
                   <ConversationContent className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
                     {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} />}
+                    {tabs}
                     {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
                     {items.map((item) =>
                       item.role === 'user' ? (
@@ -278,6 +320,7 @@ export function App() {
           </main>
           <AgentPaneSlot />
         </div>
+        {reviewable && nav.full && <FullScreen roundUpId={roundUpId} roundUpTitle={titleOf(current)} which={nav.full} />}
       </AgentPaneProvider>
     </TooltipProvider>
   );

@@ -1,6 +1,6 @@
 import { format } from 'date-fns';
 import { ArrowUpIcon, ChevronRightIcon, ExternalLinkIcon, GitBranchIcon, ListIcon, PauseIcon, SearchIcon, XIcon } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { HarnessMark } from '@/components/harness-mark';
@@ -12,6 +12,9 @@ import { EventLine } from '@/components/chat/events';
 import { ShowCommandsToggle, StepRow } from '@/components/chat/steps';
 import { useEventLog } from '@/hooks/use-agents';
 import { useApprovals } from '@/hooks/use-approvals';
+import { useChanges } from '@/hooks/use-changes';
+import { AgentChanges } from '@/components/changes/agent-changes';
+import { TabStrip } from '@/components/changes/tab-strip';
 import { groupApprovals } from '@/lib/approvals';
 import { useNow } from '@/hooks/use-now';
 import { byAttention, elapsed, STATUS_LABEL, STATUS_ORDER, type AgentStatus, type AgentSummary } from '@/lib/agents';
@@ -265,6 +268,24 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
   const [sent, setSent] = useState<SentMessage[]>([]);
   const pending = useMemo(() => unechoed(sent, log.events), [sent, log.events]);
   const done = a.todos.filter((t) => t.status === 'completed').length;
+  // A writer with a branch has changes to look at; Muster's are the others' (the round-up's Changes tab).
+  const reviewable = !!a.branch && a.kind !== 'muster';
+  const [tab, setTab] = useState<'activity' | 'changes'>('activity');
+  const files = useChanges(reviewable ? a.id : undefined, { patches: false, working: a.status === 'working' }).data;
+  const tabs = reviewable ? (
+    <TabStrip
+      label="Agent views"
+      tabs={[
+        { id: 'activity', label: 'Activity' },
+        { id: 'changes', label: 'Changes', ...(files?.state === 'ready' ? { count: files.stats.files } : {}) },
+      ]}
+      value={tab}
+      onChange={setTab}
+      className="flex-1"
+    >
+      {tab === 'activity' && <ShowCommandsToggle />}
+    </TabStrip>
+  ) : undefined;
   const pause = () => api('POST', `/api/sessions/${a.id}/interrupt`).catch((err) => setError((err as Error).message));
 
   return (
@@ -329,16 +350,25 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
       </div>
 
       <AgentApprovals agent={a} />
-      <AgentTimeline agent={a} events={log.events} error={log.error} pending={pending} />
-      <AgentMessage
-        agent={a}
-        onSend={(text, files) => {
-          const attachments = files.map((f) => ({ name: f.name, size: f.size, mime: f.type }));
-          const message = { id: Date.now() + Math.random(), text, after: log.events.length, ...(files.length ? { attachments } : {}) };
-          setSent((s) => [...unechoed(s, log.events), message]);
-          return () => setSent((s) => s.filter((m) => m !== message));
-        }}
-      />
+      {tab === 'changes' && reviewable ? (
+        <section aria-label="Changes" className="border-ln flex min-h-0 flex-1 flex-col border-t">
+          <div className="flex items-center px-[22px] pt-1.5">{tabs}</div>
+          <AgentChanges agent={a} />
+        </section>
+      ) : (
+        <AgentTimeline agent={a} events={log.events} error={log.error} pending={pending} tabs={tabs} />
+      )}
+      {tab === 'activity' && (
+        <AgentMessage
+          agent={a}
+          onSend={(text, files) => {
+            const attachments = files.map((f) => ({ name: f.name, size: f.size, mime: f.type }));
+            const message = { id: Date.now() + Math.random(), text, after: log.events.length, ...(files.length ? { attachments } : {}) };
+            setSent((s) => [...unechoed(s, log.events), message]);
+            return () => setSent((s) => s.filter((m) => m !== message));
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -363,8 +393,20 @@ function AgentApprovals({ agent: a }: { agent: AgentSummary }) {
   );
 }
 
-/** What the agent did and what was said to it, as the design's activity and message bubbles. */
-function AgentTimeline({ agent: a, events, error, pending }: { agent: AgentSummary; events: KelpieEvent[]; error: string | undefined; pending: SentMessage[] }) {
+/** What the agent did and what was said to it, as the design's activity and message bubbles. `tabs` replace its label. */
+function AgentTimeline({
+  agent: a,
+  events,
+  error,
+  pending,
+  tabs,
+}: {
+  agent: AgentSummary;
+  events: KelpieEvent[];
+  error: string | undefined;
+  pending: SentMessage[];
+  tabs?: ReactNode;
+}) {
   const items = useMemo(() => buildChat(events), [events]);
   const end = useRef<HTMLDivElement>(null);
   // Follow the newest entry, as a tail would. A block body: scrollIntoView may return a promise,
@@ -376,10 +418,14 @@ function AgentTimeline({ agent: a, events, error, pending }: { agent: AgentSumma
 
   return (
     <section aria-label="Activity and messages" className="border-ln flex min-h-0 flex-1 flex-col border-t">
-      <div className="flex items-center justify-between px-[22px] pt-3 pb-0.5">
-        <span className="text-mu2 text-xs">Activity and messages</span>
-        <ShowCommandsToggle />
-      </div>
+      {tabs ? (
+        <div className="flex items-center px-[22px] pt-1.5">{tabs}</div>
+      ) : (
+        <div className="flex items-center justify-between px-[22px] pt-3 pb-0.5">
+          <span className="text-mu2 text-xs">Activity and messages</span>
+          <ShowCommandsToggle />
+        </div>
+      )}
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-[22px] pt-3 pb-4">
         {error && <p className="text-fail text-sm">{error}</p>}
         {events.length === 0 && !error && <p className="text-mu text-sm">Loading…</p>}

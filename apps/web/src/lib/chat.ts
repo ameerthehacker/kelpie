@@ -24,7 +24,8 @@ export type AssistantPart =
   | SpawnView
   /** Sub-agents Kelpie told the orchestrator about. */
   | { type: 'agents'; agents: AgentUpdate[]; ts: string }
-  | { type: 'notice'; tone: 'error' | 'info'; text: string; ts: string }
+  /** `link`: where the notice leads (the round-up's Changes tab, for a review). */
+  | { type: 'notice'; tone: 'error' | 'info'; text: string; ts: string; link?: 'changes' }
   /** A plan put to the person (ExitPlanMode), and what became of it. */
   | PlanView;
 
@@ -77,7 +78,7 @@ export function agentsFromText(text: string): AgentUpdate[] {
     let rest = body.slice(m.index + m[0].length, end).replace(/^\n/, '');
     let error: string | undefined;
     for (;;) {
-      const line = /^(Error|Files changed|Branch): (.*)\n?/.exec(rest);
+      const line = /^(Error|Files changed|Branch|Review threads): (.*)\n?/.exec(rest);
       if (!line) break;
       if (line[1] === 'Error') error = line[2];
       rest = rest.slice(line[0].length);
@@ -85,6 +86,23 @@ export function agentsFromText(text: string): AgentUpdate[] {
     const report = rest.trim().replace(/\n?\(report cut; read_agent has all of it\)$/, '');
     return { agentId: m[2]!, title: m[1]!, status: m[3]!.trim(), report: report === '(no report)' ? '' : report, ...(error ? { error } : {}) };
   });
+}
+
+/** What a review notification's echo carries (`Message.review`). */
+interface ReviewMeta {
+  reviewId: string;
+  verdict: 'comment' | 'request_changes' | 'approve';
+  comments: number;
+  threads: number;
+}
+
+const VERDICT: Record<ReviewMeta['verdict'], string> = { comment: 'Comment', request_changes: 'Request changes', approve: 'Approve' };
+
+/** "You submitted a review · Request changes · 3 comments". */
+export function reviewNotice(r: Pick<ReviewMeta, 'verdict' | 'comments'>): string {
+  const parts = ['You submitted a review', VERDICT[r.verdict] ?? r.verdict];
+  if (r.comments) parts.push(`${r.comments} comment${r.comments === 1 ? '' : 's'}`);
+  return parts.join(' · ');
 }
 
 /** The line a notification ends with after Muster: what git says is in the feature branch now. */
@@ -96,6 +114,9 @@ const MUSTERED = /\n*In the feature branch now \(checked with git\): (.*?)\.(?: 
  * text already carries in full.
  */
 function kelpieTurn(data: EventOf<'message'>['data'], ts: string): AssistantPart[] {
+  // A review the person submitted, on its way to the orchestrator.
+  const review = (data as { review?: ReviewMeta }).review;
+  if (review) return [{ type: 'notice', tone: 'info', text: reviewNotice(review), ts, link: 'changes' }];
   const parsed = agentsFromText(data.text);
   const agents = data.agents?.map((a) => ({ ...a, report: a.report ?? parsed.find((p) => p.agentId === a.agentId)?.report ?? '' })) ?? parsed;
   if (agents.length) {

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { ClaudeCodeParser } from '@kelpie/adapters';
-import { buildChat, latestTodos, type AssistantPart, type ToolView } from '../src/lib/chat.js';
+import { agentsFromText, buildChat, latestTodos, reviewNotice, type AssistantPart, type ToolView } from '../src/lib/chat.js';
 
 const FIXTURES = join(import.meta.dirname, '../../../packages/adapters/fixtures/claude-code');
 
@@ -137,6 +137,29 @@ describe('orchestrator notifications', () => {
     const note = '<kelpie-notification>\nKelpie restarted while you were working; your turn was cut off.\n</kelpie-notification>';
     const items = buildChat([{ ...base, id: 'n', seq: 0, kind: 'message', data: { role: 'user', text: note, sent: true, source: 'kelpie' } }]);
     expect(items[0]).toEqual({ role: 'assistant', id: 'n', parts: [{ type: 'notice', tone: 'info', text: 'Kelpie restarted while you were working; your turn was cut off.', ts: '2026-01-01T00:00:00.000Z' }] });
+  });
+
+  it('shows a submitted review as one line that leads to the Changes tab', () => {
+    const text =
+      '<kelpie-notification>\nThe person submitted a review of the feature\'s changes: Request changes.\n> Tighten these up\n## Agent "API" (a1): 2 threads\n- [t1] billing-api/package.json:6 (additions): "Use 22"\n' +
+      'Act on it now (see your rules). This message is from Kelpie, not the person.\n</kelpie-notification>';
+    const review = { reviewId: 'rv1', verdict: 'request_changes', comments: 3, threads: 2 };
+    const data = { role: 'user', text, sent: true, source: 'kelpie', review } as unknown as Extract<KelpieEvent, { kind: 'message' }>['data'];
+    const [item] = buildChat([{ ...base, id: 'n', seq: 0, kind: 'message', data }]);
+    expect(item).toEqual({
+      role: 'assistant',
+      id: 'n',
+      parts: [{ type: 'notice', tone: 'info', text: 'You submitted a review · Request changes · 3 comments', ts: base.ts, link: 'changes' }],
+    });
+    expect(reviewNotice({ verdict: 'approve', comments: 0 })).toBe('You submitted a review · Approve');
+    expect(reviewNotice({ verdict: 'comment', comments: 1 })).toBe('You submitted a review · Comment · 1 comment');
+  });
+
+  it('reads the review line of an idle notification as a detail, not the report', () => {
+    const idle =
+      '<kelpie-notification>\n## Agent "API" (a1) is idle: turn completed\nBranch: kelpie/x--api-1 (1 commit ahead of the feature branch; to muster)\nReview threads: 2 resolved, 1 open\n\nFixed both.\n\n' +
+      'This message is from Kelpie, not the person.\n</kelpie-notification>';
+    expect(agentsFromText(idle)).toEqual([{ agentId: 'a1', title: 'API', status: 'completed', report: 'Fixed both.' }]);
   });
 
   it('keeps the person’s words as theirs, whatever they look like', () => {
