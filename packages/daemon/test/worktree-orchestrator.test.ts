@@ -132,8 +132,18 @@ describe('worktrees for writing agents', () => {
 
     expect((await call('set_base_branch', { branch: 'origin/main' })).error).toMatch(/can't change now/);
     const { data: list } = await call('list_agents');
-    expect(list).toMatchObject({ baseBranch: 'origin/release', featureBranch: home.branch });
+    expect(list).toMatchObject({ baseBranch: 'origin/release', featureBranch: home.branch, featureCheckout: home.path });
     expect(list.agents.find((x: { agentId: string }) => x.agentId === b.data.agentId)).toMatchObject({ branch: wb.branch, deliver: 'standalone', worktree: 'active' });
+
+    // The orchestrator may read the feature branch's worktree (outside its cwd, so the harness asks), never change it.
+    const ask = (tool: string, input: Record<string, unknown>) => ctx.orch.decide(parent, { requestId: 'q', tool, title: tool, input });
+    expect(ask('Read', { file_path: join(home.path, 'app.txt') })).toMatchObject({ allow: true });
+    expect(ask('Grep', { pattern: 'two', path: home.path })).toMatchObject({ allow: true });
+    expect(ask('Glob', { pattern: '**/*.txt', path: join(home.path, 'src') })).toMatchObject({ allow: true });
+    expect(ask('Write', { file_path: join(home.path, 'app.txt'), content: 'x' })).toMatchObject({ allow: false });
+    expect(ask('Edit', { file_path: join(home.path, 'app.txt') })).toMatchObject({ allow: false });
+    // A writer's own worktree is its business: the orchestrator reads that work once it is mustered.
+    expect(ask('Read', { file_path: join(wa.path, 'app.txt') })).toMatchObject({ allow: false });
   });
 
   it('musters clean branches itself, hands a conflict to Muster, and believes git about the outcome', async () => {

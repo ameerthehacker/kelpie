@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -82,28 +82,32 @@ function flag(args: string[], name: string): string[] {
 const sentTexts = (s: Session) => s.events().flatMap((e: KelpieEvent) => (e.kind === 'message' && e.data.sent ? [e.data.text] : []));
 
 describe('orchestrator round-ups', () => {
-  it('runs the orchestrator with no built-in tools, only the kelpie MCP server', async () => {
+  it('runs the orchestrator with read-only built-in tools and the kelpie MCP server, and no Bash', async () => {
     const ctx = setup();
     const { argv } = await orchestrator(ctx);
-    expect(argv[argv.indexOf('--tools') + 1]).toBe(''); // no built-in tools at all
-    expect(ORCHESTRATOR_TOOLS).toEqual([]);
-    expect(argv.slice(argv.indexOf('--allowedTools'), argv.indexOf('--allowedTools') + 2)).toEqual(['--allowedTools', 'mcp__kelpie']);
-    expect(argv[argv.indexOf('--append-system-prompt') + 1]).toContain("You are Kelpie's orchestrator");
+    expect(flag(argv, '--tools')).toEqual(['Read,Grep,Glob']); // no Bash, Edit or Write without a scratch folder
+    expect(ORCHESTRATOR_TOOLS).toEqual(['Read', 'Grep', 'Glob']);
+    expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie']);
+    expect(argv).not.toContain('--disallowedTools'); // nothing to write with, so nothing to deny
+    const prompt = argv[argv.indexOf('--append-system-prompt') + 1]!;
+    expect(prompt).toContain("You are Kelpie's orchestrator");
+    expect(prompt).toContain('You may read the repo yourself with Read, Grep and Glob');
+    expect(prompt).toContain('You cannot write files at all.');
   });
 
-  it('gives the orchestrator file tools for its scratch folder only, and passes files from it to agents', async () => {
+  it('gives the orchestrator write tools for its scratch folder only, and passes files from it to agents', async () => {
     const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
     const repo = tmp('kelpie-cwd-');
     const ctx = setup({ FAKE_EVERY_TURN: '1', FAKE_STDIN_FILE: stdin }, { scratch: true, cwd: repo });
     const { parent, argv, call } = await orchestrator(ctx);
     const scratch = parent.scratch!;
-    expect(flag(argv, '--tools')).toEqual(['Read,Write']);
+    expect(flag(argv, '--tools')).toEqual(['Read,Grep,Glob,Edit,Write']);
     expect(flag(argv, '--add-dir')).toEqual([scratch]);
     expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie', `Read(/${scratch}/**)`, `Edit(/${scratch}/**)`, `Write(/${scratch}/**)`]);
-    // Its repo is denied outright: the scratch folder is all it can touch.
+    // Its repo may be read, but edits to it are denied outright (accept-edits would allow them).
     const cwd = realpathSync(repo);
-    expect(flag(argv, '--disallowedTools')).toEqual([`Read(/${cwd}/**)`, `Edit(/${cwd}/**)`, `Write(/${cwd}/**)`]);
-    expect(argv[argv.indexOf('--append-system-prompt') + 1]).toContain(`only inside your scratch folder, \`${scratch}\``);
+    expect(flag(argv, '--disallowedTools')).toEqual([`Edit(/${cwd}/**)`, `Write(/${cwd}/**)`]);
+    expect(argv[argv.indexOf('--append-system-prompt') + 1]).toContain(`Write and Edit work only inside your scratch folder, \`${scratch}\``);
 
     writeFileSync(join(scratch, 'spec.md'), 'hello');
     expect((await call('spawn_agent', { title: 'A', task: 'x', writes: false, files: ['../escape.md'] })).error).toMatch(/no such file|outside your scratch folder/);
@@ -127,6 +131,41 @@ describe('orchestrator round-ups', () => {
     await call('message_agent', { agentId: child.id, text: 'And this one', files: [join(scratch, 'spec.md')] });
     const followUp = await waitFor(() => jsonLines<{ text: string }>(stdin).find((l) => l.text.startsWith('And this one')));
     expect(followUp.text).toContain('<attachments>');
+  });
+
+  it("lets the orchestrator read its repo and scratch folder, write only in the scratch folder, and run nothing", async () => {
+    const repo = tmp('kelpie-cwd-');
+    const outside = tmp('kelpie-outside-');
+    writeFileSync(join(repo, 'app.ts'), 'x');
+    const ctx = setup({ FAKE_HANG: '1' }, { scratch: true, cwd: repo });
+    const { parent } = await orchestrator(ctx);
+    const scratch = parent.scratch!;
+    const cwd = realpathSync(repo);
+    const ask = (tool: string, input: Record<string, unknown>) => ctx.orch.decide(parent, { requestId: 'q', tool, title: tool, input });
+    const allowed = (tool: string, input: Record<string, unknown>) => ask(tool, input)?.allow;
+
+    expect(allowed('Read', { file_path: join(cwd, 'app.ts') })).toBe(true);
+    expect(allowed('Read', { file_path: join(scratch, 'spec.md') })).toBe(true);
+    expect(allowed('Grep', { pattern: 'x' })).toBe(true); // no path: its cwd
+    expect(allowed('Grep', { pattern: 'x', path: scratch })).toBe(true);
+    expect(allowed('Glob', { pattern: '**/*.ts', path: join(cwd, 'src') })).toBe(true);
+    expect(allowed('Write', { file_path: join(scratch, 'spec.md'), content: 'x' })).toBe(true);
+    expect(allowed('Edit', { file_path: join(scratch, 'spec.md') })).toBe(true);
+
+    expect(allowed('Write', { file_path: join(cwd, 'app.ts'), content: 'x' })).toBe(false);
+    expect(allowed('Edit', { file_path: join(cwd, 'app.ts') })).toBe(false);
+    expect(allowed('Read', { file_path: join(outside, 'secret') })).toBe(false);
+    expect(allowed('Read', { file_path: join(cwd, '..', 'elsewhere') })).toBe(false);
+    expect(allowed('Glob', { pattern: '*', path: '/' })).toBe(false);
+    expect(allowed('Read', {})).toBe(false);
+    expect(ask('Bash', { command: 'git status' })).toMatchObject({ allow: false, message: expect.stringMatching(/Give changes, commands/) });
+    // A link in the repo can't lead its reads out of it.
+    writeFileSync(join(outside, 'secret'), 'x');
+    symlinkSync(outside, join(repo, 'link'));
+    expect(allowed('Read', { file_path: join(cwd, 'link', 'secret') })).toBe(false);
+    expect(allowed('Grep', { pattern: 'x', path: join(cwd, 'link', 'missing') })).toBe(false);
+    symlinkSync(join(repo, 'app.ts'), join(scratch, 'into-repo'));
+    expect(allowed('Write', { file_path: join(scratch, 'into-repo'), content: 'x' })).toBe(false);
   });
 
   it('leaves out the repo deny rules when the scratch folder is inside the repo, rather than deny the scratch folder too', async () => {
