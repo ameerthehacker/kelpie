@@ -23,9 +23,11 @@
     "@modelcontextprotocol/sdk": "1.32.2",
     "hono": "^4.13.13",
     "proper-lockfile": "4.1.2",
+    "which": "^7.0.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/proper-lockfile": "^4.1.4"
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/which": "^3.0.4"
   }
 }

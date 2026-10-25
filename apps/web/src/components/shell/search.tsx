@@ -1,4 +1,4 @@
-import { MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SunIcon } from 'lucide-react';
+import { MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SettingsIcon, SunIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { StatusDot } from '@/components/agents/agent-bits';
@@ -72,6 +72,9 @@ export function Search({ roundUps }: { roundUps: RoundUp[] | undefined }) {
             <CommandGroup heading="Actions">
               <CommandItem value="new round-up" onSelect={run(() => navigate('/'))}>
                 <PlusIcon /> New round-up
+              </CommandItem>
+              <CommandItem value="settings harness claude code connections" onSelect={run(() => navigate('/settings'))}>
+                <SettingsIcon /> Settings
               </CommandItem>
               <CommandItem value="theme light" onSelect={run(() => setTheme('light'))}>
                 <SunIcon /> Light theme
