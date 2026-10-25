@@ -9,7 +9,7 @@ export interface RunSpec {
   model?: string;
   /** Harness session id to continue. */
   resume?: string;
-  /** With `resume`: the session's todo list as last seen, so the harness's updates to it are not lost. */
+  /** With `resume` only: the session's todo list as last seen, so the harness's updates to it are not lost. The adapter seeds from it as given. */
   todos?: TodoItem[];
   /** Defaults to 'acceptEdits'. */
   permissionMode?: string;

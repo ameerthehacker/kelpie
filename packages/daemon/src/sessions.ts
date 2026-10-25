@@ -82,7 +82,8 @@ export type ManagerUpdate =
   /** What a round-up (its orchestrator and agents) is waiting on the person for, now. */
   | { type: 'approvals'; roundUpId: string; approvals: PendingApproval[] };
 
-export type SessionDefaults = Omit<RunSpec, 'cwd' | 'prompt' | 'resume' | 'runId' | 'runDir'>;
+/** Run settings a round-up does not decide per process: everything but what `start` fills in. */
+export type SessionDefaults = Omit<RunSpec, 'cwd' | 'prompt' | 'resume' | 'todos' | 'runId' | 'runDir'>;
 
 export interface RunContext {
   runId: string;
@@ -95,7 +96,7 @@ export interface RunContext {
 /** How round-ups are specialised (the orchestrator's tools and prompts) and watched. */
 export interface SessionHooks {
   /** Extra run settings for each harness process; called on every start. */
-  specFor?(session: Session, run: RunContext): Partial<RunSpec>;
+  specFor?(session: Session, run: RunContext): Partial<SessionDefaults>;
   /** Every event, once it is logged and subscribers have seen it. Must not throw. */
   observe?(session: Session, index: number, event: KelpieEvent): void;
   /** Before each harness process starts: make sure what it runs in exists (e.g. recreate a swept worktree). */
@@ -453,6 +454,14 @@ export class Session {
     return own?.kind === 'todos' ? own.data.items : [];
   }
 
+  /**
+   * The harness's latest todo list, whoever changed it last (it keeps one per session, its
+   * sub-agents' tasks included): what its last process ended with, so a resumed one starts from it.
+   */
+  private sessionTodos(): TodoItem[] {
+    return this.ctx.store.lastEvent(this.id, 'todos')?.data.items ?? [];
+  }
+
   /** Folds an event into a sub-agent's summary; true if the pane should hear about it. */
   private track(event: KelpieEvent): boolean {
     if (!this.row.parentId || !SUMMARY_KINDS.has(event.kind)) return false;
@@ -512,6 +521,8 @@ export class Session {
    */
   async send(text: string, source: OutboxSource = 'user', opts: SendOptions = {}): Promise<void> {
     while (this.stopping) await this.stopping;
+    // A process can exit before its last events are logged; logging its exit clears the outbox, so this turn waits.
+    if (this.run?.exited) await this.pumping;
     if (this.deleted) throw new Error('this round-up was deleted');
     if (this.ctx.closing) throw new Error('Kelpie is shutting down');
     const files = opts.attachments ?? [];
@@ -537,6 +548,7 @@ export class Session {
    */
   async resumeAfterRestart(note: string): Promise<void> {
     while (this.stopping) await this.stopping;
+    if (this.run?.exited) await this.pumping;
     if (this.deleted || this.ctx.closing) return;
     if (!this.run || this.run.exited) {
       if (this.ctx.store.undelivered(this.id).length) await this.launch();
@@ -572,6 +584,8 @@ export class Session {
     this.starting ??= (async () => {
       try {
         await this.ctx.hooks.prepare?.(this);
+        // The last process may have exited with events still buffered: `start` reads what they leave (its todo list).
+        await this.pumping;
       } finally {
         this.starting = undefined;
       }
@@ -607,7 +621,7 @@ export class Session {
       runId,
       ...(this.ctx.runsDir ? { runDir: join(this.ctx.runsDir, runId) } : {}),
       // The harness keeps its todo list across a resume, but this new process has not seen it.
-      ...(resume ? { resume, todos: this.ownTodos() } : {}),
+      ...(resume ? { resume, todos: this.sessionTodos() } : {}),
     });
     for (const text of texts.slice(1)) run.send(text);
     this.run = run;
@@ -689,13 +703,26 @@ export class Session {
     this.idleTimer.unref();
   }
 
+  /**
+   * A run's events, then, if it could not resume (`failed`), an empty todo list: the old list
+   * went with the session, and the fresh one starts without any. The pane shows that, and a
+   * later resume of the fresh session is not handed the old tasks.
+   */
+  private async *withReset(run: Run, failed: () => boolean): AsyncGenerator<KelpieEvent> {
+    for await (const event of run.events) {
+      yield event;
+      if (event.kind !== 'process.exited' || !failed() || (!this.sessionTodos().length && !this.ownTodos().length)) continue;
+      yield { id: randomUUID(), runId: event.runId, seq: event.seq + 1, ts: event.ts, harness: event.harness, kind: 'todos', data: { items: [] } } as KelpieEvent;
+    }
+  }
+
   private async pump(run: Run, resumed: string | undefined): Promise<void> {
     const log = this.load();
     let started = false;
     let retryFresh = false;
     this.pumpActive = true;
     try {
-      for await (let event of run.events) {
+      for await (let event of this.withReset(run, () => retryFresh)) {
         if (this.deleted) continue; // drain the process, log nothing
         let changed = false;
         if (event.kind === 'session.started') {
@@ -734,7 +761,8 @@ export class Session {
 
         const index = log.push(event) - 1;
         // A process ending (idle timeout, daemon shutdown) is housekeeping: it must not reorder the list.
-        const now = event.kind === 'process.exited' ? this.row.updatedAt : Date.now();
+        // So is anything logged after a failed resume.
+        const now = event.kind === 'process.exited' || retryFresh ? this.row.updatedAt : Date.now();
         try {
           this.ctx.store.appendEvent(this.id, index, event, now, deliveredId);
           this.row = { ...this.row, updatedAt: now };

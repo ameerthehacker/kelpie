@@ -90,7 +90,7 @@ class ClaudeCodeRun implements Run {
   constructor(spec: RunSpec) {
     this.runId = spec.runId ?? randomUUID();
     this.runDir = spec.runDir ?? join(homedir(), '.kelpie', 'runs', this.runId);
-    this.parser = new ClaudeCodeParser({ runId: this.runId, ...(spec.resume && spec.todos ? { todos: spec.todos } : {}) });
+    this.parser = new ClaudeCodeParser({ runId: this.runId, todos: spec.todos });
     this.done = new Promise((r) => (this.resolveDone = r));
 
     const bin = spec.bin ?? 'claude';

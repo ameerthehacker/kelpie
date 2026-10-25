@@ -2,12 +2,14 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { EventKind, KelpieEvent } from '@kelpie/protocol';
+import { claudeCode, type Adapter, type Run, type RunSpec } from '@kelpie/adapters';
+import type { EventKind, KelpieEvent, TodoItem } from '@kelpie/protocol';
 import { openStore, type Store } from '@kelpie/store';
 import { SessionManager, titleFrom, type Session, type SessionManagerOptions } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
 const FIXTURE = join(import.meta.dirname, '../../adapters/fixtures/claude-code/plain.jsonl');
+const TODOS = join(import.meta.dirname, '../../adapters/fixtures/claude-code/todos.jsonl');
 chmodSync(FAKE, 0o755);
 
 const tmp = (prefix: string) => mkdtempSync(join(tmpdir(), prefix));
@@ -35,6 +37,18 @@ function until(session: Session, kind: EventKind, from = 0): Promise<KelpieEvent
     });
   });
 }
+
+/** The Claude Code adapter, keeping each spec it is started with. */
+const recording = (specs: RunSpec[]): Adapter => ({ ...claudeCode, start: (spec) => (specs.push(spec), claudeCode.start(spec)) });
+
+let fakeSeq = 0;
+/** A todo list as the log keeps it; with `parentCallId`, one a sub-agent's tool call changed. */
+function todosEvent(items: TodoItem[], parentCallId?: string): KelpieEvent {
+  const seq = fakeSeq++;
+  return { id: `x:${seq}`, runId: 'x', seq, ts: new Date().toISOString(), harness: 'claude-code', kind: 'todos', data: { items }, ...(parentCallId ? { parentCallId } : {}) } as KelpieEvent;
+}
+
+const listOf = (e: KelpieEvent | undefined) => (e?.kind === 'todos' ? e.data.items.map((t) => `${t.id}:${t.status}`) : undefined);
 
 const argsOf = (file: string): string[][] => readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 
@@ -109,6 +123,110 @@ describe('persistent round-ups', () => {
     const last = log.slice(from).filter((e) => e.kind === 'todos').at(-1);
     expect(last?.kind === 'todos' && last.data.items.map((t) => `${t.id}:${t.status}`)).toEqual(['1:completed', '2:completed']);
     store.close();
+  });
+
+  it('hands a resumed run the todo list after an idle stop, and a fresh one none', async () => {
+    const specs: RunSpec[] = [];
+    const sessions = manager(openStore(':memory:'), { FAKE_FIXTURE: TODOS }, { adapter: recording(specs), idleMs: 50 });
+    const session = sessions.create();
+    session.send('Make a plan');
+    const first = await until(session, 'process.exited');
+    session.send('Again');
+    const log = await until(session, 'turn.ended', first.length);
+    await sessions.stopAll();
+    expect(specs[0]!.resume).toBeUndefined();
+    expect(specs[0]!.todos).toBeUndefined();
+    expect(specs[1]!.resume).toBe(session.info().harnessSessionId);
+    expect(specs[1]!.todos!.map((t) => `${t.id}:${t.status}`)).toEqual(['1:completed', '2:completed']);
+    // The fake CLI creates tasks 1 and 2 again: they replace the old ones rather than being listed twice.
+    expect(listOf(log.slice(first.length).filter((e) => e.kind === 'todos').at(-1))).toEqual(['1:completed', '2:completed']);
+  });
+
+  it('seeds a resumed run with the latest todo list, even one a sub-agent changed', async () => {
+    const store = openStore(':memory:');
+    store.createSession({ id: 's', cwd: tmpdir(), title: 'Old', harnessSessionId: 'h' });
+    store.appendEvent('s', 0, todosEvent([{ id: '1', text: 'a', status: 'pending' }]));
+    store.appendEvent('s', 1, todosEvent([{ id: '1', text: 'a', status: 'pending' }, { id: '2', text: 'b', status: 'pending' }], 'call-1'));
+    const specs: RunSpec[] = [];
+    const sessions = manager(store, {}, { adapter: recording(specs) });
+    const session = sessions.get('s')!;
+    session.send('Carry on');
+    await until(session, 'turn.ended', 2);
+    await sessions.stopAll();
+    expect(specs[0]!.resume).toBe('h');
+    expect(specs[0]!.todos!.map((t) => t.id)).toEqual(['1', '2']);
+  });
+
+  it('clears the todo list when a resume falls back to a fresh session, so a later resume starts empty', async () => {
+    const store = openStore(':memory:');
+    store.createSession({ id: 's', cwd: tmpdir(), title: 'Old', harnessSessionId: 'gone' });
+    store.appendEvent('s', 0, todosEvent([{ id: '1', text: 'stale', status: 'pending' }]));
+    let specs: RunSpec[] = [];
+    let sessions = manager(store, { FAKE_RESUME_FAIL: '1' }, { adapter: recording(specs) });
+    let session = sessions.get('s')!;
+    session.send('hello again');
+    // Only the fresh run reports a session.
+    const fresh = await until(session, 'session.started', 2);
+    const log = await until(session, 'turn.ended', fresh.length);
+    await sessions.stopAll();
+    expect(specs.map((s) => [s.resume, s.todos?.length])).toEqual([['gone', 1], [undefined, undefined]]);
+    // Right after the failed process: an empty list (no sub-agent's), which the pane and the next seed both read.
+    const failed = log.findIndex((e) => e.kind === 'process.exited' && e.data.code === 1);
+    const reset = log[failed + 1]!;
+    expect(reset.parentCallId).toBeUndefined();
+    expect(listOf(reset)).toEqual([]);
+    expect(log.filter((e) => e.kind === 'todos')).toHaveLength(2);
+
+    specs = [];
+    sessions = manager(store, {}, { adapter: recording(specs) });
+    session = sessions.get('s')!;
+    const from = store.eventCount('s');
+    session.send('more');
+    await until(session, 'turn.ended', from);
+    await sessions.stopAll();
+    expect(specs[0]!.resume).toBe(session.info().harnessSessionId);
+    expect(specs[0]!.todos).toEqual([]);
+    store.close();
+  });
+
+  it('logs all of an exited process before starting the next, so the new run sees its todo list and gets the new turn', async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    const specs: RunSpec[] = [];
+    const exit = { code: 0, signal: null };
+    // Its process is gone at once, but its last events (a todo list among them) are read only once the gate opens.
+    const adapter: Adapter = {
+      ...claudeCode,
+      start(spec) {
+        specs.push(spec);
+        const late = specs.length === 1;
+        const runId = spec.runId!;
+        let seq = 0;
+        const ev = (kind: string, data: object) => ({ id: `${runId}:${seq}`, runId, seq: seq++, ts: new Date().toISOString(), harness: 'claude-code', kind, data }) as KelpieEvent;
+        async function* events() {
+          yield ev('session.started', { harnessSessionId: 'h', model: 'm', cwd: spec.cwd, tools: [] });
+          if (late) {
+            await gate;
+            yield ev('todos', { items: [{ id: '1', text: 'a', status: 'in_progress' }] });
+          }
+          yield ev('process.exited', { ...exit, stderrTail: '' });
+        }
+        return {
+          runId, harness: 'claude-code', runDir: '', events: events(), harnessSessionId: 'h', busy: false, exited: true,
+          send() {}, answer: () => false, setMode: async () => true, interrupt: async () => {}, stop: async () => exit, done: Promise.resolve(exit),
+        } satisfies Run;
+      },
+    };
+    const sessions = manager(openStore(':memory:'), {}, { adapter });
+    const session = sessions.create();
+    await session.send('first');
+    const second = session.send('second');
+    await new Promise((r) => setTimeout(r, 20));
+    open();
+    await second;
+    await sessions.stopAll();
+    expect(specs).toHaveLength(2);
+    expect(specs[1]).toMatchObject({ resume: 'h', prompt: 'second', todos: [{ id: '1', text: 'a', status: 'in_progress' }] });
   });
 
   it('closes out a run the daemon never saw finish', () => {
