@@ -6,6 +6,7 @@ import {
   classifySession,
   createAttention,
   endedTurn,
+  fullyIdle,
   newApprovals,
   summarize,
   type Attention,
@@ -41,15 +42,23 @@ describe('classifying', () => {
     expect(endedTurn(undefined, top({ lastTurn: 'completed' }))).toBeUndefined();
   });
 
-  it("treats Kelpie's finished turn as a reply, and a sub-agent's only at the 'all' level", () => {
-    expect(classifySession(top({ busy: true }), top({ lastTurn: 'completed' }), 'needed')).toMatchObject({ kind: 'reply', roundUpId: 'r1', who: 'Kelpie' });
-    expect(classifySession(agent({ busy: true }), agent({ lastTurn: 'completed' }), 'needed')).toBeUndefined();
-    expect(classifySession(agent({ busy: true }), agent({ lastTurn: 'completed' }), 'all')).toMatchObject({ kind: 'finished', roundUpId: 'r1', sessionId: 'a1' });
+  it("treats Kelpie's finished turn as a reply once all is idle, and a sub-agent's only at the 'all' level", () => {
+    expect(classifySession(top({ busy: true }), top({ lastTurn: 'completed' }), 'needed', true)).toMatchObject({ kind: 'reply', roundUpId: 'r1', who: 'Kelpie' });
+    expect(classifySession(top({ busy: true }), top({ lastTurn: 'completed' }), 'needed', false)).toBeUndefined();
+    expect(classifySession(top({ busy: true }), top({ lastTurn: 'completed' }), 'all', false)).toBeUndefined();
+    expect(classifySession(agent({ busy: true }), agent({ lastTurn: 'completed' }), 'needed', true)).toBeUndefined();
+    expect(classifySession(agent({ busy: true }), agent({ lastTurn: 'completed' }), 'all', false)).toMatchObject({ kind: 'finished', roundUpId: 'r1', sessionId: 'a1' });
   });
 
-  it('always reports failures, from Kelpie or an agent', () => {
-    expect(classifySession(top({ busy: true }), top({ lastTurn: 'failed' }), 'needed')).toMatchObject({ kind: 'failed', sessionId: 'r1' });
-    expect(classifySession(agent({ busy: true }), agent({ lastTurn: 'failed' }), 'needed')).toMatchObject({ kind: 'failed', sessionId: 'a1', roundUpId: 'r1' });
+  it('always reports failures, from Kelpie or an agent, whatever else is running', () => {
+    expect(classifySession(top({ busy: true }), top({ lastTurn: 'failed' }), 'needed', false)).toMatchObject({ kind: 'failed', sessionId: 'r1' });
+    expect(classifySession(agent({ busy: true }), agent({ lastTurn: 'failed' }), 'needed', false)).toMatchObject({ kind: 'failed', sessionId: 'a1', roundUpId: 'r1' });
+  });
+
+  it("sees a round-up fully idle only when neither Kelpie nor any of its agents is busy", () => {
+    expect(fullyIdle('r1', [top(), agent(), agent({ id: 'b1', parentId: 'r2', busy: true })])).toBe(true);
+    expect(fullyIdle('r1', [top({ busy: true }), agent()])).toBe(false);
+    expect(fullyIdle('r1', [top(), agent(), agent({ id: 'a2', busy: true })])).toBe(false);
   });
 
   it('tells plans from approvals, and skips the ones already known', () => {
@@ -92,11 +101,13 @@ describe('summarizing', () => {
 describe('the tracker', () => {
   let settings: AttentionSettings;
   let away: boolean;
+  let inTray: boolean;
   let delivered: Delivery[];
   const make = () =>
     createAttention({
       settings: () => settings,
       away: () => away,
+      showing: () => inTray,
       deliver: (d) => delivered.push(d),
     });
 
@@ -104,16 +115,24 @@ describe('the tracker', () => {
     vi.useFakeTimers();
     settings = { enabled: true, sound: true, level: 'needed' };
     away = true;
+    inTray = true;
     delivered = [];
   });
   afterEach(() => vi.useRealTimers());
 
   /** A seeded tracker: the stream's first snapshots are the state of things, not news. */
-  const seeded = (sessions: S[] = [top()], approvals: PendingApproval[] = []) => {
+  const seeded = (sessions: S[] = [top()], approvals: PendingApproval[] = [], subAgents: S[] = []) => {
     const t = make();
     t.sessions(sessions);
+    t.subAgents(subAgents);
     t.approvalsSnapshot(approvals);
     return t;
+  };
+  const bodies = () => delivered.map((d) => d.summary.body);
+  /** A turn, start to end. */
+  const turn = (t: ReturnType<typeof make>, s: S, lastTurn: S['lastTurn'] = 'completed') => {
+    t.session({ ...s, busy: true });
+    t.session({ ...s, busy: false, lastTurn });
   };
 
   it('does not notify for what is already there when the stream connects', () => {
@@ -222,5 +241,166 @@ describe('the tracker', () => {
     }
     vi.advanceTimersByTime(BUNDLE_MS);
     expect(delivered.map((d) => [d.summary.body, d.alert])).toEqual([['4 agents failed', true]]);
+  });
+
+  describe("Kelpie's turns", () => {
+    it('stay quiet while its agents work, and notify once everything has stopped', () => {
+      const t = seeded();
+      // "I've started 3 agents": they are working as its turn ends.
+      t.session(top({ busy: true }));
+      for (const id of ['a1', 'a2', 'a3']) t.session(agent({ id, busy: true }));
+      t.session(top({ lastTurn: 'completed' }));
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(delivered).toEqual([]);
+
+      // One reports in, Kelpie takes a turn on it while the others work.
+      t.session(agent({ id: 'a1', lastTurn: 'completed' }));
+      turn(t, top());
+      t.session(agent({ id: 'a2', lastTurn: 'completed' }));
+      turn(t, top());
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(delivered).toEqual([]);
+
+      // The last one: Kelpie's roll-up is the person's.
+      t.session(agent({ id: 'a3', lastTurn: 'completed' }));
+      expect(delivered).toEqual([]);
+      turn(t, top());
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(bodies()).toEqual(['Kelpie replied']);
+    });
+
+    it('drop a reply when Kelpie or an agent starts again within the bundle window', () => {
+      const t = seeded();
+      turn(t, top());
+      t.session(agent({ busy: true }));
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(delivered).toEqual([]);
+    });
+
+    it("only count the round-up's own agents", () => {
+      const t = seeded([top(), top({ id: 'r2', title: 'Billing' })], [], [agent({ id: 'b1', parentId: 'r2', busy: true })]);
+      turn(t, top());
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(bodies()).toEqual(['Kelpie replied']);
+    });
+
+    it('do not hide approvals, plans or failures raised while agents work', () => {
+      const t = seeded([top()], [], [agent({ id: 'a2', busy: true }), agent({ id: 'a3', busy: true })]);
+      t.approvals('r1', [ask({ sessionId: 'a2' }), ask({ tool: 'ExitPlanMode', sessionId: 'r1', agentTitle: 'Kelpie' })]);
+      turn(t, agent({ id: 'a3' }), 'failed');
+      turn(t, top(), 'failed');
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(bodies()).toEqual(['Checkout API needs approval · A plan is ready for review · 2 agents failed']);
+    });
+
+    it("at the 'all' level, notify for every agent finishing but not for the turns in between", () => {
+      settings = { ...settings, level: 'all' };
+      const t = seeded([top()], [], [agent({ id: 'a1', busy: true }), agent({ id: 'a2', busy: true })]);
+      t.session(agent({ id: 'a1', lastTurn: 'completed' }));
+      turn(t, top());
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(bodies()).toEqual(['Checkout API finished']);
+      t.session(agent({ id: 'a2', title: 'Billing API', lastTurn: 'completed' }));
+      turn(t, top());
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(bodies()[1]).toBe('Kelpie replied · 2 agents finished');
+    });
+
+    it('forget a deleted agent: it no longer keeps the round-up working', () => {
+      const t = seeded([top()], [], [agent({ busy: true })]);
+      t.deleted('a1');
+      turn(t, top());
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(bodies()).toEqual(['Kelpie replied']);
+    });
+  });
+
+  describe('reconnecting', () => {
+    it('takes every snapshot as the state of things: what changed while disconnected is not news', () => {
+      const t = seeded([top({ busy: true }), top({ id: 'r2', title: 'Billing' })], [], [agent({ busy: true })]);
+      // The laptop slept: the round-up finished and approvals were raised meanwhile.
+      t.sessions([top({ lastTurn: 'completed' }), top({ id: 'r2', title: 'Billing' })]);
+      t.subAgents([agent({ lastTurn: 'completed' })]);
+      t.approvalsSnapshot([ask(), ask({ roundUpId: 'r2', sessionId: 'b1' })]);
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(delivered).toEqual([]);
+
+      // Live updates after it are news as before.
+      t.approvals('r2', [ask({ roundUpId: 'r2', sessionId: 'b1', requestId: 'fresh' })]);
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(delivered.map((d) => d.summary.title)).toEqual(['Billing']);
+    });
+
+    it("drops the agents' old state, and takes theirs from the sub-agents snapshot", () => {
+      settings = { ...settings, level: 'all' };
+      const t = seeded([top()], [], [agent({ busy: true }), agent({ id: 'a2', busy: true })]);
+      // a1 stopped while disconnected; a2 is still working.
+      t.sessions([top()]);
+      t.subAgents([agent({ lastTurn: 'completed' }), agent({ id: 'a2', busy: true })]);
+      turn(t, top());
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(delivered).toEqual([]);
+      t.session(agent({ id: 'a2', title: 'Billing API', lastTurn: 'completed' }));
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(bodies()).toEqual(['Billing API finished']);
+    });
+
+    it('forgets agents an old daemon does not snapshot, rather than wait on them', () => {
+      const t = seeded([top()], [], [agent({ busy: true })]);
+      t.sessions([top()]);
+      turn(t, top());
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(bodies()).toEqual(['Kelpie replied']);
+    });
+  });
+
+  describe('seen and the tray', () => {
+    it('starts over once the person has looked, and drops what was about a deleted round-up', () => {
+      const t = seeded([top(), top({ id: 'r2', title: 'Billing' })]);
+      turn(t, top());
+      turn(t, top({ id: 'r2', title: 'Billing' }));
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(t.unseen()).toHaveLength(2);
+      t.deleted('r2');
+      expect(t.unseen().map((i) => i.roundUpId)).toEqual(['r1']);
+      t.seen();
+      expect(t.unseen()).toEqual([]);
+
+      vi.advanceTimersByTime(ALERT_COOLDOWN_MS);
+      t.approvals('r1', [ask()]);
+      vi.advanceTimersByTime(BUNDLE_MS);
+      // What they saw is not repeated.
+      expect(delivered.at(-1)).toEqual({ summary: { title: 'Fix login', body: 'Checkout API needs approval', path: '/r/r1' }, alert: true });
+    });
+
+    it('holds a bundle back until the cooldown when there is no notification left to update quietly', () => {
+      const t = seeded();
+      t.approvals('r1', [ask()]);
+      vi.advanceTimersByTime(BUNDLE_MS);
+      inTray = false; // dismissed
+      turn(t, top());
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(delivered).toHaveLength(1);
+      // The cooldown runs from the first banner, which went out a bundle window ago.
+      vi.advanceTimersByTime(ALERT_COOLDOWN_MS - BUNDLE_MS - 1);
+      expect(delivered).toHaveLength(1);
+      vi.advanceTimersByTime(1);
+      expect(delivered.map((d) => [d.summary.body, d.alert])).toEqual([
+        ['Checkout API needs approval', true],
+        ['Checkout API needs approval · Kelpie replied', true],
+      ]);
+    });
+
+    it('drops a held-back banner once the person has looked', () => {
+      const t = seeded();
+      t.approvals('r1', [ask()]);
+      vi.advanceTimersByTime(BUNDLE_MS);
+      inTray = false;
+      turn(t, top());
+      vi.advanceTimersByTime(BUNDLE_MS);
+      t.seen();
+      vi.advanceTimersByTime(ALERT_COOLDOWN_MS);
+      expect(delivered).toHaveLength(1);
+    });
   });
 });

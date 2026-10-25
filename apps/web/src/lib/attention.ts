@@ -1,5 +1,5 @@
 import { isPlan, type PendingApproval } from './approvals.js';
-import { NEW_TITLE, roundUpPath, type RoundUp } from './round-ups.js';
+import { roundUpPath, titleOf as roundUpTitle, type RoundUp } from './round-ups.js';
 
 /**
  * What needs the person, worked out from the daemon's event stream; and how it is put to them
@@ -13,8 +13,28 @@ export type AttentionLevel = 'needed' | 'all';
 export interface AttentionSettings {
   enabled: boolean;
   sound: boolean;
-  /** `needed`: approvals, plans, Kelpie's replies and failures. `all`: also every sub-agent finishing. */
+  /**
+   * `needed`: approvals, plans and failures straight away, and Kelpie's (the orchestrator's) replies
+   * once its round-up has gone fully idle. `all`: also every sub-agent finishing.
+   */
   level: AttentionLevel;
+}
+
+/** Off until the person turns them on. */
+export const DEFAULT_SETTINGS: AttentionSettings = { enabled: false, sound: true, level: 'needed' };
+
+/** Stored settings, with the defaults for whatever is missing or malformed. */
+export function parseSettings(raw: string | null): AttentionSettings {
+  try {
+    const v = (JSON.parse(raw ?? '{}') ?? {}) as Partial<AttentionSettings>;
+    return {
+      enabled: typeof v.enabled === 'boolean' ? v.enabled : DEFAULT_SETTINGS.enabled,
+      sound: typeof v.sound === 'boolean' ? v.sound : DEFAULT_SETTINGS.sound,
+      level: v.level === 'all' ? 'all' : DEFAULT_SETTINGS.level,
+    };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
 }
 
 /** In priority order: what a mixed bundle leads with and where clicking it goes. */
@@ -49,17 +69,28 @@ export function endedTurn(prev: SessionLike | undefined, next: SessionLike): 'co
 }
 
 /**
- * What a session update asks of the person. Kelpie's (the orchestrator's) finished turn is a reply
- * to them; a sub-agent finishing is not — Kelpie hears of it and rolls it up — unless they asked
- * for every agent. Failures always are.
+ * A round-up has gone fully idle: Kelpie (its orchestrator) isn't busy and none of its sub-agents is
+ * working. Kelpie takes a turn whenever agents report in; only once everything has stopped is its
+ * reply (a roll-up, a question) the person's to pick up.
  */
-export function classifySession(prev: SessionLike | undefined, next: SessionLike, level: AttentionLevel): Attention | undefined {
+export function fullyIdle(roundUpId: string, sessions: Iterable<SessionLike>): boolean {
+  for (const s of sessions) if (s.busy && (s.id === roundUpId || s.parentId === roundUpId)) return false;
+  return true;
+}
+
+/**
+ * What a session update asks of the person. Kelpie's finished turn is a reply to them if `idle`
+ * (its round-up has gone fully idle, see `fullyIdle`); turns in between — "I've started 5 agents",
+ * one agent's report while others work — are not. A sub-agent finishing is not either — Kelpie
+ * hears of it and rolls it up — unless they asked for every agent. Failures always are.
+ */
+export function classifySession(prev: SessionLike | undefined, next: SessionLike, level: AttentionLevel, idle: boolean): Attention | undefined {
   const ended = endedTurn(prev, next);
   if (!ended) return undefined;
   const top = !next.parentId;
   const base = { roundUpId: next.parentId ?? next.id, sessionId: next.id, who: top ? 'Kelpie' : next.title || 'An agent' };
   if (ended === 'failed') return { ...base, kind: 'failed', key: `failed:${next.id}` };
-  if (top) return { ...base, kind: 'reply', key: `reply:${next.id}` };
+  if (top) return idle ? { ...base, kind: 'reply', key: `reply:${next.id}` } : undefined;
   return level === 'all' ? { ...base, kind: 'finished', key: `finished:${next.id}` } : undefined;
 }
 
@@ -133,20 +164,29 @@ export interface Delivery {
 
 export interface AttentionOptions {
   settings: () => AttentionSettings;
-  /** The tab is hidden or the window isn't focused: only then is the person notified. */
+  /** The person isn't looking at Kelpie (in any tab): only then are they notified. */
   away: () => boolean;
+  /**
+   * The last notification is still in the tray (not dismissed, nor closed as they came back): only
+   * then can a bundle inside the cooldown update it quietly. Without one, it waits for the cooldown.
+   */
+  showing?: () => boolean;
   deliver: (d: Delivery) => void;
-  now?: () => number;
-  setTimer?: (fn: () => void, ms: number) => unknown;
-  clearTimer?: (t: unknown) => void;
 }
 
 export interface AttentionTracker {
-  /** The round-up list, as the stream sends it on every (re)connect. */
+  /**
+   * The round-up list, as the stream sends it on every (re)connect: the state of things, never news.
+   * Sub-agents are forgotten too, until `subAgents` (sent straight after) says where they are.
+   */
   sessions(list: readonly SessionLike[]): void;
+  /** Every sub-agent, as the stream (re)connects: the state of things, never news. */
+  subAgents(list: readonly SessionLike[]): void;
   /** One session (a round-up or a sub-agent) changed. */
   session(next: SessionLike): void;
-  /** Every round-up's open approvals, as the stream connects. */
+  /** A round-up or a sub-agent was deleted. */
+  deleted(id: string): void;
+  /** Every round-up's open approvals, as the stream (re)connects: the state of things, never news. */
   approvalsSnapshot(list: readonly PendingApproval[]): void;
   /** One round-up's open approvals, whenever they change. */
   approvals(roundUpId: string, list: readonly PendingApproval[]): void;
@@ -155,19 +195,15 @@ export interface AttentionTracker {
   /** What has been notified since they last looked. */
   unseen(): readonly Attention[];
   subscribe(listener: () => void): () => void;
-  dispose(): void;
 }
 
 export function createAttention(opts: AttentionOptions): AttentionTracker {
-  const now = opts.now ?? Date.now;
-  const setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
-  const clearTimer = opts.clearTimer ?? ((t) => clearTimeout(t as ReturnType<typeof setTimeout>));
   const known = new Map<string, SessionLike>();
   const pending = new Map<string, PendingApproval>();
-  let seededSessions = false;
-  let seededApprovals = false;
   let bundle: Attention[] = [];
-  let timer: unknown;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  /** A banner held back until the cooldown is over, there being no notification to update quietly. */
+  let held: ReturnType<typeof setTimeout> | undefined;
   let unseen = new Map<string, Attention>();
   let unseenList: readonly Attention[] = [];
   let lastAlert = -Infinity;
@@ -177,61 +213,84 @@ export function createAttention(opts: AttentionOptions): AttentionTracker {
     unseenList = [...unseen.values()];
     listeners.forEach((l) => l());
   };
-  const titleOf = (id: string) => known.get(id)?.title || NEW_TITLE;
+  const titleOf = (id: string) => roundUpTitle(known.get(id));
   // Answered meanwhile (here, on another device, by a saved rule): no longer news.
   const live = (i: Attention) => (i.kind !== 'approval' && i.kind !== 'plan') || pending.has(i.key.slice(i.kind.length + 1));
+  // Kelpie (or an agent) started again within the bundle window: the reply was one in between.
+  const settled = (i: Attention) => i.kind !== 'reply' || fullyIdle(i.roundUpId, known.values());
 
-  const flush = () => {
-    timer = undefined;
-    const fresh = bundle.filter(live);
-    bundle = [];
-    if (!fresh.length || !opts.away()) return;
-    for (const i of fresh) unseen.set(i.key, i);
+  /** Puts everything unseen to the person: a banner and the chime, or a quiet update inside the cooldown. */
+  const notify = () => {
     for (const [k, i] of unseen) if (!live(i)) unseen.delete(k);
     changed();
     const summary = summarize(unseenList, titleOf);
     if (!summary) return;
-    const t = now();
-    const alert = t - lastAlert >= ALERT_COOLDOWN_MS;
-    if (alert) lastAlert = t;
-    opts.deliver({ summary, alert });
+    const t = Date.now();
+    const wait = lastAlert + ALERT_COOLDOWN_MS - t;
+    if (wait <= 0) {
+      lastAlert = t;
+      opts.deliver({ summary, alert: true });
+    } else if (opts.showing?.() ?? true) {
+      opts.deliver({ summary, alert: false });
+    } else {
+      held ??= setTimeout(() => {
+        held = undefined;
+        if (opts.away()) notify();
+      }, wait);
+    }
+  };
+
+  const flush = () => {
+    timer = undefined;
+    const fresh = bundle.filter((i) => live(i) && settled(i));
+    bundle = [];
+    if (!fresh.length || !opts.away()) return;
+    for (const i of fresh) unseen.set(i.key, i);
+    notify();
   };
 
   const add = (items: Attention[]) => {
     const { enabled } = opts.settings();
     if (!enabled || !items.length) return;
     bundle.push(...items);
-    timer ??= setTimer(flush, BUNDLE_MS);
-  };
-
-  const observe = (next: SessionLike, notify: boolean) => {
-    const prev = known.get(next.id);
-    known.set(next.id, next);
-    if (!notify) return;
-    const item = classifySession(prev, next, opts.settings().level);
-    if (item) add([item]);
+    timer ??= setTimeout(flush, BUNDLE_MS);
   };
 
   /** Swaps in an approvals list; what wasn't open before is news. */
-  const replace = (keep: (a: PendingApproval) => boolean, list: readonly PendingApproval[], notify: boolean) => {
+  const replace = (keep: (a: PendingApproval) => boolean, list: readonly PendingApproval[], news: boolean) => {
     const before = new Set(pending.keys());
     for (const [k, a] of pending) if (!keep(a)) pending.delete(k);
     for (const a of list) pending.set(approvalKey(a), a);
-    if (notify) add(newApprovals(before, list));
+    if (news) add(newApprovals(before, list));
   };
 
   return {
     sessions(list) {
-      for (const s of list) observe(s, seededSessions);
-      seededSessions = true;
+      known.clear();
+      for (const s of list) known.set(s.id, s);
     },
-    session: (next) => observe(next, seededSessions),
-    approvalsSnapshot(list) {
-      replace(() => false, list, seededApprovals);
-      seededApprovals = true;
+    subAgents(list) {
+      for (const s of list) known.set(s.id, s);
     },
-    approvals: (roundUpId, list) => replace((a) => a.roundUpId !== roundUpId, list, seededApprovals),
+    session(next) {
+      const prev = known.get(next.id);
+      known.set(next.id, next);
+      const item = classifySession(prev, next, opts.settings().level, fullyIdle(next.parentId ?? next.id, known.values()));
+      if (item) add([item]);
+    },
+    deleted(id) {
+      known.delete(id);
+      const about = (i: Attention) => i.roundUpId === id || i.sessionId === id;
+      bundle = bundle.filter((i) => !about(i));
+      if (![...unseen.values()].some(about)) return;
+      for (const [k, i] of unseen) if (about(i)) unseen.delete(k);
+      changed();
+    },
+    approvalsSnapshot: (list) => replace(() => false, list, false),
+    approvals: (roundUpId, list) => replace((a) => a.roundUpId !== roundUpId, list, true),
     seen() {
+      clearTimeout(held);
+      held = undefined;
       if (!unseen.size) return;
       unseen = new Map();
       changed();
@@ -240,11 +299,6 @@ export function createAttention(opts: AttentionOptions): AttentionTracker {
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
-    },
-    dispose() {
-      if (timer !== undefined) clearTimer(timer);
-      timer = undefined;
-      bundle = [];
     },
   };
 }

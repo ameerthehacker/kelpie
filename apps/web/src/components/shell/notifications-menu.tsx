@@ -1,5 +1,5 @@
 import { BellIcon, BellOffIcon, XIcon } from 'lucide-react';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -21,11 +21,19 @@ const keepOpen = (e: Event) => e.preventDefault();
 export function NotificationsMenu() {
   const settings = useNotificationSettings();
   const p = permission();
+  const hintId = useId();
+  const levelId = useId();
   const Icon = settings.enabled ? BellIcon : BellOffIcon;
+  const hint =
+    p === 'unsupported'
+      ? 'This browser can’t show notifications here: they need HTTPS or localhost. The sound still plays.'
+      : settings.enabled && p === 'denied'
+        ? 'The browser blocks Kelpie’s notifications; allow them in its site settings. The sound still plays.'
+        : undefined;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        aria-label="Notification settings"
+        aria-label={`Notifications ${settings.enabled ? 'on' : 'off'}`}
         title={settings.enabled ? 'Notifications on' : 'Notifications off'}
         className="bg-chip text-mu2 hover:text-fg data-[state=open]:text-fg flex h-[34px] items-center gap-1.5 rounded-full px-3 text-xs"
       >
@@ -36,6 +44,7 @@ export function NotificationsMenu() {
         <DropdownMenuLabel>Notifications</DropdownMenuLabel>
         <DropdownMenuCheckboxItem
           checked={settings.enabled}
+          aria-describedby={hint ? hintId : undefined}
           onSelect={keepOpen}
           onCheckedChange={(on) => (on ? void enableNotifications() : setNotificationSettings({ enabled: false }))}
         >
@@ -52,14 +61,21 @@ export function NotificationsMenu() {
         >
           Play a sound
         </DropdownMenuCheckboxItem>
-        {settings.enabled && p === 'denied' && (
-          <p className="text-mu2 px-1.5 py-1 text-xs">The browser blocks Kelpie’s notifications; allow them in its site settings. The sound still plays.</p>
+        {hint && (
+          <p id={hintId} className="text-mu2 px-1.5 py-1 text-xs">
+            {hint}
+          </p>
         )}
         <DropdownMenuSeparator />
         <DropdownMenuLabel>Tell me</DropdownMenuLabel>
         <DropdownMenuRadioGroup value={settings.level} onValueChange={(level) => setNotificationSettings({ level: level as AttentionLevel })}>
-          <DropdownMenuRadioItem value="needed" disabled={!settings.enabled} onSelect={keepOpen}>
-            Only when I’m needed
+          <DropdownMenuRadioItem value="needed" disabled={!settings.enabled} onSelect={keepOpen} aria-describedby={levelId} className="items-start">
+            <span className="flex flex-col gap-0.5">
+              Only when I’m needed
+              <span id={levelId} className="text-mu2 text-xs leading-snug">
+                Approvals, plans and failures right away; Kelpie’s reply once it and all its agents have stopped
+              </span>
+            </span>
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="all" disabled={!settings.enabled} onSelect={keepOpen}>
             Also when any agent finishes
@@ -98,7 +114,7 @@ export function NotificationPrompt() {
       <div className="flex items-start gap-2">
         <BellIcon className="text-mu2 mt-0.5 size-3.5 shrink-0" strokeWidth={1.9} />
         <span className="flex-1 leading-snug">Get a ping when agents need you, with a sound.</span>
-        <button type="button" onClick={dismiss} aria-label="Dismiss" className="text-mu2 hover:text-fg -mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md">
+        <button type="button" onClick={dismiss} aria-label="Dismiss the offer to turn on notifications" className="text-mu2 hover:text-fg -mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md">
           <XIcon className="size-3.5" />
         </button>
       </div>
