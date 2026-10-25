@@ -1,10 +1,11 @@
-import { MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SunIcon } from 'lucide-react';
+import { CommandIcon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SunIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { StatusDot } from '@/components/agents/agent-bits';
 import { useAgentPane } from '@/components/agents/pane-state';
 import { HarnessMark } from '@/components/harness-mark';
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { Kbd } from '@/components/ui/kbd';
 import { roundUpPath, titleOf, type RoundUp } from '@/lib/round-ups';
 import { setTheme } from '@/lib/theme';
 
@@ -36,11 +37,14 @@ export function Search({ roundUps }: { roundUps: RoundUp[] | undefined }) {
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Search (⌘K)"
-        className="bg-chip text-mu hover:bg-raise flex h-[34px] shrink-0 items-center gap-2 rounded-full pr-2 pl-3 text-[13px]"
+        className="bg-chip text-mu hover:bg-raise flex h-[34px] shrink-0 items-center gap-2 rounded-full pr-2.5 pl-3 text-[13px]"
       >
         <SearchIcon className="size-3.5" strokeWidth={2} />
         <span className="max-sm:hidden">Search</span>
-        <span className="bg-raise text-mu rounded-md px-1.5 py-px font-mono text-[11px] max-sm:hidden">⌘K</span>
+        {/* ⌘ as an icon: neither Geist face has the glyph, and the fallback font draws it small and off the baseline. */}
+        <Kbd className="border-ln2 bg-surf text-mu2 ml-1 gap-0.5 rounded-[calc(var(--radius)-7px)] border px-1.5 text-[11px] leading-none max-sm:hidden [&_svg:not([class*='size-'])]:size-2.5">
+          <CommandIcon strokeWidth={2.25} />K
+        </Kbd>
       </button>
       <CommandDialog open={open} onOpenChange={setOpen} title="Search" description="Jump to a round-up or an agent" className="top-[18vh] sm:max-w-2xl">
         {/* This CommandDialog leaves the cmdk root to its children. */}
