@@ -65,6 +65,8 @@ export interface AgentInfo {
   title: string;
   harness: string;
   writes: boolean;
+  /** Given the Claude in Chrome tools. */
+  browser?: boolean;
   /** Muster, or ordinary work. */
   kind: 'worker' | 'muster';
   /** A writer's own branch, and whether its work is still to be mustered, mustered, or standalone. */
@@ -90,6 +92,8 @@ export interface SpawnInput {
   in?: string | undefined;
   /** Files from the scratch folder to list in the brief. */
   files?: string[] | undefined;
+  /** Give it the Claude in Chrome tools: it drives the person's own, logged-in browser. */
+  browser?: boolean | undefined;
 }
 
 export interface AgentList {
@@ -168,7 +172,11 @@ export class Orchestrator implements SessionHooks {
         permissionMode: agentMode(session.mode),
         allowedTools: scratchRules,
         ...(scratch ? { addDirs: [scratch] } : {}),
-        appendSystemPrompt: (session.kind === 'muster' && place ? musterPrompt(place) : agentPrompt(session.writes, place, scratch)) + preface,
+        // The person's one browser, shared by every agent given it: only when the orchestrator asked.
+        // Its tools are asked about like any other (auto mode's checks, or the person); none is allowed by rule.
+        browser: session.browser,
+        appendSystemPrompt:
+          (session.kind === 'muster' && place ? musterPrompt(place) : agentPrompt(session.writes, place, scratch, session.browser)) + preface,
       };
     }
     const token = randomBytes(32).toString('base64url');
@@ -300,7 +308,14 @@ export class Orchestrator implements SessionHooks {
     const send = (child: Session) => child.send(input.task, 'orchestrator', files.length ? { attachments: files } : {});
     // One line: it heads notifications and the UI.
     const title = input.title.replace(/\s+/g, ' ').trim().slice(0, 120) || 'Agent';
-    const opts = { parentId: parent.id, role: 'agent' as const, writes: input.writes, title, ...(input.model ? { model: input.model } : {}) };
+    const opts = {
+      parentId: parent.id,
+      role: 'agent' as const,
+      writes: input.writes,
+      title,
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.browser ? { browser: true } : {}),
+    };
     const repo = this.worktrees ? await this.worktrees.repoOf(parent.cwd) : undefined;
     // After the only await before an agent exists or is counted as starting: no second call slips past.
     this.checkCap(parent);
@@ -743,6 +758,7 @@ export class Orchestrator implements SessionHooks {
       title: c.title,
       harness: info.harness,
       writes: c.writes,
+      ...(c.browser ? { browser: true } : {}),
       kind: c.kind,
       ...(row ? { branch: row.branch, worktree: row.state, ...(row.deliver ? { deliver: row.deliver } : {}) } : {}),
       status: this.isWorking(c) ? (c.approvals().length ? 'needs approval' : 'working') : this.waiting.has(c.id) ? 'waiting' : 'idle',

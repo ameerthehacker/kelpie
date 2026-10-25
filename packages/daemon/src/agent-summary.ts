@@ -12,6 +12,8 @@ export interface AgentSummary {
   /** The model the harness reports, once it has started. */
   model: string | undefined;
   writes: boolean;
+  /** Given the Claude in Chrome tools: it may drive the person's own browser. */
+  browser: boolean;
   /** `needs-approval`: working, but waiting on the person to allow something. */
   status: 'working' | 'needs-approval' | 'done' | 'failed' | 'stopped' | 'idle';
   /** One line on what it is doing, or what it last said. */

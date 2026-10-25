@@ -49,6 +49,13 @@ function server(orch: Orchestrator, parent: Session): McpServer {
         in: z.string().optional().describe("Read-only agents only: an agent id whose worktree to look at (e.g. to review its work). Default: your feature branch."),
         harness: Harness.optional().describe('Which coding agent runs it. Default claude-code.'),
         model: z.string().optional().describe('Model override; omit to use the default.'),
+        browser: z
+          .boolean()
+          .optional()
+          .describe(
+            "Give this agent the Claude in Chrome tools to drive the person's logged-in Chrome. Use only when a page needs a real browser " +
+              '(it renders only there, or needs their login); WebFetch does for public pages. Every such agent shares the one browser.',
+          ),
         files,
       },
     },

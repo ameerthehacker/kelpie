@@ -28,6 +28,8 @@ export interface SessionInfo {
   role: 'orchestrator' | 'agent';
   /** A sub-agent allowed to change files. */
   writes: boolean;
+  /** A sub-agent given the Claude in Chrome tools (the person's own browser). */
+  browser: boolean;
   /** The model asked for, if not the harness's default. */
   model: string | undefined;
   /** A sub-agent's job: ordinary work, or Muster. */
@@ -134,6 +136,8 @@ export interface CreateOptions {
   baseCommit?: string;
   role?: 'orchestrator' | 'agent';
   writes?: boolean;
+  /** Give it the Claude in Chrome tools, for every process it runs. */
+  browser?: boolean;
   title?: string;
   model?: string;
   mode?: Mode;
@@ -362,6 +366,10 @@ export class Session {
     return this.row.writes;
   }
 
+  get browser(): boolean {
+    return this.row.browser;
+  }
+
   get resumePending(): boolean {
     return this.row.resumePending;
   }
@@ -375,7 +383,7 @@ export class Session {
   }
 
   info(): SessionInfo {
-    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes, model, kind, baseBranch, baseCommit } = this.row;
+    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes, browser, model, kind, baseBranch, baseCommit } = this.row;
     return {
       id,
       title,
@@ -389,6 +397,7 @@ export class Session {
       parentId: parentId ?? undefined,
       role,
       writes,
+      browser,
       model: model ?? undefined,
       kind,
       baseBranch: baseBranch ?? undefined,
@@ -399,7 +408,7 @@ export class Session {
 
   /** A sub-agent at a glance (see AgentSummary). */
   summary(): AgentSummary {
-    const { id, title, harness, writes, createdAt, updatedAt } = this.row;
+    const { id, title, harness, writes, browser, createdAt, updatedAt } = this.row;
     const t = this.lastTurnState;
     return {
       id,
@@ -408,6 +417,7 @@ export class Session {
       harness,
       model: this.modelState ?? this.row.model ?? undefined,
       writes,
+      browser,
       status: this.working ? (this.asking.size ? 'needs-approval' : 'working') : t === 'completed' ? 'done' : t === 'failed' ? 'failed' : t === 'interrupted' ? 'stopped' : 'idle',
       now: this.nowState,
       todos: this.todosState,
@@ -839,6 +849,7 @@ export class SessionManager {
       ...(opts.baseBranch ? { baseBranch: opts.baseBranch, baseCommit: opts.baseCommit ?? null } : {}),
       ...(opts.role ? { role: opts.role } : {}),
       ...(opts.writes ? { writes: true } : {}),
+      ...(opts.browser ? { browser: true } : {}),
       ...(opts.title ? { title: opts.title } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
     });

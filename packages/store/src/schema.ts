@@ -11,6 +11,8 @@ export const sessions = sqliteTable('sessions', {
   role: text('role', { enum: ['orchestrator', 'agent'] }).notNull().default('orchestrator'),
   /** A sub-agent allowed to change files (at most one is busy per cwd). */
   writes: integer('writes', { mode: 'boolean' }).notNull().default(false),
+  /** A sub-agent given the Claude in Chrome tools, to drive the person's own browser. */
+  browser: integer('browser', { mode: 'boolean' }).notNull().default(false),
   /** It was working when Kelpie stopped; the next daemon start resumes it. */
   resumePending: integer('resume_pending', { mode: 'boolean' }).notNull().default(false),
   /** A sub-agent's log index up to which its orchestrator has been told it went idle. */
