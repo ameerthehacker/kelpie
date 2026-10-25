@@ -17,6 +17,7 @@ import { WorkingStatus } from '@/components/chat/working-status';
 import { KelpieLogo } from '@/components/shell/brand';
 import { Search } from '@/components/shell/search';
 import { AppSidebar } from '@/components/shell/sidebar';
+import { WorkbenchPage } from '@/components/workbench/workbench-page';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useAgents } from '@/hooks/use-agents';
@@ -31,6 +32,7 @@ import { useSession } from '@/hooks/use-session';
 import type { AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
 import { ROUND_UP_ROUTE, roundUpPath, roundUpSummary, shortPath, titleOf, type RoundUp } from '@/lib/round-ups';
+import { WORKBENCH_ROUTE } from '@/lib/workbench';
 
 const NO_AGENTS: AgentSummary[] = [];
 const NAV_KEY = 'kelpie.nav';
@@ -90,6 +92,8 @@ function EmptyState({ cwd }: { cwd: string | undefined }) {
 export function App() {
   const roundUpId = useMatch(ROUND_UP_ROUTE)?.params.roundUpId;
   const onApprovals = !!useMatch('/approvals');
+  const linkedCard = useMatch(WORKBENCH_ROUTE)?.params.cardId;
+  const onWorkbench = !!useMatch('/workbench') || !!linkedCard;
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const isMobile = useIsMobile();
@@ -138,9 +142,9 @@ export function App() {
   const waiting = allApprovals.length + unseen.filter((i) => i.kind !== 'approval' && i.kind !== 'plan').length;
 
   useEffect(() => {
-    const title = roundUpId ? `${titleOf(current)} · kelpie` : 'kelpie';
+    const title = roundUpId ? `${titleOf(current)} · kelpie` : onWorkbench ? 'Workbench · kelpie' : 'kelpie';
     document.title = waiting ? `(${waiting}) ${title}` : title;
-  }, [roundUpId, current, waiting]);
+  }, [roundUpId, current, waiting, onWorkbench]);
   useEffect(() => setModelError(undefined), [roundUpId]);
 
   const changeModel = (next: string) => {
@@ -226,6 +230,8 @@ export function App() {
 
             {onApprovals ? (
               <ApprovalsPage roundUps={roundUps} />
+            ) : onWorkbench ? (
+              <WorkbenchPage cardId={linkedCard} />
             ) : (
               <>
                 <ChatLog key={roundUpId ?? 'new'} id={roundUpId} content={items} className="min-h-0 flex-1">
