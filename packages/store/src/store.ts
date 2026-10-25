@@ -20,6 +20,11 @@ export type NewAttachment = Omit<AttachmentRow, 'createdAt'>;
 
 const MIGRATIONS = join(import.meta.dirname, '../drizzle');
 
+export interface StoreOptions {
+  /** Where the migrations are, when not beside this source (a bundled build ships its own copy). */
+  migrationsFolder?: string;
+}
+
 /**
  * Kelpie's persistent state: round-ups and their event logs. Synchronous, like
  * better-sqlite3 underneath, so a write is done by the time the call returns.
@@ -27,14 +32,17 @@ const MIGRATIONS = join(import.meta.dirname, '../drizzle');
 export class Store {
   private readonly db: BetterSQLite3Database<typeof schema>;
 
-  constructor(private readonly sqlite: Database.Database) {
+  constructor(
+    private readonly sqlite: Database.Database,
+    opts: StoreOptions = {},
+  ) {
     sqlite.pragma('journal_mode = WAL');
     // Safe with WAL (no corruption); a power cut may lose the last commits. Without it every
     // streamed event would fsync on the event loop.
     sqlite.pragma('synchronous = NORMAL');
     sqlite.pragma('foreign_keys = ON');
     this.db = drizzle(sqlite, { schema });
-    migrate(this.db, { migrationsFolder: MIGRATIONS });
+    migrate(this.db, { migrationsFolder: opts.migrationsFolder ?? MIGRATIONS });
   }
 
   createSession(s: NewSession, now = Date.now()): SessionRow {
@@ -257,7 +265,7 @@ export class Store {
 }
 
 /** Opens (creating if needed) the store at `path`, or an in-memory one for ':memory:', and migrates it. */
-export function openStore(path: string): Store {
+export function openStore(path: string, opts: StoreOptions = {}): Store {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
-  return new Store(new Database(path));
+  return new Store(new Database(path), opts);
 }

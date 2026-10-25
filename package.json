@@ -13,7 +13,9 @@
     "test": "vitest run",
     "kelpie:run": "tsx --conditions=kelpie-src scripts/run.ts",
     "capture:claude": "tsx --conditions=kelpie-src scripts/capture-claude.ts",
-    "kelpie:serve": "tsx --conditions=kelpie-src packages/daemon/src/main.ts"
+    "kelpie:serve": "tsx --conditions=kelpie-src packages/daemon/src/main.ts",
+    "build:cli": "turbo run build --filter=kelpie-code",
+    "release": "tsx scripts/release.ts"
   },
   "devDependencies": {
     "@kelpie/adapters": "workspace:*",
@@ -21,6 +23,8 @@
     "@kelpie/protocol": "workspace:*",
     "@kelpie/store": "workspace:*",
     "@types/node": "^22.20.5",
+    "@types/semver": "^7.8.0",
+    "semver": "^7.8.5",
     "tsx": "^4.23.15",
     "turbo": "2.11.10",
     "typescript": "^7.0.2",

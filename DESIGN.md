@@ -102,6 +102,15 @@ The daemon restarts whenever its own source or an adapter's source changes. Roun
 
 In the dev runner: type a line to send another turn, Ctrl-C to interrupt the turn, and Ctrl-C again (or `/exit`) to end the session.
 
+## Distribution
+
+The npm package **`kelpie-code`** (`apps/cli`) gives a `kelpie` command that starts everything on **one port**: 3173 by default (`--port` or `KELPIE_PORT`). The daemon serves the API, the kelpie MCP server and the built UI together. `pnpm dev` is unchanged (daemon on 7317, Vite on 5173), so an installed Kelpie and a development one can run side by side.
+
+- **Startup.** `startDaemon()` (`packages/daemon/src/start.ts`) is shared by the CLI and the dev entry point (`main.ts`). It takes the data-directory lock, opens the store, listens, and then reconciles worktrees and resumes interrupted work. A taken port (`PortInUseError`) or a busy data directory (`HomeInUseError`) is reported without crashing. `close()` stops the harnesses (work in progress resumes on the next start), closes the store, and frees the lock and the port.
+- **CLI** (`apps/cli/src/cli.ts`, commander). Its options are `--port`, `--cwd`, `--home`, `--model` and `--no-open`. Before starting it checks Node 22 or newer, that the `claude` command exists, and that `--cwd` exists. It opens the browser with `open`.
+- **Package.** tsdown bundles Kelpie's own packages (`@kelpie/*`, from source) into `dist/cli.js`. Third-party dependencies, including the native `better-sqlite3`, are ordinary `dependencies`. `scripts/copy-assets.mjs` adds the built UI (`dist/web`) and the migrations (`dist/drizzle`, passed to `openStore` as `migrationsFolder`). `pnpm build:cli` builds the web app first (turbo).
+- **Releases.** `pnpm release [patch|minor|major|x.y.z] [--dry-run]` (`scripts/release.ts`) runs only on master, and only when it is clean and level with origin. It runs typecheck, tests, the build, and `npm publish --dry-run`. Then it bumps, commits and tags locally, and publishes. A failed publish undoes the commit and tag. Last, it pushes master and the tag together with `git push --atomic`. A plain `npm publish` is refused by `prepublishOnly` (it needs `KELPIE_RELEASE=1`, which only the script sets).
+
 ## Orchestrator
 
 (A Kelpie-owned task graph, with queued units and dependencies started by the daemon, is next: see TODO.md.)

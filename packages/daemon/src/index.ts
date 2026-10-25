@@ -20,3 +20,4 @@ export { Worktrees, GitError, slug, type Branch, type WorktreesOptions } from '.
 export { report, logLines, type AgentReport, type LogPage } from './orchestrator/digest.js';
 export { NOTIFICATION_TAG } from './orchestrator/prompt.js';
 export { nowOf, type AgentSummary } from './agent-summary.js';
+export { startDaemon, envNumber, limitsFromEnv, HomeInUseError, PortInUseError, type Daemon, type DaemonOptions } from './start.js';

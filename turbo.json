@@ -19,6 +19,14 @@
         "KELPIE_MODEL",
         "KELPIE_HOME"
       ]
+    },
+    "kelpie-code#build": {
+      "dependsOn": [
+        "@kelpie/web#build"
+      ],
+      "outputs": [
+        "dist/**"
+      ]
     }
   }
 }

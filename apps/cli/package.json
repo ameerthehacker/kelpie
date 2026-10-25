@@ -1,0 +1,46 @@
+{
+  "name": "kelpie-code",
+  "version": "0.0.0",
+  "description": "Kelpie: hand a coding-agent orchestrator many jobs at once, on top of your own Claude Code.",
+  "type": "module",
+  "bin": {
+    "kelpie": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ameerthehacker/kelpie.git"
+  },
+  "keywords": [
+    "claude-code",
+    "coding-agent",
+    "orchestrator",
+    "worktrees"
+  ],
+  "scripts": {
+    "build": "tsdown && node scripts/copy-assets.mjs",
+    "typecheck": "tsc -p . --noEmit",
+    "prepublishOnly": "node scripts/guard-publish.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "better-sqlite3": "13.0.3",
+    "commander": "15.0.0",
+    "drizzle-orm": "0.45.4",
+    "hono": "^4.13.13",
+    "open": "11.0.4",
+    "proper-lockfile": "4.1.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsdown": "0.23.2"
+  }
+}
