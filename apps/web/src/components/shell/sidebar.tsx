@@ -1,6 +1,6 @@
-import { MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, PencilIcon, PlusIcon, ShieldAlertIcon, SunIcon, Trash2Icon } from 'lucide-react';
+import { MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, PencilIcon, PlusIcon, SettingsIcon, ShieldAlertIcon, SunIcon, Trash2Icon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useMatch } from 'react-router';
 import { HarnessMark } from '@/components/harness-mark';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -199,6 +199,7 @@ export function AppSidebar({ roundUps, currentId, onNavigate, onRename, onDelete
     return counts;
   }, [approvals]);
   const [confirming, setConfirming] = useState<RoundUp | undefined>();
+  const onSettings = !!useMatch('/settings');
 
   return (
     <nav aria-label="Round-ups" className={cn('bg-side flex w-[260px] shrink-0 flex-col gap-1.5 rounded-[22px] px-3 pt-3.5 pb-3', className)}>
@@ -241,6 +242,16 @@ export function AppSidebar({ roundUps, currentId, onNavigate, onRename, onDelete
       </div>
 
       <Usage now={now} />
+
+      <Link
+        to="/settings"
+        onClick={onNavigate}
+        aria-current={onSettings ? 'page' : undefined}
+        className={cn('text-mu hover:bg-hov hover:text-fg mb-1 flex h-9 items-center gap-2.5 rounded-[10px] px-2.5 text-[13px]', onSettings && 'bg-sel text-fg font-medium')}
+      >
+        <SettingsIcon className="size-4" strokeWidth={1.8} />
+        Settings
+      </Link>
 
       <div className="flex items-center gap-1.5 pl-2.5">
         <span className="text-mu2 flex-1 text-[13px]">Theme</span>

@@ -3,12 +3,11 @@
  * `kelpie`: starts Kelpie (the daemon, its API and the web UI) on one loopback port, in the repo it
  * is run from, and opens the UI. Agents run on the person's own Claude Code.
  */
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import open from 'open';
-import { limitsFromEnv, PortInUseError, startDaemon } from '@kelpie/daemon';
+import { claudeCodeStatus, limitsFromEnv, PortInUseError, startDaemon, type HarnessStatus } from '@kelpie/daemon';
 
 const MIN_NODE = 22;
 const DEFAULT_PORT = 3173;
@@ -27,16 +26,15 @@ function port(value: string): number {
   return n;
 }
 
-/** Kelpie drives the person's own Claude Code; without it nothing can run. */
-function checkClaude(): void {
-  try {
-    execFileSync('claude', ['--version'], { stdio: 'ignore', timeout: 20_000 });
-  } catch {
-    fail(
-      'Kelpie runs your agents on Claude Code, but the `claude` command was not found.\n' +
-        '  Install Claude Code (https://claude.com/claude-code), run `claude` once to log in, then start Kelpie again.',
-    );
-  }
+/**
+ * Kelpie drives the person's own Claude Code, so nothing runs without it. It still starts: the UI
+ * walks them through installing and signing in, and this only says so here too.
+ */
+function claudeHint(s: HarnessStatus | undefined): string | undefined {
+  if (!s) return undefined;
+  if (!s.installed) return 'Claude Code (the `claude` command) is not installed. Kelpie shows you how to set it up, or see https://code.claude.com/docs/en/setup';
+  if (s.loggedIn === false) return 'Claude Code is not signed in. Run `claude` in a terminal and follow its sign-in; Kelpie checks again when you are back.';
+  return undefined;
 }
 
 const program = new Command()
@@ -53,7 +51,8 @@ const program = new Command()
     if (major < MIN_NODE) fail(`Kelpie needs Node ${MIN_NODE} or newer; this is ${process.versions.node}.`);
     const cwd = resolve(opts.cwd);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) fail(`not a directory: ${cwd}`);
-    checkClaude();
+    // Checked while the daemon starts; reported after its banner.
+    const claude = claudeCodeStatus().catch(() => undefined);
 
     const daemon = await startDaemon({
       cwd,
@@ -67,6 +66,8 @@ const program = new Command()
 
     console.log(`Kelpie ${version} on ${daemon.url}\n  repo  ${cwd}\n  data  ${daemon.home}\nPress Ctrl-C to stop; work under way picks up again next time.`);
     if (opts.open) open(daemon.url).catch(() => console.log(`Open ${daemon.url} in your browser.`));
+    const hint = claudeHint(await claude);
+    if (hint) console.warn(`\n${hint}`);
 
     let stopping = false;
     const stop = async () => {

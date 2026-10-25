@@ -13,6 +13,8 @@ import { ApprovalTray } from '@/components/approvals/approval-tray';
 import { ApprovalsPage } from '@/components/approvals/approvals-page';
 import { AttachmentChips } from '@/components/chat/attachments';
 import { Composer } from '@/components/chat/composer';
+import { HarnessSetupDialog } from '@/components/settings/setup-dialog';
+import { SettingsPage } from '@/components/settings/settings-page';
 import { KelpieLogo } from '@/components/shell/brand';
 import { Search } from '@/components/shell/search';
 import { AppSidebar } from '@/components/shell/sidebar';
@@ -88,6 +90,7 @@ function EmptyState({ cwd }: { cwd: string | undefined }) {
 export function App() {
   const roundUpId = useMatch(ROUND_UP_ROUTE)?.params.roundUpId;
   const onApprovals = !!useMatch('/approvals');
+  const onSettings = !!useMatch('/settings');
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const isMobile = useIsMobile();
@@ -220,6 +223,8 @@ export function App() {
 
             {onApprovals ? (
               <ApprovalsPage roundUps={roundUps} />
+            ) : onSettings ? (
+              <SettingsPage />
             ) : (
               <>
                 <Conversation key={roundUpId ?? 'new'} className="min-h-0 flex-1">
@@ -271,6 +276,8 @@ export function App() {
           </main>
           <AgentPaneSlot />
         </div>
+        {/* First run: until Claude Code is installed and signed in. Settings shows the same, so not there. */}
+        <HarnessSetupDialog hidden={onSettings} />
       </AgentPaneProvider>
     </TooltipProvider>
   );
