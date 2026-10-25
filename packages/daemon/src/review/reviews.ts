@@ -190,7 +190,11 @@ export class Reviews {
       });
     } catch (err) {
       // Submitted and queued, but the harness could not start: it is sent on the next start.
-      if (this.store.review(review.id)?.state !== 'submitted') throw new ReviewError((err as Error).message, 409);
+      if (this.store.review(review.id)?.state !== 'submitted') {
+        // An empty draft made just for this approval goes again.
+        if (!draft && !this.store.commentsOfReview(review.id).length) this.store.discardPending(roundUpId);
+        throw new ReviewError((err as Error).message, 409);
+      }
       console.error(`round-up ${roundUpId}: review submitted, but the orchestrator did not start`, err);
     } finally {
       this.changed(roundUpId);
