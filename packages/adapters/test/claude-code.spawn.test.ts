@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { KelpieEvent } from '@kelpie/protocol';
-import { claudeCode, type RunSpec } from '../src/index.js';
+import { claudeArgs, claudeCode, type RunSpec } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, 'fake-claude.mjs');
 const FIXTURES = join(import.meta.dirname, '../fixtures/claude-code');
@@ -90,5 +90,22 @@ describe('claude-code spawn', () => {
     expect(kinds.slice(-3)).toEqual(['turn.ended', 'activity', 'process.exited']);
     expect(events.at(-3)!.data).toMatchObject({ status: 'interrupted' });
     expect(events.at(-2)!.data).toEqual({ busy: false });
+  });
+});
+
+describe('claudeArgs', () => {
+  const spec: RunSpec = { cwd: '/work/repo', prompt: 'hi' };
+
+  it('turns Claude in Chrome off unless the run asks for the browser', () => {
+    // Off explicitly, so the person's "enabled by default" setting doesn't hand it to every agent.
+    for (const s of [spec, { ...spec, browser: false }]) {
+      expect(claudeArgs(s)).toContain('--no-chrome');
+      expect(claudeArgs(s)).not.toContain('--chrome');
+    }
+    const on = claudeArgs({ ...spec, browser: true });
+    expect(on).toContain('--chrome');
+    expect(on).not.toContain('--no-chrome');
+    // Its tools come with the flag, not from an allow rule.
+    expect(on).not.toContain('--allowedTools');
   });
 });

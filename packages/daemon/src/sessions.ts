@@ -3,7 +3,7 @@ import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { attachmentsBlock, mergeUsage, type Attachment, type EventOf, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
-import { claudeCode, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
+import { claudeCode, isChromeTool, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary } from './agent-summary.js';
 
@@ -28,6 +28,8 @@ export interface SessionInfo {
   role: 'orchestrator' | 'agent';
   /** A sub-agent allowed to change files. */
   writes: boolean;
+  /** A sub-agent given the Claude in Chrome tools (the person's own browser). */
+  browser: boolean;
   /** The model asked for, if not the harness's default. */
   model: string | undefined;
   /** A sub-agent's job: ordinary work, or Muster. */
@@ -135,6 +137,8 @@ export interface CreateOptions {
   baseCommit?: string;
   role?: 'orchestrator' | 'agent';
   writes?: boolean;
+  /** Give it the Claude in Chrome tools, for every process it runs. */
+  browser?: boolean;
   title?: string;
   model?: string;
   mode?: Mode;
@@ -361,6 +365,10 @@ export class Session {
     return this.row.writes;
   }
 
+  get browser(): boolean {
+    return this.row.browser;
+  }
+
   get resumePending(): boolean {
     return this.row.resumePending;
   }
@@ -374,7 +382,7 @@ export class Session {
   }
 
   info(): SessionInfo {
-    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes, model, kind, baseBranch, baseCommit } = this.row;
+    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes, browser, model, kind, baseBranch, baseCommit } = this.row;
     return {
       id,
       title,
@@ -388,6 +396,7 @@ export class Session {
       parentId: parentId ?? undefined,
       role,
       writes,
+      browser,
       model: model ?? undefined,
       kind,
       baseBranch: baseBranch ?? undefined,
@@ -398,7 +407,7 @@ export class Session {
 
   /** A sub-agent at a glance (see AgentSummary). */
   summary(): AgentSummary {
-    const { id, title, harness, writes, createdAt, updatedAt } = this.row;
+    const { id, title, harness, writes, browser, createdAt, updatedAt } = this.row;
     const t = this.lastTurnState;
     return {
       id,
@@ -407,6 +416,7 @@ export class Session {
       harness,
       model: this.modelState ?? this.row.model ?? undefined,
       writes,
+      browser,
       status: this.working ? (this.asking.size ? 'needs-approval' : 'working') : t === 'completed' ? 'done' : t === 'failed' ? 'failed' : t === 'interrupted' ? 'stopped' : 'idle',
       now: this.nowState,
       todos: this.todosState,
@@ -423,6 +433,18 @@ export class Session {
   }
 
   /**
+   * What the person allowed for a sub-agent's whole round-up. Never the Claude in Chrome tools, even
+   * by a rule saved before Kelpie stopped offering them: every use of the person's browser is asked about.
+   */
+  private savedRules(): string[] {
+    if (!this.row.parentId) return [];
+    return this.ctx.store
+      .rulesOf(this.row.parentId)
+      .map((r) => r.rule)
+      .filter((r) => !isChromeTool(r));
+  }
+
+  /**
    * Keeps track of what the harness is asking, and answers what the round-up's saved rules or the
    * hooks' policy settle; the rest waits for the person.
    */
@@ -432,7 +454,7 @@ export class Session {
       let auto: PermissionAnswer | undefined;
       try {
         const rule = event.data.rule;
-        const saved = !!rule && !!this.row.parentId && this.ctx.store.rulesOf(this.roundUpId).some((r) => r.rule === rule);
+        const saved = !!rule && this.savedRules().includes(rule);
         auto = saved ? { allow: true, by: 'kelpie' } : this.ctx.hooks.decide?.(this, event.data);
       } catch (err) {
         console.error(`session ${this.id}: permission policy failed`, err);
@@ -612,7 +634,7 @@ export class Session {
       ...hooks.specFor?.(this, { runId, fresh: !resume, hadHistory }),
     };
     // What the person allowed for the whole round-up, its agents may do without asking.
-    const saved = this.row.parentId ? store.rulesOf(this.row.parentId).map((r) => r.rule) : [];
+    const saved = this.savedRules();
     if (saved.length) spec.allowedTools = [...(spec.allowedTools ?? []), ...saved];
     const run = this.ctx.adapter.start({
       ...spec,
@@ -872,6 +894,7 @@ export class SessionManager {
       ...(opts.baseBranch ? { baseBranch: opts.baseBranch, baseCommit: opts.baseCommit ?? null } : {}),
       ...(opts.role ? { role: opts.role } : {}),
       ...(opts.writes ? { writes: true } : {}),
+      ...(opts.browser ? { browser: true } : {}),
       ...(opts.title ? { title: opts.title } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
     });
@@ -987,7 +1010,7 @@ export class SessionManager {
         const roundUp = this.sessions.get(session.roundUpId);
         if (roundUp) await this.setMode(roundUp, opts.mode);
       }
-      const rule = opts.allow && opts.remember && session.parentId ? pending.rule : undefined;
+      const rule = opts.allow && opts.remember && session.parentId && pending.rule && !isChromeTool(pending.rule) ? pending.rule : undefined;
       const ok = session.answer(
         requestId,
         opts.allow ? { allow: true, by: 'person', ...(rule ? { rules: [rule] } : {}) } : { allow: false, by: 'person', message: opts.message?.trim() || DENIED },

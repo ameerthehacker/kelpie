@@ -8,6 +8,8 @@ export interface AgentSummary {
   harness: string;
   model?: string;
   writes: boolean;
+  /** Given the Claude in Chrome tools: it may drive the person's own browser. */
+  browser: boolean;
   status: AgentStatus;
   now: string;
   todos: TodoItem[];

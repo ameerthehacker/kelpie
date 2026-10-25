@@ -1,10 +1,10 @@
 import { chmodSync, existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { openStore, type Store } from '@kelpie/store';
-import { Orchestrator, SessionManager } from '../src/index.js';
+import { Orchestrator, Session, SessionManager } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
 const FIXTURE = join(import.meta.dirname, '../../adapters/fixtures/claude-code/plain.jsonl');
@@ -28,6 +28,7 @@ type Received = { resume: string | null; text: string };
 
 const managers: SessionManager[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(managers.splice(0).map((m) => m.stopAll()));
 });
 
@@ -94,7 +95,12 @@ describe('recovery after Kelpie stops', () => {
     store = openStore(db);
     const { orch, sessions } = start(store, { FAKE_STDIN_FILE: stdin, FAKE_EVERY_TURN: '1' });
     expect(store.getSession('a')!.resumePending).toBe(true); // repair() marked what the crash cut off
+    const resumes = vi.spyOn(Session.prototype, 'resumeAfterRestart');
     await orch.recover();
+    // Sub-agents first, then their orchestrator. (Not by what each process read first: they start side by side.)
+    const order = resumes.mock.contexts.map((s) => (s as Session).id);
+    expect(order.at(-1)).toBe('orch');
+    expect(order.slice(0, -1).sort()).toEqual(['a', 'b', 'c']);
 
     const got = await waitFor(() => {
       const r = jsonLines<Received>(stdin);
@@ -108,8 +114,6 @@ describe('recovery after Kelpie stops', () => {
         { resume: 'h-orch', text: expect.stringContaining('Call list_agents to pick your state back up') },
       ]),
     );
-    // Sub-agents first, then their orchestrator.
-    expect(got.findIndex((r) => r.resume === 'h-orch')).toBeGreaterThan(got.findIndex((r) => r.resume === 'h-a'));
 
     // Once the resumed agents finish, the orchestrator hears about all three, once.
     await waitFor(() => sessions.get('orch')!.events().some((e) => e.kind === 'message' && e.data.sent && e.data.text.includes('"C"')));
@@ -160,6 +164,40 @@ describe('recovery after Kelpie stops', () => {
     const hs = store.getSession(agent.id)!.harnessSessionId;
     expect(got).toContainEqual({ resume: hs, text: expect.stringContaining('Kelpie restarted while you were working') });
     expect(got.filter((r) => r.text.includes('Call list_agents'))).toHaveLength(1);
+  });
+
+  it('resumes browser agents with the browser after a restart, one at a time', async () => {
+    const db = join(tmp('kelpie-home-'), 'kelpie.db');
+    const argsFile = join(tmp('kelpie-args-'), 'args.jsonl');
+    let store = openStore(db);
+    const first = start(store, { FAKE_HANG: '1' });
+    const orchSession = first.sessions.create();
+    await orchSession.send('Read the artifacts');
+    // Made directly, so both run: the orchestrator's tools would start only one.
+    const agents = ['One', 'Two'].map((title) => first.sessions.create(tmpdir(), { parentId: orchSession.id, role: 'agent', browser: true, title }));
+    for (const a of agents) await a.send(`Read artifact ${a.title}`, 'orchestrator');
+    await waitFor(() => agents.every((a) => a.info().harnessSessionId));
+
+    first.sessions.prepareShutdown();
+    await first.sessions.stopAll();
+    managers.length = 0;
+    store.close();
+
+    store = openStore(db);
+    const second = start(store, { FAKE_HANG: '1', FAKE_ARGS_FILE: argsFile });
+    expect(agents.map((a) => second.sessions.get(a.id)!.browser)).toEqual([true, true]);
+    await second.orch.recover();
+    // The orchestrator's own start is the one with the kelpie MCP server.
+    const agentArgs = () => jsonLines<string[]>(argsFile).filter((a) => !a.includes('--mcp-config'));
+    const [resumed] = await waitFor(() => agentArgs().length > 0 && agentArgs());
+    await sleep(300);
+    // The first is back in the browser; the other waits for it rather than share it.
+    expect(agentArgs()).toHaveLength(1);
+    expect(resumed).toContain('--chrome');
+    const hs = agents.map((a) => store.getSession(a.id)!.harnessSessionId);
+    expect(hs).toContain(resumed![resumed!.indexOf('--resume') + 1]);
+    const parent = second.sessions.get(orchSession.id)!;
+    expect(second.orch.list(parent).agents.map((a) => a.status).sort()).toEqual(['waiting', 'working']);
   });
 
   it('drops a turn its process died before reading, instead of retrying it forever', async () => {

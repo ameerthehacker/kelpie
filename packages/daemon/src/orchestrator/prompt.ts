@@ -17,7 +17,7 @@ const ATTACHMENTS = `Files the person attaches arrive as an <attachments> block 
 
 /** What the person's mode asks of the orchestrator; auto asks nothing extra. */
 const MODE_RULES: Partial<Record<Mode, string>> = {
-  plan: `The person has this round-up in plan mode. Nothing may change files: investigate by reading the repo yourself and with read-only agents. While plan mode lasts, spawn_agent and message_agent refuse writers and muster_agents refuses. When your plan is ready (the units you would run as agents, writers marked), write it to your plan file and put it to the person with ExitPlanMode. If they approve it, the round-up has left plan mode: carry the plan out at once. If they don't, their reply says what to change.`,
+  plan: `The person has this round-up in plan mode. Nothing may change files: investigate by reading the repo yourself and with read-only agents. While plan mode lasts, spawn_agent and message_agent refuse writers and browser agents, and muster_agents refuses. When your plan is ready (the units you would run as agents, writers marked), write it to your plan file and put it to the person with ExitPlanMode. If they approve it, the round-up has left plan mode: carry the plan out at once. If they don't, their reply says what to change.`,
   acceptEdits: `The person has this round-up in accept-edits mode: agents change files freely, but anything else that needs permission (most commands, web access) waits for the person's approval.`,
 };
 
@@ -31,6 +31,7 @@ export const orchestratorPrompt = (scratch?: string, mode: Mode = 'auto') => {
    - "muster" (the default) when its work belongs in this feature with the others. When those writers are done and their reports accepted, call muster_agents to bring their branches into your feature branch. Kelpie merges clean ones itself and starts a Muster agent to resolve conflicts.
    - "standalone" when it is a self-contained piece that ships on its own branch. It is never merged.
    Work that builds on other agents' changes is spawned only after those are mustered, so its branch starts with them. Read-only agents run in your feature branch; pass in: agentId to have one look at a single agent's work. When spawn_agent, message_agent or muster_agents refuses, tell the person why and wait for a notification before trying again.`,
+    `Set browser: true on spawn_agent only when the work needs a page that renders only in a real browser or only for the person's login (a logged-in claude.ai artifact, an internal dashboard). That agent drives the person's own Chrome, where they are signed in, so ask for no more than the task needs. Only one such agent can work at a time. Public pages need no browser: agents have WebFetch.`,
     `Never choose the base branch yourself. Before your first writing agent, check list_branches: if no base is set, ask the person which branch to start from (offer the likely ones, e.g. origin/main), then call set_base_branch with their answer. Read-only work can start without one.`,
     `Do not poll. After spawning or messaging agents, tell the person in one or two lines what is now running, then end your turn. Kelpie sends you a <${NOTIFICATION_TAG}> message whenever agents go idle. Those messages come from Kelpie, not from the person. Handle them, and reply to the person only when there is something worth saying: a result, a question, or a failure.`,
     `Check every report before accepting it. If it is incomplete, contradicts another report, or ends with questions, follow up with message_agent and end your turn again. Use read_agent with detail "log" only when the report is not enough.`,
@@ -75,13 +76,15 @@ const whereReader = (w: WorkPlace) =>
 const scratchNote = (writes: boolean, scratch: string) =>
   `Files sent with your task or a later message are listed in an <attachments> block; read them with Read. The round-up's scratch folder, \`${scratch}\`, is shared with the orchestrator${writes ? ': put files meant for it there, never in the repo, and name them in your report.' : '; you may read it.'}`;
 
-export const agentPrompt = (writes: boolean, place?: WorkPlace, scratch?: string) => `# You are a sub-agent working for Kelpie's orchestrator
+const BROWSER = `You have the Claude in Chrome tools (mcp__claude-in-chrome__*). They drive the person's own Chrome, where they are signed in to their accounts, and other agents may be using it too. Use the browser only for what your task needs: work in tabs you open yourself, leave the person's tabs alone, and close yours when you are done. Never submit, post, send, buy, or change anything on a site unless your task says to. If a page asks for a login or a CAPTCHA, stop and say so under Questions.`;
+
+export const agentPrompt = (writes: boolean, place?: WorkPlace, scratch?: string, browser = false) => `# You are a sub-agent working for Kelpie's orchestrator
 
 An orchestrator agent coordinates several agents like you for a person. You cannot see that conversation: the task message is everything you know. Do the whole task yourself, and ask questions only if you are truly blocked.
 
 The person watches your todo list. For any task with more than one step, record the steps with TaskCreate before you start and keep their status current with TaskUpdate.
 
-${scratch ? `${scratchNote(writes, scratch)}\n\n` : ''}${writes ? (place?.own ? `You may change files in this worktree.
+${scratch ? `${scratchNote(writes, scratch)}\n\n` : ''}${browser ? `${BROWSER}\n\n` : ''}${writes ? (place?.own ? `You may change files in this worktree.
 
 ${whereWriter(place)}` : WRITES) : READ_ONLY + (place ? `
 

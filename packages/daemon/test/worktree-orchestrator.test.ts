@@ -190,7 +190,11 @@ describe('worktrees for writing agents', () => {
 
     // Muster works in the feature branch's worktree with a brief naming what is left.
     const muster = ctx.sessions.get(data.muster.agentId)!;
-    expect(muster).toMatchObject({ kind: 'muster', cwd: home.path, writes: true });
+    expect(muster).toMatchObject({ kind: 'muster', cwd: home.path, writes: true, browser: false });
+    const musterArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile).find((a) => a.join(' ').includes("You are Muster, Kelpie's integrator")));
+    // Even if the person has Claude in Chrome on by default: Muster never drives their browser.
+    expect(musterArgv).toContain('--no-chrome');
+    expect(musterArgv).not.toContain('--chrome');
     const brief = ctx.store.firstSent(muster.id)!.text;
     expect(brief).toContain(ctx.store.worktreeOf(copy!.id)!.branch);
     expect(brief).toContain('API wins on line two');

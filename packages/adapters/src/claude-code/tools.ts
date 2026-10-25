@@ -24,6 +24,12 @@ const CATEGORY: Record<string, ToolCategory> = {
   Task: 'task',
 };
 
+/**
+ * Claude in Chrome's tools (mcp__claude-in-chrome__*), or a rule for them. They act in the person's
+ * own, signed-in browser, so no rule allows them: each use is asked about.
+ */
+export const isChromeTool = (nameOrRule: string) => /^mcp__claude-in-chrome(__|\(|$)/.test(nameOrRule);
+
 export function toolCategory(name: string): ToolCategory {
   if (name.startsWith('mcp__')) return 'mcp';
   return CATEGORY[name] ?? 'other';
@@ -71,8 +77,35 @@ export function toolTitle(name: string, input: Obj, cwd: string | undefined): st
     case 'TaskUpdate':
       return `#${input.taskId}${input.status ? ` → ${input.status}` : ''}`;
   }
+  if (isChromeTool(name)) return chromeTitle(name.slice('mcp__claude-in-chrome__'.length), input);
   if (name.startsWith('mcp__')) return name.slice('mcp__'.length).split('__').join('/');
   return name;
+}
+
+/** What a Claude in Chrome call does in the person's browser: where it goes, what it clicks, types or runs. */
+function chromeTitle(tool: string, input: Obj): string {
+  const line = (s: string) => oneLine(`Chrome: ${s}`.replace(/\s+/g, ' '));
+  const quoted = (s: unknown) => (s == null ? '' : `"${String(s)}"`);
+  // An element by its ref from read_page/find, or a point on the screenshot.
+  const target = (o: Obj) => (o.ref != null ? String(o.ref) : Array.isArray(o.coordinate) ? `(${o.coordinate.join(', ')})` : '');
+  switch (tool) {
+    case 'navigate':
+      return line(`navigate ${input.url ?? ''}`);
+    case 'computer':
+      if (input.action === 'type' || input.action === 'key') return line(`${input.action} ${quoted(input.text)}`);
+      if (input.action === 'scroll') return line(`scroll ${input.scroll_direction ?? ''} ${target(input)}`);
+      return line(`${input.action ?? tool} ${target(input)}`);
+    case 'form_input':
+      return line(`fill ${target(input)} with ${quoted(input.value)}`);
+    case 'find':
+      return line(`find ${quoted(input.query)}`);
+    case 'javascript_tool':
+      return line(`run JavaScript ${input.text ?? ''}`);
+    case 'file_upload':
+    case 'upload_image':
+      return line(`upload ${Array.isArray(input.paths) ? input.paths.join(', ') : (input.imageId ?? '')} to ${target(input)}`);
+  }
+  return line(tool);
 }
 
 /** Flattens a tool_result `content` (string or block list) into text. */
