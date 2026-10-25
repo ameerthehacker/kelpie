@@ -1,7 +1,6 @@
 import { format } from 'date-fns';
 import { ArrowUpIcon, ChevronRightIcon, ExternalLinkIcon, GitBranchIcon, ListIcon, PauseIcon, SearchIcon, XIcon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { HarnessMark } from '@/components/harness-mark';
 import { MessageResponse } from '@/components/ai-elements/message';
@@ -14,13 +13,13 @@ import { useEventLog } from '@/hooks/use-agents';
 import { useApprovals } from '@/hooks/use-approvals';
 import { groupApprovals } from '@/lib/approvals';
 import { useNow } from '@/hooks/use-now';
+import { useOpenSession } from '@/hooks/use-open-session';
 import { byAttention, elapsed, STATUS_LABEL, STATUS_ORDER, type AgentStatus, type AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
 import { buildChat } from '@/lib/chat';
 import { unechoed, type SentMessage } from '@/lib/session-state';
 import { uploadFile } from '@/lib/uploads';
 import { harnessOf, modelLabel } from '@/lib/harnesses';
-import { roundUpPath } from '@/lib/round-ups';
 import { cn } from '@/lib/utils';
 import { StatusDot, TodoList } from './agent-bits';
 import { useAgentPane } from './pane-state';
@@ -257,7 +256,7 @@ function AgentList({ agents }: { agents: AgentSummary[] }) {
 
 /** One agent: who and how it is, what it is doing right now, its todos, its timeline, and a line to it. */
 function AgentView({ agent: a }: { agent: AgentSummary }) {
-  const navigate = useNavigate();
+  const openSession = useOpenSession();
   const now = useNow(10_000);
   const [error, setError] = useState<string | undefined>();
   const log = useEventLog(a.id);
@@ -293,7 +292,7 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
             <button type="button" onClick={pause} disabled={a.status !== 'working' && a.status !== 'needs-approval'} aria-label="Pause agent" title="Pause" className={cn(iconButton, 'disabled:opacity-40')}>
               <PauseIcon className="size-3.5" strokeWidth={2.2} />
             </button>
-            <button type="button" onClick={() => navigate(roundUpPath(a.id))} aria-label="Open full session" title="Open full session" className={iconButton}>
+            <button type="button" onClick={() => openSession(a.id)} aria-label="Open full session" title="Open full session" className={iconButton}>
               <ExternalLinkIcon className="size-3.5" strokeWidth={2.2} />
             </button>
           </div>
