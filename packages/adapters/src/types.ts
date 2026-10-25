@@ -1,4 +1,4 @@
-import type { Harness, KelpieEvent, Mode } from '@kelpie/protocol';
+import type { Harness, KelpieEvent, Mode, TodoItem } from '@kelpie/protocol';
 
 export interface RunSpec {
   cwd: string;
@@ -9,6 +9,8 @@ export interface RunSpec {
   model?: string;
   /** Harness session id to continue. */
   resume?: string;
+  /** With `resume`: the session's todo list as last seen, so the harness's updates to it are not lost. */
+  todos?: TodoItem[];
   /** Defaults to 'acceptEdits'. */
   permissionMode?: string;
   /** Exact tool set; defaults to the adapter's standard set. */

@@ -237,9 +237,7 @@ export class Session {
     this.row = row;
     this.lastTurnState = ctx.store.lastEvent(row.id, 'turn.ended')?.data.status;
     if (row.parentId) {
-      // Its own list, as track() keeps it: not one a sub-agent of its own wrote.
-      const own = ctx.store.recentEvents(row.id, ['todos'], 200).find((e) => !e.parentCallId);
-      this.todosState = own?.kind === 'todos' ? own.data.items : [];
+      this.todosState = this.ownTodos();
       this.modelState = ctx.store.lastEvent(row.id, 'session.started')?.data.model;
       // Sub-agent chatter is skipped, so look back a little further than one event.
       for (const e of ctx.store.recentEvents(row.id, ['tool.started', 'message', 'turn.ended'], 20)) {
@@ -449,6 +447,12 @@ export class Session {
     }
   }
 
+  /** Its latest todo list, as track() keeps it: not one a sub-agent of its own wrote. */
+  private ownTodos(): TodoItem[] {
+    const own = this.ctx.store.recentEvents(this.id, ['todos'], 200).find((e) => !e.parentCallId);
+    return own?.kind === 'todos' ? own.data.items : [];
+  }
+
   /** Folds an event into a sub-agent's summary; true if the pane should hear about it. */
   private track(event: KelpieEvent): boolean {
     if (!this.row.parentId || !SUMMARY_KINDS.has(event.kind)) return false;
@@ -602,7 +606,8 @@ export class Session {
       prompt: texts[0]!,
       runId,
       ...(this.ctx.runsDir ? { runDir: join(this.ctx.runsDir, runId) } : {}),
-      ...(resume ? { resume } : {}),
+      // The harness keeps its todo list across a resume, but this new process has not seen it.
+      ...(resume ? { resume, todos: this.ownTodos() } : {}),
     });
     for (const text of texts.slice(1)) run.send(text);
     this.run = run;

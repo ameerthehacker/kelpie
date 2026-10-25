@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -74,6 +74,40 @@ describe('persistent round-ups', () => {
     const [first, second] = argsOf(argsFile);
     expect(first).not.toContain('--resume');
     expect(second!.slice(second!.indexOf('--resume'), second!.indexOf('--resume') + 2)).toEqual(['--resume', info!.harnessSessionId]);
+    store.close();
+  });
+
+  it('keeps tracking the todo list after a daemon restart resumes the session', async () => {
+    const db = join(tmp('kelpie-home-'), 'kelpie.db');
+    const todos = join(import.meta.dirname, '../../adapters/fixtures/claude-code/todos.jsonl');
+    // The resumed CLI only updates the tasks: it created them before the restart.
+    const raw = readFileSync(todos, 'utf8').split('\n').filter(Boolean);
+    const created = raw.flatMap((l) => JSON.parse(l).message?.content ?? []).filter((b: any) => b.name === 'TaskCreate').map((b: any) => b.id);
+    const resumed = join(tmp('kelpie-fixture-'), 'resumed.jsonl');
+    writeFileSync(resumed, raw.filter((l) => !created.some((id: string) => l.includes(id))).join('\n'));
+
+    let store = openStore(db);
+    let sessions = manager(store, { FAKE_FIXTURE: todos });
+    const session = sessions.create();
+    session.send('Make a plan');
+    await until(session, 'turn.ended');
+    await sessions.stopAll();
+    store.close();
+    // As if the restart cut it off before the tasks were done.
+    store = openStore(db);
+    store.appendEvent(session.id, store.eventCount(session.id), {
+      id: 'x:0', runId: 'x', seq: 0, ts: new Date().toISOString(), harness: 'claude-code', kind: 'todos',
+      data: { items: [{ id: '1', text: 'Count lines', status: 'pending' }, { id: '2', text: 'Report', status: 'pending' }] },
+    } as KelpieEvent);
+
+    sessions = manager(store, { FAKE_FIXTURE: resumed });
+    const reloaded = sessions.get(session.id)!;
+    const from = store.eventCount(session.id);
+    reloaded.send('Carry on');
+    const log = await until(reloaded, 'turn.ended', from);
+    await sessions.stopAll();
+    const last = log.slice(from).filter((e) => e.kind === 'todos').at(-1);
+    expect(last?.kind === 'todos' && last.data.items.map((t) => `${t.id}:${t.status}`)).toEqual(['1:completed', '2:completed']);
     store.close();
   });
 
