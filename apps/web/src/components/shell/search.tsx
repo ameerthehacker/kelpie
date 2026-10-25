@@ -6,7 +6,8 @@ import { useAgentPane } from '@/components/agents/pane-state';
 import { HarnessMark } from '@/components/harness-mark';
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Kbd } from '@/components/ui/kbd';
-import { roundUpPath, titleOf, type RoundUp } from '@/lib/round-ups';
+import { useRoundUpStatus } from '@/hooks/use-round-up-status';
+import { ROUND_UP_STATUS_LABEL, roundUpPath, titleOf, type RoundUp } from '@/lib/round-ups';
 import { setTheme } from '@/lib/theme';
 
 // userAgentData isn't in TypeScript's DOM lib yet; platform is the fallback where it's missing.
@@ -18,6 +19,7 @@ export function Search({ roundUps }: { roundUps: RoundUp[] | undefined }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const pane = useAgentPane();
+  const statusOf = useRoundUpStatus();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -76,12 +78,15 @@ export function Search({ roundUps }: { roundUps: RoundUp[] | undefined }) {
             )}
             {!!roundUps?.length && (
               <CommandGroup heading="Round-ups">
-                {roundUps.map((r) => (
-                  <CommandItem key={r.id} value={`round-up ${titleOf(r)} ${r.id}`} onSelect={run(() => navigate(roundUpPath(r.id)))}>
-                    <span className="min-w-0 flex-1 truncate">{titleOf(r)}</span>
-                    {r.busy && <StatusDot status="working" />}
-                  </CommandItem>
-                ))}
+                {roundUps.map((r) => {
+                  const status = statusOf(r);
+                  return (
+                    <CommandItem key={r.id} value={`round-up ${titleOf(r)} ${r.id}`} onSelect={run(() => navigate(roundUpPath(r.id)))}>
+                      <span className="min-w-0 flex-1 truncate">{titleOf(r)}</span>
+                      {status && <StatusDot status={status} label={ROUND_UP_STATUS_LABEL[status]} />}
+                    </CommandItem>
+                  );
+                })}
               </CommandGroup>
             )}
             <CommandGroup heading="Actions">

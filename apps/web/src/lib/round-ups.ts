@@ -1,6 +1,8 @@
 import type { Mode } from '@kelpie/protocol';
 import { formatDistanceStrict } from 'date-fns';
 import { generatePath } from 'react-router';
+import type { AgentStatus } from './agents.js';
+import type { PendingApproval } from './approvals.js';
 
 export const ROUND_UP_ROUTE = '/r/:roundUpId';
 export const roundUpPath = (roundUpId: string) => generatePath(ROUND_UP_ROUTE, { roundUpId });
@@ -73,4 +75,35 @@ export function roundUpSummary(r: RoundUp, agents: readonly { status: string }[]
   ].filter(Boolean);
   if (moving.length) return moving.join(' · ');
   return n('done') === agents.length ? `Done · ${when}` : `Idle · ${when}`;
+}
+
+/** A round-up's dot, from its orchestrator and every sub-agent: the same marks as an agent's. */
+export type RoundUpStatus = Extract<AgentStatus, 'needs-approval' | 'failed' | 'working' | 'done'>;
+
+export const ROUND_UP_STATUS_LABEL: Record<RoundUpStatus, string> = {
+  'needs-approval': 'Needs your attention',
+  failed: 'Failed',
+  working: 'Working',
+  done: 'Done',
+};
+
+type StatusSession = Pick<RoundUp, 'id' | 'busy' | 'lastTurn' | 'parentId'>;
+
+/**
+ * The whole round-up's state, Kelpie (its orchestrator) and its sub-agents together, most urgent
+ * first: something waiting on the person (an approval, a plan to decide on), then a turn that
+ * failed (a usage limit, say) and isn't being retried, then anything working, then done. A
+ * round-up that has never finished a turn has no state yet. Pure.
+ */
+export function roundUpStatus(
+  roundUp: StatusSession,
+  sessions: Iterable<StatusSession>,
+  approvals: readonly Pick<PendingApproval, 'roundUpId'>[],
+): RoundUpStatus | undefined {
+  if (approvals.some((a) => a.roundUpId === roundUp.id)) return 'needs-approval';
+  const all = [roundUp];
+  for (const s of sessions) if (s.parentId === roundUp.id) all.push(s);
+  if (all.some((s) => !s.busy && s.lastTurn === 'failed')) return 'failed';
+  if (all.some((s) => s.busy)) return 'working';
+  return all.some((s) => s.lastTurn) ? 'done' : undefined;
 }

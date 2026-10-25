@@ -10,6 +10,7 @@ import { USAGE } from './use-usage';
 import { APPROVALS } from './use-approvals';
 import type { PendingApproval } from '@/lib/approvals';
 import { attention } from './use-attention';
+import { dropSession, SUB_AGENTS, upsertSubAgent } from './use-round-up-status';
 
 const ROUND_UPS = ['round-ups'] as const;
 
@@ -45,12 +46,17 @@ export function useRoundUps() {
             attention.sessions(rows);
             void queryClient.invalidateQueries({ queryKey: AGENTS });
           },
-          // Straight after, on every (re)connect: which sub-agents are working, for notifications.
-          'sub-agents': (msg) => attention.subAgents(JSON.parse(msg.data) as RoundUp[]),
+          // Straight after, on every (re)connect: which sub-agents are working, for notifications and the sidebar's dots.
+          'sub-agents': (msg) => {
+            const rows = JSON.parse(msg.data) as RoundUp[];
+            queryClient.setQueryData(SUB_AGENTS, rows);
+            attention.subAgents(rows);
+          },
           // Sub-agents' too: notifications tell them apart from their round-up's by parentId.
           session: (msg) => {
             const info = JSON.parse(msg.data) as RoundUp;
             queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => upsert(rows, info));
+            if (info.parentId) queryClient.setQueryData<RoundUp[]>(SUB_AGENTS, (rows) => upsertSubAgent(rows, info));
             attention.session(info);
           },
           usage: (msg) => queryClient.setQueryData(USAGE, JSON.parse(msg.data) as HarnessUsage[]),
@@ -75,6 +81,7 @@ export function useRoundUps() {
           deleted: (msg) => {
             const { id } = JSON.parse(msg.data) as { id: string };
             queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => rows?.filter((r) => r.id !== id));
+            queryClient.setQueryData<RoundUp[]>(SUB_AGENTS, (rows) => dropSession(rows, id));
             attention.deleted(id);
           },
         },
@@ -89,7 +96,10 @@ export function useRoundUps() {
   });
   const remove = useMutation({
     mutationFn: (id: string) => api('DELETE', `/api/sessions/${id}`),
-    onSuccess: (_, id) => queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => rows?.filter((r) => r.id !== id)),
+    onSuccess: (_, id) => {
+      queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => rows?.filter((r) => r.id !== id));
+      queryClient.setQueryData<RoundUp[]>(SUB_AGENTS, (rows) => dropSession(rows, id));
+    },
   });
 
   const actionError = rename.error
