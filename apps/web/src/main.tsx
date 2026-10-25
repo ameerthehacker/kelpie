@@ -19,6 +19,8 @@ const router = createBrowserRouter([
       { index: true, element: null },
       { path: 'r/:roundUpId', element: null },
       { path: 'approvals', element: null },
+      { path: 'workbench', element: null },
+      { path: 'workbench/:cardId', element: null },
     ],
   },
   { path: '*', element: <Navigate to="/" replace /> },
