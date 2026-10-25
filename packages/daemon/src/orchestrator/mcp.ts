@@ -59,7 +59,7 @@ function server(orch: Orchestrator, parent: Session): McpServer {
     'list_agents',
     {
       description:
-        'The base branch, your feature branch and where it is checked out (featureCheckout, which you may read), and your sub-agents with their status (working, idle, or waiting to resume), last turn result, cost, ' +
+        'The base branch, your feature branch and where it is checked out (featureCheckout, which you may read; brought back if it was cleaned up), and your sub-agents with their status (working, idle, or waiting to resume), last turn result, cost, ' +
         'and for writers their branch and whether it is still to muster, mustered, or standalone.',
     },
     () => result(() => orch.list(parent)),
