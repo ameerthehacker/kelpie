@@ -197,7 +197,7 @@ describe('recovery after Kelpie stops', () => {
     const hs = agents.map((a) => store.getSession(a.id)!.harnessSessionId);
     expect(hs).toContain(resumed![resumed!.indexOf('--resume') + 1]);
     const parent = second.sessions.get(orchSession.id)!;
-    expect(second.orch.list(parent).agents.map((a) => a.status).sort()).toEqual(['waiting', 'working']);
+    expect((await second.orch.list(parent)).agents.map((a) => a.status).sort()).toEqual(['waiting', 'working']);
   });
 
   it('drops a turn its process died before reading, instead of retrying it forever', async () => {
