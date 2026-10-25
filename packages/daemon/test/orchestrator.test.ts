@@ -85,7 +85,7 @@ describe('orchestrator round-ups', () => {
   it('runs the orchestrator with read-only built-in tools and the kelpie MCP server, and no Bash', async () => {
     const ctx = setup();
     const { argv } = await orchestrator(ctx);
-    expect(flag(argv, '--tools')).toEqual(['Read,Grep,Glob']); // no Bash, Edit or Write without a scratch folder
+    expect(flag(argv, '--tools')).toEqual(['Read,Grep,Glob,AskUserQuestion']); // no Bash, Edit or Write without a scratch folder
     expect(ORCHESTRATOR_TOOLS).toEqual(['Read', 'Grep', 'Glob']);
     expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie']);
     // Default mode, so any edit asks and `decide` answers it; never accept-edits.
@@ -103,7 +103,7 @@ describe('orchestrator round-ups', () => {
     const ctx = setup({ FAKE_EVERY_TURN: '1', FAKE_STDIN_FILE: stdin }, { scratch: true, cwd: repo });
     const { parent, argv, call } = await orchestrator(ctx);
     const scratch = parent.scratch!;
-    expect(flag(argv, '--tools')).toEqual(['Read,Grep,Glob,Edit,Write']);
+    expect(flag(argv, '--tools')).toEqual(['Read,Grep,Glob,AskUserQuestion,Edit,Write']);
     expect(flag(argv, '--add-dir')).toEqual([scratch]);
     // No rule allows its edits, not even in the scratch folder: they ask, and `decide` answers.
     expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie', `Read(/${scratch}/**)`]);
@@ -333,7 +333,7 @@ describe('orchestrator round-ups', () => {
     expect(flag(next, '--resume')).toHaveLength(1);
     // In plan mode it runs in the harness's own plan mode, with ExitPlanMode and still no edit allow rules.
     expect(flag(next, '--permission-mode')).toEqual(['plan']);
-    expect(flag(next, '--tools')).toEqual(['Read,Grep,Glob,ExitPlanMode']);
+    expect(flag(next, '--tools')).toEqual(['Read,Grep,Glob,AskUserQuestion,ExitPlanMode']);
     expect(flag(next, '--allowedTools')).toEqual(['mcp__kelpie']);
     // Leaving plan mode takes its live harness to default mode, never accept-edits.
     const switched = vi.spyOn(parent, 'switchMode');
