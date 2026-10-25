@@ -324,8 +324,10 @@ describe('uploads', () => {
     const { sessions } = withScratch();
     const session = sessions.create();
     const saving = sessions.saveUpload(session, { name: 'a.txt', mime: 'text/plain', bytes: new Uint8Array([1]) });
+    // Watched from the start: it may fail before the deletion finishes, and must not go unhandled meanwhile.
+    const refused = expect(saving).rejects.toThrow(/deleted/);
     await sessions.delete(session.id);
-    await expect(saving).rejects.toThrow(/deleted/);
+    await refused;
     expect(existsSync(session.scratch!)).toBe(false);
   });
 

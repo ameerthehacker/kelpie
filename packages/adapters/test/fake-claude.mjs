@@ -9,7 +9,8 @@
 // each later turn too (echo, "ok", result), and FAKE_STDIN_FILE gets a line of JSON
 // { resume, text } per user turn received. FAKE_ASK=<command> asks permission to run that Bash
 // command (can_use_tool) before the first turn's output, and goes on once answered; FAKE_ANSWER_FILE
-// gets a line of JSON per answer. FAKE_ASK_TOOL=ExitPlanMode asks to put FAKE_ASK as a plan instead.
+// gets a line of JSON per answer. FAKE_ASK_TOOL=ExitPlanMode asks to put FAKE_ASK as a plan instead;
+// any other FAKE_ASK_TOOL (e.g. mcp__claude-in-chrome__navigate) asks to use that tool on the url FAKE_ASK.
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -56,7 +57,9 @@ for await (const line of createInterface({ input: process.stdin })) {
       const request =
         process.env.FAKE_ASK_TOOL === 'ExitPlanMode'
           ? { subtype: 'can_use_tool', tool_name: 'ExitPlanMode', input: { plan: command } }
-          : { subtype: 'can_use_tool', tool_name: 'Bash', input: { command }, permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: command }], behavior: 'allow', destination: 'localSettings' }] };
+          : process.env.FAKE_ASK_TOOL
+            ? { subtype: 'can_use_tool', tool_name: process.env.FAKE_ASK_TOOL, input: { url: command }, permission_suggestions: [{ type: 'addRules', rules: [{ toolName: process.env.FAKE_ASK_TOOL }], behavior: 'allow', destination: 'localSettings' }] }
+            : { subtype: 'can_use_tool', tool_name: 'Bash', input: { command }, permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: command }], behavior: 'allow', destination: 'localSettings' }] };
       out({ type: 'control_request', request_id: ASK_ID, request });
     } else if (hang) {
       lines.filter((l) => !l.includes('"type":"result"')).slice(0, 3).forEach(out);

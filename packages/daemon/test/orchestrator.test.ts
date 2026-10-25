@@ -223,9 +223,11 @@ describe('orchestrator round-ups', () => {
     expect(argv).toContain('--no-chrome');
     expect(argv).not.toContain('--chrome');
 
+    // One after the other: two processes starting side by side log their arguments in either order.
     const plain = await call('spawn_agent', { title: 'Plain', task: 'Read the docs', writes: false });
+    const plainArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
     const browsing = await call('spawn_agent', { title: 'Artifact', task: 'Read the artifact', writes: false, browser: true });
-    const [plainArgv, browserArgv] = await waitFor(() => jsonLines<string[]>(ctx.argsFile).length === 3 && jsonLines<string[]>(ctx.argsFile).slice(1));
+    const browserArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[2]);
     expect(plainArgv).toContain('--no-chrome');
     expect(flag(plainArgv!, '--append-system-prompt')[0]).not.toContain('Claude in Chrome');
     expect(browserArgv).toContain('--chrome');
@@ -299,6 +301,44 @@ describe('orchestrator round-ups', () => {
     expect(flag(next, '--resume')).toHaveLength(1);
   });
 
+  it('refuses browser agents in plan mode, new or picked up again', async () => {
+    const ctx = setup({ FAKE_EVERY_TURN: '1' });
+    const { parent, call } = await orchestrator(ctx);
+    const browsing = await call('spawn_agent', { title: 'Artifact', task: 'Read the artifact', writes: false, browser: true });
+    const agent = ctx.sessions.get(browsing.data.agentId)!;
+    await waitFor(() => agent.lastTurn && !agent.working);
+
+    // Agents run in auto: in the person's browser, one could change things on their sites.
+    await ctx.sessions.setMode(parent, 'plan');
+    expect((await call('spawn_agent', { title: 'B', task: 'look', writes: false, browser: true })).error).toMatch(/plan mode: no agent may drive their browser/);
+    expect((await call('message_agent', { agentId: agent.id, text: 'Now the second page' })).error).toMatch(/plan mode: no agent may drive their browser/);
+    expect((await call('spawn_agent', { title: 'R', task: 'read', writes: false })).error).toBeUndefined();
+    expect(ctx.sessions.children(parent.id).filter((c) => c.browser)).toHaveLength(1);
+
+    await ctx.sessions.setMode(parent, 'auto');
+    expect((await call('message_agent', { agentId: agent.id, text: 'Now the second page' })).error).toBeUndefined();
+  });
+
+  it('lets one browser agent work at a time, spawned or messaged', async () => {
+    const ctx = setup({ FAKE_HANG: '1' });
+    const { call } = await orchestrator(ctx);
+    const first = await call('spawn_agent', { title: 'B1', task: 'look', writes: false, browser: true });
+    expect(first.error).toBeUndefined();
+    expect((await call('spawn_agent', { title: 'B2', task: 'look', writes: false, browser: true })).error).toMatch(/browser agent "B1" is still working.*one agent may drive/);
+    // Agents without the browser are not held up.
+    expect((await call('spawn_agent', { title: 'R', task: 'read', writes: false })).error).toBeUndefined();
+    const b1 = ctx.sessions.get(first.data.agentId)!;
+    await b1.stop();
+
+    const second = await call('spawn_agent', { title: 'B2', task: 'look', writes: false, browser: true });
+    expect(second.error).toBeUndefined();
+    expect((await call('message_agent', { agentId: b1.id, text: 'again' })).error).toMatch(/browser agent "B2" is still working/);
+    // A message to the one working is no second agent in the browser.
+    expect((await call('message_agent', { agentId: second.data.agentId, text: 'and this' })).error).toBeUndefined();
+    await ctx.sessions.get(second.data.agentId)!.stop();
+    expect((await call('message_agent', { agentId: b1.id, text: 'again' })).error).toBeUndefined();
+  });
+
   it('caps working agents and allows one writer per repo', async () => {
     const ctx = setup({ FAKE_HANG: '1' }, { maxAgents: 3 });
     const { call } = await orchestrator(ctx);
@@ -307,8 +347,9 @@ describe('orchestrator round-ups', () => {
     expect((await call('spawn_agent', { title: 'R1', task: 'read', writes: false })).error).toBeUndefined();
     expect((await call('spawn_agent', { title: 'R2', task: 'read', writes: false })).error).toBeUndefined();
     expect((await call('spawn_agent', { title: 'R3', task: 'read', writes: false })).error).toMatch(/3 agents are already working/);
-    const writerArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
-    expect(writerArgv[writerArgv.indexOf('--tools') + 1]).toContain('Edit');
+    // The three started side by side, so their arguments are logged in any order: only the writer may edit.
+    const agentArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile).length === 4 && jsonLines<string[]>(ctx.argsFile).slice(1));
+    expect(agentArgv.filter((a) => a[a.indexOf('--tools') + 1]!.includes('Edit'))).toHaveLength(1);
   });
 
   it("keeps one orchestrator out of another's agents", async () => {

@@ -54,7 +54,7 @@ function server(orch: Orchestrator, parent: Session): McpServer {
           .optional()
           .describe(
             "Give this agent the Claude in Chrome tools to drive the person's logged-in Chrome. Use only when a page needs a real browser " +
-              '(it renders only there, or needs their login); WebFetch does for public pages. Every such agent shares the one browser.',
+              '(it renders only there, or needs their login); WebFetch does for public pages. Only one such agent works at a time, and none in plan mode.',
           ),
         files,
       },

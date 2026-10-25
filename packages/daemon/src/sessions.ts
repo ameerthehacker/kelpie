@@ -3,7 +3,7 @@ import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { attachmentsBlock, mergeUsage, type Attachment, type EventOf, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
-import { claudeCode, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
+import { claudeCode, isChromeTool, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary } from './agent-summary.js';
 
@@ -434,6 +434,18 @@ export class Session {
   }
 
   /**
+   * What the person allowed for a sub-agent's whole round-up. Never the Claude in Chrome tools, even
+   * by a rule saved before Kelpie stopped offering them: every use of the person's browser is asked about.
+   */
+  private savedRules(): string[] {
+    if (!this.row.parentId) return [];
+    return this.ctx.store
+      .rulesOf(this.row.parentId)
+      .map((r) => r.rule)
+      .filter((r) => !isChromeTool(r));
+  }
+
+  /**
    * Keeps track of what the harness is asking, and answers what the round-up's saved rules or the
    * hooks' policy settle; the rest waits for the person.
    */
@@ -443,7 +455,7 @@ export class Session {
       let auto: PermissionAnswer | undefined;
       try {
         const rule = event.data.rule;
-        const saved = !!rule && !!this.row.parentId && this.ctx.store.rulesOf(this.roundUpId).some((r) => r.rule === rule);
+        const saved = !!rule && this.savedRules().includes(rule);
         auto = saved ? { allow: true, by: 'kelpie' } : this.ctx.hooks.decide?.(this, event.data);
       } catch (err) {
         console.error(`session ${this.id}: permission policy failed`, err);
@@ -604,7 +616,7 @@ export class Session {
       ...hooks.specFor?.(this, { runId, fresh: !resume, hadHistory }),
     };
     // What the person allowed for the whole round-up, its agents may do without asking.
-    const saved = this.row.parentId ? store.rulesOf(this.row.parentId).map((r) => r.rule) : [];
+    const saved = this.savedRules();
     if (saved.length) spec.allowedTools = [...(spec.allowedTools ?? []), ...saved];
     const run = this.ctx.adapter.start({
       ...spec,
@@ -965,7 +977,7 @@ export class SessionManager {
         const roundUp = this.sessions.get(session.roundUpId);
         if (roundUp) await this.setMode(roundUp, opts.mode);
       }
-      const rule = opts.allow && opts.remember && session.parentId ? pending.rule : undefined;
+      const rule = opts.allow && opts.remember && session.parentId && pending.rule && !isChromeTool(pending.rule) ? pending.rule : undefined;
       const ok = session.answer(
         requestId,
         opts.allow ? { allow: true, by: 'person', ...(rule ? { rules: [rule] } : {}) } : { allow: false, by: 'person', message: opts.message?.trim() || DENIED },

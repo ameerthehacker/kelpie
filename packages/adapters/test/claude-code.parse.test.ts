@@ -144,6 +144,20 @@ describe('claude-code mapping', () => {
     expect(toolTitle('Grep', { pattern: 'add', path: '/work/repo/src' }, '/work/repo')).toBe('add in src');
   });
 
+  it('titles Claude in Chrome calls by what they do in the browser', () => {
+    const chrome = (tool: string, input: Record<string, unknown>) => toolTitle(`mcp__claude-in-chrome__${tool}`, { tabId: 7, ...input }, '/work/repo');
+    expect(chrome('navigate', { url: 'https://claude.ai/public/artifacts/x' })).toBe('Chrome: navigate https://claude.ai/public/artifacts/x');
+    expect(chrome('computer', { action: 'left_click', coordinate: [120, 340] })).toBe('Chrome: left_click (120, 340)');
+    expect(chrome('computer', { action: 'left_click', ref: 'ref_12' })).toBe('Chrome: left_click ref_12');
+    expect(chrome('computer', { action: 'type', text: 'hello' })).toBe('Chrome: type "hello"');
+    expect(chrome('computer', { action: 'scroll', scroll_direction: 'down', coordinate: [1, 2] })).toBe('Chrome: scroll down (1, 2)');
+    expect(chrome('computer', { action: 'screenshot' })).toBe('Chrome: screenshot');
+    expect(chrome('form_input', { ref: 'ref_3', value: 'me@example.com' })).toBe('Chrome: fill ref_3 with "me@example.com"');
+    expect(chrome('find', { query: 'the publish button' })).toBe('Chrome: find "the publish button"');
+    expect(chrome('javascript_tool', { action: 'javascript_exec', text: 'document.title\n// more' })).toBe('Chrome: run JavaScript document.title // more');
+    expect(chrome('tabs_create_mcp', {})).toBe('Chrome: tabs_create_mcp');
+  });
+
   it('ignores updates to todos it never saw created', () => {
     const items = [{ id: '1', text: 'a', status: 'pending' as const }];
     expect(applyTodoTool('TaskUpdate', { taskId: '9', status: 'completed' }, { success: true }, items)).toBeUndefined();
@@ -185,6 +199,25 @@ describe('claude-code mapping', () => {
       }),
       'permission.requested',
     );
+    expect(req?.data.rule).toBeUndefined();
+  });
+
+  it('gives the Claude in Chrome tools no rule, so no browser action can be allowed for the next one', () => {
+    const parser = newParser();
+    const [req] = of(
+      parser.parse({
+        type: 'control_request',
+        request_id: 'x',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'mcp__claude-in-chrome__computer',
+          input: { action: 'left_click', ref: 'ref_12', tabId: 1 },
+          permission_suggestions: [{ type: 'addRules', behavior: 'allow', destination: 'localSettings', rules: [{ toolName: 'mcp__claude-in-chrome__computer' }] }],
+        },
+      }),
+      'permission.requested',
+    );
+    expect(req?.data).toMatchObject({ tool: 'mcp__claude-in-chrome__computer', title: 'Chrome: left_click ref_12' });
     expect(req?.data.rule).toBeUndefined();
   });
 
