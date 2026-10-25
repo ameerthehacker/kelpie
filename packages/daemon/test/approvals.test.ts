@@ -82,7 +82,7 @@ describe('approvals', () => {
       ['Agent 2', 'Bash', 'pnpm install', 'Bash(pnpm install)'],
     ]);
     expect(agents[0]!.summary().status).toBe('needs-approval');
-    expect(ctx.orch.list(parent).agents.map((a) => a.status)).toEqual(['needs approval', 'needs approval']);
+    expect((await ctx.orch.list(parent)).agents.map((a) => a.status)).toEqual(['needs approval', 'needs approval']);
 
     const res = await ctx.app.request('/api/approvals?roundUp=' + parent.id, { headers: { host: '127.0.0.1:7317' } });
     expect(((await res.json()) as { approvals: unknown[]; rules: unknown[] })).toMatchObject({ approvals: [{ rule: 'Bash(pnpm install)' }, { rule: 'Bash(pnpm install)' }], rules: [] });
