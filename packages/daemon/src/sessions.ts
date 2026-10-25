@@ -6,6 +6,7 @@ import { attachmentsBlock, mergeUsage, type Attachment, type EventOf, type Mode,
 import { claudeCode, isChromeTool, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary } from './agent-summary.js';
+import type { ReviewState } from './review/types.js';
 
 export type TurnStatus = EventData<'turn.ended'>['status'];
 
@@ -82,7 +83,11 @@ export type ManagerUpdate =
   /** A sub-agent's summary changed (throttled). */
   | { type: 'agent'; agent: AgentSummary }
   /** What a round-up (its orchestrator and agents) is waiting on the person for, now. */
-  | { type: 'approvals'; roundUpId: string; approvals: PendingApproval[] };
+  | { type: 'approvals'; roundUpId: string; approvals: PendingApproval[] }
+  /** A round-up's review changed (a comment, a reply, a resolution): its whole state, throttled. */
+  | { type: 'review'; roundUpId: string; state: ReviewState }
+  /** What `GET /api/sessions/:sessionId/changes` returns may have changed (an agent went idle, a muster merged). */
+  | { type: 'changes'; roundUpId: string; sessionId: string };
 
 /** Run settings a round-up does not decide per process: everything but what `start` fills in. */
 export type SessionDefaults = Omit<RunSpec, 'cwd' | 'prompt' | 'resume' | 'todos' | 'runId' | 'runDir'>;
@@ -848,16 +853,16 @@ export class SessionManager {
       idleMs: opts.idleMs ?? 10 * 60_000,
       hooks: opts.hooks ?? {},
       closing: false,
-      changed: (s) => this.notify({ type: 'session', session: s.info() }),
+      changed: (s) => this.publish({ type: 'session', session: s.info() }),
       get: (id) => this.sessions.get(id),
-      approvalsChanged: (s) => this.notify({ type: 'approvals', roundUpId: s.roundUpId, approvals: this.approvals(s.roundUpId) }),
+      approvalsChanged: (s) => this.publish({ type: 'approvals', roundUpId: s.roundUpId, approvals: this.approvals(s.roundUpId) }),
       // A busy agent emits many events a second; the pane only needs a few updates.
       agentChanged: (s) => {
         if (this.agentTimers.has(s.id)) return;
         const timer = setTimeout(() => {
           this.agentTimers.delete(s.id);
           // Nobody listening, nothing to build (the summary reads the store).
-          if (this.watchers.size && this.sessions.get(s.id) === s) this.notify({ type: 'agent', agent: s.summary() });
+          if (this.watchers.size && this.sessions.get(s.id) === s) this.publish({ type: 'agent', agent: s.summary() });
         }, AGENT_UPDATE_MS);
         timer.unref();
         this.agentTimers.set(s.id, timer);
@@ -872,7 +877,7 @@ export class SessionManager {
         } catch (err) {
           console.error(`could not store ${harness} usage`, err);
         }
-        this.notify({ type: 'usage', usage: this.usage() });
+        this.publish({ type: 'usage', usage: this.usage() });
       },
     };
     for (const u of this.store.listUsage()) this.usageByHarness.set(u.harness, u);
@@ -900,7 +905,7 @@ export class SessionManager {
     });
     const session = new Session(row, this.ctx);
     this.sessions.set(session.id, session);
-    this.notify({ type: 'session', session: session.info() });
+    this.publish({ type: 'session', session: session.info() });
     return session;
   }
 
@@ -945,7 +950,7 @@ export class SessionManager {
     if (!session.parentId && session.scratch) {
       await rm(session.scratch, { recursive: true, force: true }).catch((err) => console.error(`round-up ${id}: could not remove its scratch folder`, err));
     }
-    this.notify({ type: 'deleted', id });
+    this.publish({ type: 'deleted', id });
     return true;
   }
 
@@ -1088,7 +1093,8 @@ export class SessionManager {
     this.agentTimers.clear();
   }
 
-  private notify(update: ManagerUpdate): void {
+  /** Sends an update to everyone watching. */
+  publish(update: ManagerUpdate): void {
     for (const listener of this.watchers) {
       try {
         listener(update);

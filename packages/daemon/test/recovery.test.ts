@@ -187,8 +187,8 @@ describe('recovery after Kelpie stops', () => {
     const second = start(store, { FAKE_HANG: '1', FAKE_ARGS_FILE: argsFile });
     expect(agents.map((a) => second.sessions.get(a.id)!.browser)).toEqual([true, true]);
     await second.orch.recover();
-    // The orchestrator's own start is the one with the kelpie MCP server.
-    const agentArgs = () => jsonLines<string[]>(argsFile).filter((a) => !a.includes('--mcp-config'));
+    // The orchestrator's own start is the one with its prompt.
+    const agentArgs = () => jsonLines<string[]>(argsFile).filter((a) => !a.some((x) => x.includes("You are Kelpie's orchestrator")));
     const [resumed] = await waitFor(() => agentArgs().length > 0 && agentArgs());
     await sleep(300);
     // The first is back in the browser; the other waits for it rather than share it.

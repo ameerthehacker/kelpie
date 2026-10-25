@@ -135,7 +135,7 @@ describe('approvals', () => {
     expect(pending!.rule).toBeUndefined();
     const argv = jsonLines<string[]>(ctx.argsFile).at(-1)!;
     const allowed = argv.slice(argv.indexOf('--allowedTools') + 1, argv.findIndex((a, i) => i > argv.indexOf('--allowedTools') && a.startsWith('--')));
-    expect(allowed).toEqual(['Bash(pnpm install)']);
+    expect(allowed).toEqual(['mcp__kelpie', 'Bash(pnpm install)']);
 
     // "Remember" can't save one either: the person allowed this request only.
     await ctx.sessions.answerApprovals({ items: [{ sessionId: agentId, requestId: pending!.requestId }], allow: true, remember: true });

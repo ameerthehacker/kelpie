@@ -14,10 +14,18 @@ export class GitError extends Error {
   }
 }
 
-interface Git {
+export interface Git {
   stdout: string;
   code: number;
   stderr: string;
+  /** The output was bigger than `maxBuffer`, and git was stopped. */
+  overflow?: boolean;
+}
+
+export interface GitOptions {
+  /** Largest stdout git may write; default 16 MB. */
+  maxBuffer?: number;
+  timeout?: number;
 }
 
 /** How long one git command may take; a fetch gets longer. */
@@ -28,7 +36,8 @@ const FETCH_TIMEOUT_MS = 120_000;
  * Runs git without a shell, and never lets it wait on a person: no credential prompts, ssh in
  * batch mode (an unknown host or a key passphrase fails instead of asking), and a time limit.
  */
-function git(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS): Promise<Git> {
+export function runGit(cwd: string, args: string[], opts: GitOptions = {}): Promise<Git> {
+  const timeout = opts.timeout ?? GIT_TIMEOUT_MS;
   const env = {
     ...process.env,
     GIT_TERMINAL_PROMPT: '0',
@@ -38,16 +47,21 @@ function git(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS): Promise<Git
     LC_ALL: 'C',
   };
   return new Promise((done) => {
-    execFile('git', args, { cwd, maxBuffer: 16 * 1024 * 1024, env, timeout, killSignal: 'SIGKILL' }, (err, stdout, stderr) => {
-      const timedOut = !!(err as { killed?: boolean } | null)?.killed;
+    execFile('git', args, { cwd, maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024, env, timeout, killSignal: 'SIGKILL' }, (err, stdout, stderr) => {
+      const code = (err as { code?: unknown } | null)?.code;
+      const overflow = code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+      const timedOut = !overflow && !!(err as { killed?: boolean } | null)?.killed;
       done({
         stdout: stdout.toString(),
         stderr: timedOut ? `git ${args[0]} took longer than ${timeout / 1000}s and was stopped` : stderr.toString(),
-        code: err ? Number((err as { code?: unknown }).code ?? 1) || 1 : 0,
+        code: err ? Number(code ?? 1) || 1 : 0,
+        ...(overflow ? { overflow } : {}),
       });
     });
   });
 }
+
+const git = (cwd: string, args: string[], timeout = GIT_TIMEOUT_MS) => runGit(cwd, args, { timeout });
 
 async function ok(cwd: string, args: string[]): Promise<string> {
   const r = await git(cwd, args);
@@ -98,7 +112,7 @@ export interface WorktreesOptions {
 }
 
 /** Where a worktree's branch was cut; rows from before that was recorded fall back to the base. */
-const forkOf = (row: WorktreeRow) => row.forkCommit || row.baseCommit;
+export const forkOf = (row: WorktreeRow) => row.forkCommit || row.baseCommit;
 
 /** What a removal is about to take away: work that would be lost is committed first. */
 const CHECKPOINT = (what: string) => `kelpie: checkpoint (${what})`;
@@ -371,6 +385,20 @@ export class Worktrees {
   async mustered(row: WorktreeRow, home: WorktreeRow): Promise<WorktreeRow> {
     // Anything left uncommitted is kept on the branch; then the branch only goes if home has all of it.
     await this.checkpoint(row, 'before muster cleanup');
+    // What it delivered, kept before its branch goes: the feature's changes are put down to it from this.
+    const tip = await git(row.repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${row.branch}^{commit}`]);
+    if (tip.code === 0 && tip.stdout.trim() !== forkOf(row)) {
+      const agent = this.store.getSession(row.sessionId);
+      this.store.addDelivery({
+        roundUpId: row.roundUpId,
+        sessionId: row.sessionId,
+        title: agent?.title ?? row.branch,
+        harness: agent?.harness ?? 'claude-code',
+        branch: row.branch,
+        forkCommit: forkOf(row),
+        tipCommit: tip.stdout.trim(),
+      });
+    }
     return (await this.remove(row, 'mustered', await this.isMerged(row.repoRoot, row.branch, home.branch)))!;
   }
 

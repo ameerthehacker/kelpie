@@ -19,8 +19,12 @@ export {
 } from './sessions.js';
 export { createApp, localOnly, type AppOptions } from './server.js';
 export { Orchestrator, ToolError, BaseFixedError, ORCHESTRATOR_TOOLS, READ_ONLY_TOOLS, type AgentInfo, type AgentList, type OrchestratorOptions } from './orchestrator/orchestrator.js';
-export { Worktrees, GitError, slug, type Branch, type WorktreesOptions } from './worktrees.js';
+export { Worktrees, GitError, runGit, slug, type Branch, type Git, type GitOptions, type WorktreesOptions } from './worktrees.js';
+export { ReviewError } from './errors.js';
+export { Changes, NoSuchRound, excerpt, findLine, type View } from './review/changes.js';
+export { Reviews, type CommentInput, type NewAnchor, type ReviewGroup, type ToolThread } from './review/reviews.js';
+export type { AgentRef, ChangedFile, Changes as ChangesDto, Review, ReviewComment, ReviewState, ReviewThread, Round, Side, Verdict } from './review/types.js';
 export { report, logLines, type AgentReport, type LogPage } from './orchestrator/digest.js';
-export { NOTIFICATION_TAG } from './orchestrator/prompt.js';
+export { NOTIFICATION_TAG, reviewBrief } from './orchestrator/prompt.js';
 export { nowOf, type AgentSummary } from './agent-summary.js';
 export { startDaemon, envNumber, limitsFromEnv, HomeInUseError, PortInUseError, type Daemon, type DaemonOptions } from './start.js';
