@@ -15,6 +15,7 @@ import { setTheme, useTheme, type Theme } from '@/lib/theme';
 import { metersOf } from '@/lib/usage';
 import { cn } from '@/lib/utils';
 import { KelpieLogo, Wordmark } from './brand';
+import { NotificationPrompt, NotificationsMenu } from './notifications-menu';
 
 interface RowProps {
   roundUp: RoundUp;
@@ -189,7 +190,7 @@ interface SidebarProps {
   className?: string;
 }
 
-/** The round-ups, usage and theme: the design's left-hand panel. */
+/** The round-ups, usage, notifications and theme: the design's left-hand panel. */
 export function AppSidebar({ roundUps, currentId, onNavigate, onRename, onDelete, onHide, className }: SidebarProps) {
   const now = useNow();
   const approvals = useApprovals();
@@ -240,8 +241,14 @@ export function AppSidebar({ roundUps, currentId, onNavigate, onRename, onDelete
         ))}
       </div>
 
+      <NotificationPrompt />
+
       <Usage now={now} />
 
+      <div className="flex items-center gap-1.5 pl-2.5">
+        <span className="text-mu2 flex-1 text-[13px]">Notifications</span>
+        <NotificationsMenu />
+      </div>
       <div className="flex items-center gap-1.5 pl-2.5">
         <span className="text-mu2 flex-1 text-[13px]">Theme</span>
         <ThemeSwitch />

@@ -20,6 +20,7 @@ import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useAgents } from '@/hooks/use-agents';
 import { useApprovals } from '@/hooks/use-approvals';
+import { useAttention } from '@/hooks/use-attention';
 import { useBranches } from '@/hooks/use-branches';
 import { useHarnesses } from '@/hooks/use-harnesses';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -131,10 +132,16 @@ export function App() {
   const mode = roundUpId ? (current?.mode ?? 'auto') : draftMode;
   // Once a writer has a branch of its own, it started from the base: that can't change any more.
   const baseLocked = !!agents?.some((a) => a.branch);
+  // The tab's title counts what is waiting on the person: every open approval, and what they were
+  // notified of while away (cleared as they come back).
+  const unseen = useAttention();
+  const allApprovals = useApprovals();
+  const waiting = allApprovals.length + unseen.filter((i) => i.kind !== 'approval' && i.kind !== 'plan').length;
 
   useEffect(() => {
-    document.title = roundUpId ? `${titleOf(current)} · kelpie` : 'kelpie';
-  }, [roundUpId, current]);
+    const title = roundUpId ? `${titleOf(current)} · kelpie` : 'kelpie';
+    document.title = waiting ? `(${waiting}) ${title}` : title;
+  }, [roundUpId, current, waiting]);
   useEffect(() => setModelError(undefined), [roundUpId]);
 
   const changeModel = (next: string) => {
