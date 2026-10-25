@@ -46,9 +46,12 @@ export default function DiffView({ file, patch, threads, scope }: { file: Change
   const options = useMemo<FileDiffOptions<Meta, undefined>>(
     () => ({
       diffStyle: 'unified',
-      disableFileHeader: true,
+      // The card has the header. Not `disableFileHeader`: in @pierre/diffs 1.6 a re-render with it
+      // set leaves the diff blank, so its header is hidden instead.
+      unsafeCSS: '[data-diffs-header] { display: none; }',
       themeType: theme,
       hunkSeparators: 'metadata',
+      diffIndicators: 'classic',
       overflow: 'scroll',
       lineHoverHighlight: 'both',
       enableGutterUtility: true,
