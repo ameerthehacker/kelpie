@@ -21,6 +21,11 @@ export interface RunSpec {
   appendSystemPrompt?: string;
   /** MCP config files or JSON strings. Only these servers load (the user's global ones do not). */
   mcpConfig?: string[];
+  /**
+   * Drive the person's own browser (Claude Code's Claude in Chrome tools). Off unless asked for,
+   * even if the person has it on by default for their own sessions.
+   */
+  browser?: boolean;
   /** Where raw.jsonl and run.json go. Defaults to ~/.kelpie/runs/<runId>. */
   runDir?: string;
   /** Harness binary; defaults to the CLI on PATH. */

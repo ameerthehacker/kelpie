@@ -59,6 +59,8 @@ export function claudeArgs(spec: RunSpec): string[] {
   if (spec.addDirs?.length) args.push('--add-dir', ...spec.addDirs);
   if (spec.appendSystemPrompt) args.push('--append-system-prompt', spec.appendSystemPrompt);
   if (spec.mcpConfig?.length) args.push('--mcp-config', ...spec.mcpConfig);
+  // Claude in Chrome is a built-in MCP server (mcp__claude-in-chrome__*) that --strict-mcp-config leaves alone.
+  args.push(spec.browser ? '--chrome' : '--no-chrome');
   if (spec.extraArgs?.length) args.push(...spec.extraArgs);
   return args;
 }

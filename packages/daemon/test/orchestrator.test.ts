@@ -217,6 +217,41 @@ describe('orchestrator round-ups', () => {
     unwatch();
   });
 
+  it('gives the Claude in Chrome tools only to agents spawned with browser, and keeps them across resumes', async () => {
+    const ctx = setup({ FAKE_EVERY_TURN: '1' });
+    const { argv, call } = await orchestrator(ctx);
+    expect(argv).toContain('--no-chrome');
+    expect(argv).not.toContain('--chrome');
+
+    const plain = await call('spawn_agent', { title: 'Plain', task: 'Read the docs', writes: false });
+    const browsing = await call('spawn_agent', { title: 'Artifact', task: 'Read the artifact', writes: false, browser: true });
+    const [plainArgv, browserArgv] = await waitFor(() => jsonLines<string[]>(ctx.argsFile).length === 3 && jsonLines<string[]>(ctx.argsFile).slice(1));
+    expect(plainArgv).toContain('--no-chrome');
+    expect(flag(plainArgv!, '--append-system-prompt')[0]).not.toContain('Claude in Chrome');
+    expect(browserArgv).toContain('--chrome');
+    expect(browserArgv).not.toContain('--no-chrome');
+    expect(flag(browserArgv!, '--append-system-prompt')[0]).toContain('Claude in Chrome tools');
+    // Asked about like any other tool: nothing allows them by rule.
+    expect(flag(browserArgv!, '--allowedTools').join(' ')).not.toContain('claude-in-chrome');
+
+    const listed = await call('list_agents');
+    expect(listed.data.agents.map((a: { title: string; browser?: boolean }) => [a.title, a.browser])).toEqual([
+      ['Plain', undefined],
+      ['Artifact', true],
+    ]);
+    const agent = ctx.sessions.get(browsing.data.agentId)!;
+    expect(agent.summary().browser).toBe(true);
+    expect(ctx.sessions.get(plain.data.agentId)!.summary().browser).toBe(false);
+
+    // A new process for the same agent (a follow-up after it ended) still has them.
+    await waitFor(() => !agent.working);
+    await agent.stop();
+    await call('message_agent', { agentId: agent.id, text: 'Now the second page' });
+    const resumed = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[3]);
+    expect(flag(resumed, '--resume')).toHaveLength(1);
+    expect(resumed).toContain('--chrome');
+  });
+
   it('refuses empty briefs and messages', async () => {
     const ctx = setup({ FAKE_HANG: '1' });
     const { call } = await orchestrator(ctx);

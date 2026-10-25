@@ -1,0 +1,1 @@
+ALTER TABLE `sessions` ADD `browser` integer DEFAULT false NOT NULL;
