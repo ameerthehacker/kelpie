@@ -587,11 +587,14 @@ export class Session {
     const resume = this.row.harnessSessionId ?? undefined;
     const hadHistory = store.firstSent(this.id)?.deliveredAt != null;
     this.stale = false;
+    const hooked = hooks.specFor?.(this, { runId, fresh: !resume, hadHistory });
     const spec: Partial<RunSpec> = {
       ...this.ctx.defaults,
       permissionMode: this.mode,
       ...(this.row.model ? { model: this.row.model } : {}),
-      ...hooks.specFor?.(this, { runId, fresh: !resume, hadHistory }),
+      ...hooked,
+      // A hook's env (a connection's GH_TOKEN) adds to the defaults' rather than replacing them.
+      ...(hooked?.env ? { env: { ...this.ctx.defaults.env, ...hooked.env } } : {}),
     };
     // What the person allowed for the whole round-up, its agents may do without asking.
     const saved = this.row.parentId ? store.rulesOf(this.row.parentId).map((r) => r.rule) : [];

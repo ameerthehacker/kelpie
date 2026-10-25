@@ -25,3 +25,5 @@ export { report, logLines, type AgentReport, type LogPage } from './orchestrator
 export { NOTIFICATION_TAG } from './orchestrator/prompt.js';
 export { nowOf, type AgentSummary } from './agent-summary.js';
 export { startDaemon, envNumber, limitsFromEnv, HomeInUseError, PortInUseError, type Daemon, type DaemonOptions } from './start.js';
+export { Connections, ConnectError, type Connector, type ConnectionAccount, type ConnectionStatus } from './connectors/connector.js';
+export { GitHubConnector, githubEnv, type GitHubOptions, type RunGh } from './connectors/github.js';

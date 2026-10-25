@@ -5,6 +5,8 @@ import { join, resolve } from 'node:path';
 import { serve } from '@hono/node-server';
 import { openStore } from '@kelpie/store';
 import lockfile from 'proper-lockfile';
+import { Connections } from './connectors/connector.js';
+import { GitHubConnector } from './connectors/github.js';
 import { Orchestrator } from './orchestrator/orchestrator.js';
 import { createApp } from './server.js';
 import { SessionManager } from './sessions.js';
@@ -72,10 +74,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     ...(opts.worktreeIdleMs ? { idleMs: opts.worktreeIdleMs } : {}),
     ...(opts.maxWorktrees ? { max: opts.maxWorktrees } : {}),
   });
+  const connections = new Connections([new GitHubConnector({ store })]);
   const orchestrator = new Orchestrator({
     store,
     mcpUrl: `http://127.0.0.1:${opts.port}/mcp`,
     worktrees,
+    connections,
     ...(opts.maxAgents ? { maxAgents: opts.maxAgents } : {}),
   });
   const sessions = new SessionManager({
@@ -90,6 +94,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   orchestrator.attach(sessions);
   const app = createApp(sessions, {
     orchestrator,
+    connections,
     ...(opts.staticDir ? { staticDir: opts.staticDir } : {}),
     ...(opts.maxUploadBytes ? { maxUploadBytes: opts.maxUploadBytes } : {}),
   });

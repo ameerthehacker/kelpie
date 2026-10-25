@@ -10,6 +10,7 @@
 // { resume, text } per user turn received. FAKE_ASK=<command> asks permission to run that Bash
 // command (can_use_tool) before the first turn's output, and goes on once answered; FAKE_ANSWER_FILE
 // gets a line of JSON per answer. FAKE_ASK_TOOL=ExitPlanMode asks to put FAKE_ASK as a plan instead.
+// FAKE_ENV_FILE gets a line of JSON per start with the GitHub env it was given (GH_TOKEN, GITHUB_TOKEN).
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -19,6 +20,9 @@ let printed = false;
 const out = (o) => process.stdout.write((typeof o === 'string' ? o : JSON.stringify(o)) + '\n');
 const args = process.argv.slice(2);
 if (process.env.FAKE_ARGS_FILE) appendFileSync(process.env.FAKE_ARGS_FILE, JSON.stringify(args) + '\n');
+if (process.env.FAKE_ENV_FILE) {
+  appendFileSync(process.env.FAKE_ENV_FILE, JSON.stringify({ GH_TOKEN: process.env.GH_TOKEN ?? null, GITHUB_TOKEN: process.env.GITHUB_TOKEN ?? null }) + '\n');
+}
 
 const resume = args[args.indexOf('--resume') + 1];
 if (process.env.FAKE_RESUME_FAIL === '1' && args.includes('--resume')) {
