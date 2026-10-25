@@ -3,18 +3,19 @@ import { KelpieLogo } from '@/components/shell/brand';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useHarnessStatus } from '@/hooks/use-harness-status';
-import { needsSetup } from '@/lib/harness-setup';
+import { isReady, needsSetup } from '@/lib/harness-setup';
 import { CheckAgain, SetupSteps } from './harness-section';
 
 /**
  * First run: shown while Claude Code is missing or signed out (the live status, nothing stored),
- * walking the person through install → sign in → Check again. Once both are done it says so and lets
- * them carry on. "Not now" holds until the page reloads; a working setup never sees it.
+ * walking the person through install → sign in → Check again. Once all is green it says so and lets
+ * them carry on; past setup but not green (sign-in unknown, a failed check) it says that instead. "Not now" holds until the page reloads; a working setup never sees it.
  */
 export function HarnessSetupDialog({ hidden }: { hidden?: boolean }) {
   const { data } = useHarnessStatus();
   const claude = data?.find((h) => h.harness === 'claude-code');
   const needed = needsSetup(claude);
+  const ready = isReady(claude);
   // Stays open once shown, so turning green reads as "all set" rather than vanishing.
   const [shown, setShown] = useState(false);
   const [dismissed, setDismissed] = useState(false);
@@ -28,11 +29,15 @@ export function HarnessSetupDialog({ hidden }: { hidden?: boolean }) {
       <DialogContent className="max-h-[90dvh] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <KelpieLogo className="mb-1 size-10" />
-          <DialogTitle className="font-heading text-xl">{needed ? 'Set up Claude Code' : 'You’re all set'}</DialogTitle>
+          <DialogTitle className="font-heading text-xl">{needed ? 'Set up Claude Code' : ready ? 'You’re all set' : 'Almost there'}</DialogTitle>
           <DialogDescription>
             {needed
               ? 'Kelpie runs your agents on your own Claude Code. Install it and sign in from a terminal, then check again.'
-              : 'Claude Code is installed and signed in. Kelpie is ready to run your agents.'}
+              : ready
+                ? 'Claude Code is installed and signed in. Kelpie is ready to run your agents.'
+                : claude.error
+                  ? `Claude Code is installed, but checking it failed: ${claude.error}`
+                  : 'Claude Code is installed, but Kelpie couldn’t tell whether it is signed in.'}
           </DialogDescription>
         </DialogHeader>
         <SetupSteps status={claude} />
@@ -45,7 +50,10 @@ export function HarnessSetupDialog({ hidden }: { hidden?: boolean }) {
               <CheckAgain variant="default" />
             </>
           ) : (
-            <Button onClick={() => setDismissed(true)}>Continue</Button>
+            <>
+              {!ready && <CheckAgain />}
+              <Button onClick={() => setDismissed(true)}>Continue</Button>
+            </>
           )}
         </DialogFooter>
       </DialogContent>

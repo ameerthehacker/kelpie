@@ -289,6 +289,27 @@ export const HarnessUsage = z.object({
 });
 export type HarnessUsage = z.infer<typeof HarnessUsage>;
 
+/** Whether a harness CLI is ready for Kelpie to drive (installed, and signed in), as `GET /api/harnesses/status` reports it. */
+export const HarnessStatus = z.object({
+  harness: Harness,
+  installed: z.boolean(),
+  /** Where the CLI was found. */
+  path: z.string().optional(),
+  /** With `path`: false when it was found in a known install location but not on the daemon's PATH, so Kelpie can't start it yet. */
+  onPath: z.boolean().optional(),
+  /** As the CLI reports it, e.g. `2.1.308`. */
+  version: z.string().optional(),
+  /** Null when the CLI couldn't say (an older version without an auth check, or it didn't answer). */
+  loggedIn: z.boolean().nullable(),
+  /** How it is signed in, as the CLI says it: `claude.ai`, `api_key`, `third_party`… */
+  authMethod: z.string().optional(),
+  /** What went wrong while checking, if anything did. */
+  error: z.string().optional(),
+  /** The daemon's `process.platform` (`darwin`, `linux` (WSL too), `win32`…): which installer applies. */
+  platform: z.string(),
+});
+export type HarnessStatus = z.infer<typeof HarnessStatus>;
+
 /**
  * Folds a new usage report into the previous one: the status (and the window it is about)
  * come from the new report, and windows it does not mention keep their last known figures.
