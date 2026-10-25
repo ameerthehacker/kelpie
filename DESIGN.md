@@ -98,6 +98,8 @@ pnpm kelpie:run --cwd <repo> [--model m] [--resume id] [--json] [--verbose] "pro
 pnpm kelpie:serve --cwd <repo> [--model m]   # daemon only; serves apps/web/dist after `pnpm build`
 ```
 
+The dev daemon (`pnpm dev`, `pnpm kelpie:serve`) keeps its data in `~/.kelpie-dev` unless `KELPIE_HOME` says otherwise, so it runs beside an installed Kelpie, which uses `~/.kelpie` and port 3173.
+
 The daemon restarts whenever its own source or an adapter's source changes. Round-ups survive the restart, but a turn in progress is interrupted.
 
 In the dev runner: type a line to send another turn, Ctrl-C to interrupt the turn, and Ctrl-C again (or `/exit`) to end the session.
