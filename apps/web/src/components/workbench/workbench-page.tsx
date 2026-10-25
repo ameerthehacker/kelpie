@@ -14,7 +14,7 @@ const FLASH_FOR = 2400;
  * at `/workbench/:cardId` (a link an orchestrator shares), it scrolls to that card and marks it.
  */
 export function WorkbenchPage({ cardId }: { cardId?: string }) {
-  const { cards, error } = useWorkbench();
+  const { cards, error, unavailable } = useWorkbench();
   const approvals = useApprovals();
   const now = useNow();
   const cols = useMemo(() => columns(cards ?? [], now), [cards, now]);
@@ -23,13 +23,15 @@ export function WorkbenchPage({ cardId }: { cardId?: string }) {
   const linked = cardId ? cards?.find((c) => c.id === cardId) : undefined;
   const linkedShown = !!linked && onBoard(linked, now);
 
-  // Once per link: the card scrolls into view when it is first on the board, then its ring fades.
+  // Once per link: the card scrolls into view and takes focus when it is first on the board, then its ring fades.
   const [flash, setFlash] = useState<string | undefined>();
   const scrolledTo = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!cardId || !linkedShown || scrolledTo.current === cardId) return;
     scrolledTo.current = cardId;
-    document.getElementById(`card-${cardId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    const el = document.getElementById(`card-${cardId}`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    el?.focus({ preventScroll: true });
     setFlash(cardId);
   }, [cardId, linkedShown]);
   useEffect(() => {
@@ -48,8 +50,10 @@ export function WorkbenchPage({ cardId }: { cardId?: string }) {
             : `${shown} feature${shown === 1 ? '' : 's'}${waiting ? ` · ${waiting} need${waiting === 1 ? 's' : ''} you` : ''}`}
         </p>
         {error && <p className="text-fail text-sm">Couldn’t load the Workbench: {error}</p>}
-        {cardId && cards && !linkedShown && (
-          <p className="text-mu2 text-[13px]">{linked?.archived ? 'That card was removed from the board.' : linked ? 'That card is done and has left the board.' : 'That card isn’t on the board.'}</p>
+        {unavailable ? (
+          <p className="text-mu2 text-[13px]">The Workbench isn’t available yet.</p>
+        ) : (
+          cardId && cards && !linkedShown && <p className="text-mu2 text-[13px]">That card isn’t on the board.</p>
         )}
       </div>
 
@@ -67,7 +71,7 @@ export function WorkbenchPage({ cardId }: { cardId?: string }) {
                 {cards === undefined && !error && <Skeleton className="h-36 rounded-[18px]" />}
                 {cards !== undefined && list.length === 0 && <p className="text-mu2 px-1.5 pb-1.5 text-[13px]">Nothing here</p>}
                 {list.map((card) => (
-                  <BoardCard key={card.id} card={card} approvals={approvals} now={now} highlight={flash === card.id} />
+                  <BoardCard key={card.id} card={card} approvals={approvals} now={now} linked={card.id === cardId} highlight={flash === card.id} />
                 ))}
               </section>
             );

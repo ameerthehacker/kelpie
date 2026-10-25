@@ -14,7 +14,7 @@ export async function api<T = unknown>(method: string, url: string, body?: unkno
     method,
     ...(write ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}) } : {}),
   });
-  const json = res.status === 204 ? {} : await res.json().catch(() => ({}));
+  const json = (res.status === 204 ? {} : await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new HttpError(json.error ?? `${res.status} ${res.statusText}`, res.status);
   return json as T;
 }

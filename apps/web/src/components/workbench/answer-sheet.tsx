@@ -1,5 +1,5 @@
 import { ArrowUpIcon, ClipboardListIcon } from 'lucide-react';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import type { WorkbenchCard } from '@kelpie/protocol';
 import { ApprovalTray } from '@/components/approvals/approval-tray';
@@ -26,12 +26,14 @@ export function AnswerSheet({ card, approvals, callout, open, onOpenChange }: Pr
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const plans = approvals.filter(isPlan);
-  useEffect(() => {
-    if (!open) {
+  // Closing it forgets how the last reply went; a draft stays.
+  const openChange = (next: boolean) => {
+    if (!next) {
       setSent(false);
       setError(undefined);
     }
-  }, [open]);
+    onOpenChange(next);
+  };
 
   const send = async (e: FormEvent) => {
     e.preventDefault();
@@ -51,7 +53,7 @@ export function AnswerSheet({ card, approvals, callout, open, onOpenChange }: Pr
   };
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet open={open} onOpenChange={openChange}>
       <SheetContent className="bg-background w-full gap-0 data-[side=right]:sm:max-w-[460px]">
         <SheetHeader className="px-5 pt-5 pb-3">
           <SheetTitle className="font-heading pr-8 text-xl font-semibold tracking-[-0.02em]">{card.title}</SheetTitle>

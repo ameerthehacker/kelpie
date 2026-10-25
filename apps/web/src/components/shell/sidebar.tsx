@@ -244,7 +244,12 @@ export function AppSidebar({ roundUps, currentId, onNavigate, onRename, onDelete
       >
         <SquareKanbanIcon className="text-fg2 size-4" strokeWidth={1.8} />
         <span className="flex-1">Workbench</span>
-        {boardWaiting > 0 && <span className="text-wait text-xs font-semibold">{boardWaiting}</span>}
+        {boardWaiting > 0 && (
+          <span className="text-wait text-xs font-semibold">
+            {boardWaiting}
+            <span className="sr-only"> need you</span>
+          </span>
+        )}
       </Link>
 
       {approvals.length > 0 && (
