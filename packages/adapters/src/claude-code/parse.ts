@@ -15,6 +15,8 @@ export interface ParserOptions {
   runId: string;
   /** Clock, injectable so fixture snapshots are deterministic. */
   now?: () => string;
+  /** The todo list so far, when resuming a session: the CLI still has it, and updates refer to its ids. */
+  todos?: TodoItem[];
 }
 
 interface PendingTool {
@@ -56,6 +58,7 @@ export class ClaudeCodeParser {
   constructor(opts: ParserOptions) {
     this.runId = opts.runId;
     this.now = opts.now ?? (() => new Date().toISOString());
+    this.todos = [...(opts.todos ?? [])];
   }
 
   get harnessSessionId(): string | undefined {

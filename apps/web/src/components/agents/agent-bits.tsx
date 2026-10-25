@@ -2,11 +2,14 @@ import type { TodoItem } from '@kelpie/protocol';
 import type { AgentStatus } from '@/lib/agents';
 import { cn } from '@/lib/utils';
 
-/** The design's status marks: a pulsing dot while working, a solid one when done or failed, a ring otherwise. */
-export function StatusDot({ status, className }: { status: AgentStatus; className?: string }) {
+/**
+ * The design's status marks: a pulsing dot while working, a solid one when done or failed, a ring otherwise.
+ * With a `label`, it is announced (and shown on hover) as that; otherwise it is decoration.
+ */
+export function StatusDot({ status, label, className }: { status: AgentStatus; label?: string; className?: string }) {
   return (
     <span
-      aria-hidden="true"
+      {...(label ? { role: 'img', 'aria-label': label, title: label } : { 'aria-hidden': true })}
       className={cn(
         'inline-block size-[7px] shrink-0 rounded-full',
         status === 'working' && 'bg-run animate-k-pulse',

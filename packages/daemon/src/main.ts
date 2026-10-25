@@ -8,9 +8,12 @@
  * disk (default 20), KELPIE_WORKTREE_IDLE_DAYS how long an unused clean one stays (default 3), and
  * KELPIE_MAX_UPLOAD_MB the largest file one upload may be (default 25); `pnpm dev` runs it through turbo,
  * whose working directory is this package, so it passes the repo via KELPIE_CWD.
- * Round-ups, run logs and each round-up's scratch folder live under KELPIE_HOME (default ~/.kelpie).
- * The published CLI (apps/cli) starts the same daemon through `startDaemon`.
+ * Round-ups, run logs, worktrees and each round-up's scratch folder live under KELPIE_HOME, which
+ * defaults here to ~/.kelpie-dev so a dev daemon can run beside an installed Kelpie (which holds the
+ * lock on ~/.kelpie). The published CLI (apps/cli) starts the same daemon through `startDaemon`,
+ * not this file, so it keeps ~/.kelpie.
  */
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { limitsFromEnv, startDaemon } from './start.js';
@@ -26,7 +29,7 @@ const { values: opts } = parseArgs({
 const daemon = await startDaemon({
   cwd: opts.cwd,
   port: Number(opts.port),
-  ...(process.env.KELPIE_HOME ? { home: process.env.KELPIE_HOME } : {}),
+  home: process.env.KELPIE_HOME || join(homedir(), '.kelpie-dev'),
   ...(opts.model ? { model: opts.model } : {}),
   staticDir: join(import.meta.dirname, '../../../apps/web/dist'),
   ...limitsFromEnv(),

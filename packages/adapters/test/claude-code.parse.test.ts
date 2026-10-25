@@ -144,6 +144,32 @@ describe('claude-code mapping', () => {
     expect(toolTitle('Grep', { pattern: 'add', path: '/work/repo/src' }, '/work/repo')).toBe('add in src');
   });
 
+  it('applies updates to todos a resumed session created before', () => {
+    const created = new Set(lines('todos').flatMap((o) => (o.message?.content ?? []).filter((b: any) => b.name === 'TaskCreate').map((b: any) => b.id)));
+    const resumed = lines('todos').filter((o) => !(o.message?.content ?? []).some((b: any) => created.has(b.id) || created.has(b.tool_use_id)));
+    const todos = [
+      { id: '1', text: 'Count lines', status: 'pending' as const },
+      { id: '2', text: 'Report', status: 'pending' as const },
+    ];
+    const seed = structuredClone(todos);
+    const parser = new ClaudeCodeParser({ runId: 'r', todos });
+    const evs = resumed.flatMap((o, i) => parser.parse(o, i + 1));
+    expect(of(evs, 'todos').at(-1)!.data.items.map((t) => `${t.id}:${t.status}`)).toEqual(['1:completed', '2:completed']);
+    expect(todos).toEqual(seed); // the caller's list is left as it was
+  });
+
+  it('replaces a todo whose id is created again, rather than listing it twice', () => {
+    const items = [
+      { id: '1', text: 'old', status: 'completed' as const },
+      { id: '2', text: 'other', status: 'pending' as const },
+    ];
+    expect(applyTodoTool('TaskCreate', { subject: 'new' }, { task: { id: '1' } }, items)).toEqual([
+      { id: '1', text: 'new', status: 'pending' },
+      { id: '2', text: 'other', status: 'pending' },
+    ]);
+    expect(items[0]!.text).toBe('old');
+  });
+
   it('ignores updates to todos it never saw created', () => {
     const items = [{ id: '1', text: 'a', status: 'pending' as const }];
     expect(applyTodoTool('TaskUpdate', { taskId: '9', status: 'completed' }, { success: true }, items)).toBeUndefined();

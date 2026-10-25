@@ -1,33 +1,54 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { realpathSync, statSync } from 'node:fs';
-import { basename, resolve, sep } from 'node:path';
+import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
-import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer, type RunSpec } from '@kelpie/adapters';
+import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
 import { Harness, type AgentUpdate, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
-import type { RunContext, SentFile, Session, SessionHooks, SessionManager } from '../sessions.js';
+import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
 import { logLines, report, type AgentReport, type LogPage } from './digest.js';
 import { GitError, type Branch, type Worktrees } from '../worktrees.js';
 import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, musterPrompt, orchestratorPrompt, type WorkPlace } from './prompt.js';
 
 /**
- * The orchestrator's built-in tools: none for the repo. Its plan is its agents (list_agents),
- * which the person sees in the agent pane; everything it can do is the kelpie MCP server, plus
- * SCRATCH_TOOLS inside its scratch folder when it has one.
+ * The orchestrator's built-in tools: read-only ones, for its repo checkout, its feature branch's
+ * worktree and its scratch folder. No Bash: Claude Code approves some commands itself (read-only
+ * ones; filesystem ones like rm in accept-edits) before Kelpie is asked, so it can't be held to
+ * read-only git. Its plan is its agents (list_agents); everything else is the kelpie MCP server.
  */
-export const ORCHESTRATOR_TOOLS: string[] = [];
-/** File tools the orchestrator gets for its scratch folder only (uploads to look at, files to pass on). */
-export const SCRATCH_TOOLS = ['Read', 'Write'];
+export const ORCHESTRATOR_TOOLS = ['Read', 'Grep', 'Glob'];
+/** Tools the orchestrator gets to write in its scratch folder only (a spec to pass on), never in the repo. */
+export const SCRATCH_TOOLS = ['Edit', 'Write'];
 const FILE_TOOLS = ['Read', 'Edit', 'Write'];
 /** A permission rule's pattern for everything under an absolute path (Claude Code writes those with a leading `//`). */
 const under = (dir: string) => `/${dir}/**`;
-const real = (path: string) => {
+const exists = (path: string) => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+/**
+ * A path with links resolved, as far up as it exists (a file still to be written sits in a real
+ * directory). Undefined if something on the way is there but won't resolve, like a link to a
+ * missing file: writing through it would create its target, wherever that is.
+ */
+const real = (path: string): string | undefined => {
   try {
     return realpathSync(path);
   } catch {
-    return path;
+    if (exists(path)) return undefined;
+    const parent = dirname(path);
+    if (parent === path) return path;
+    const up = real(parent);
+    return up === undefined ? undefined : join(up, basename(path));
   }
 };
+const within = (path: string, dir: string) => path === dir || path.startsWith(dir + sep);
+/** A `..` segment: refused, not folded, since the OS follows a link before it goes up while `resolve` folds first. */
+const goesUp = (path: string) => path.split(/[\\/]/).includes('..');
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 export const READ_ONLY_TOOLS = DEFAULT_TOOLS.filter((t) => !EDIT_TOOLS.has(t));
 
@@ -96,6 +117,8 @@ export interface AgentList {
   /** The branch the round-up started from, and its feature branch (home), once they exist. */
   baseBranch: string | undefined;
   featureBranch: string | undefined;
+  /** Where the feature branch is checked out, while it is on disk: the orchestrator may read it. */
+  featureCheckout: string | undefined;
   /** The mode the person has the round-up in. */
   mode: Mode;
   agents: AgentInfo[];
@@ -155,7 +178,7 @@ export class Orchestrator implements SessionHooks {
 
   // ── hooks ────────────────────────────────────────────────────────────
 
-  specFor(session: Session, run: RunContext): Partial<RunSpec> {
+  specFor(session: Session, run: RunContext): Partial<SessionDefaults> {
     const preface = run.fresh && run.hadHistory ? freshPreface(session.role, this.store.firstSent(session.id)?.text) : '';
     const scratch = session.scratch;
     if (session.role === 'agent') {
@@ -176,24 +199,30 @@ export class Orchestrator implements SessionHooks {
     this.tokenOfRun.set(run.runId, token);
     const mcp = { mcpServers: { kelpie: { type: 'http', url: this.mcpUrl, headers: { Authorization: `Bearer ${token}` } } } };
     // Deny beats allow, so a scratch folder inside the repo (KELPIE_HOME under it) would be denied
-    // along with it: then only the prompt keeps the orchestrator out of the repo.
-    const cwd = real(session.cwd);
-    const fenced = !!scratch && !scratch.startsWith(cwd + sep);
+    // along with it: then `decide` alone keeps the orchestrator from editing the repo.
+    const cwd = real(session.cwd) ?? session.cwd;
+    const fenced = !!scratch && !within(scratch, cwd);
     if (scratch && !fenced && !this.warnedUnfenced) {
       this.warnedUnfenced = true;
-      console.warn(`kelpie: the scratch folder ${scratch} is inside ${cwd}; orchestrators can't be kept out of that directory. Set KELPIE_HOME outside it.`);
+      console.warn(`kelpie: the scratch folder ${scratch} is inside ${cwd}; only Kelpie's own checks keep orchestrators from editing that directory. Set KELPIE_HOME outside it.`);
     }
+    // Every worktree, the feature branch's included (it may not exist yet), is under Kelpie's root.
+    const root = this.worktrees && (real(this.worktrees.root) ?? this.worktrees.root);
+    const denied = [...(fenced ? [cwd] : []), ...(root && !(scratch && within(scratch, root)) ? [root] : [])];
     const planning = session.mode === 'plan';
     return {
       // In plan mode it puts its plan to the person with ExitPlanMode, which only works in the harness's own plan mode.
-      tools: [...(scratch ? SCRATCH_TOOLS : ORCHESTRATOR_TOOLS), ...(planning ? ['ExitPlanMode'] : [])],
-      // Otherwise its own tools are all settled by rule (or by `decide`); the mode is for its agents (and its prompt).
-      permissionMode: planning ? 'plan' : 'acceptEdits',
-      // Its file tools reach the scratch folder and nothing else: the repo it runs in is denied
-      // outright, and anything outside both is refused for want of a permission.
-      allowedTools: ['mcp__kelpie', ...(scratch ? FILE_TOOLS.map((t) => `${t}(${under(scratch)})`) : [])],
+      tools: [...ORCHESTRATOR_TOOLS, ...(scratch ? SCRATCH_TOOLS : []), ...(planning ? ['ExitPlanMode'] : [])],
+      // Default mode, never accept-edits: then every edit asks, and `decide` lets through only those
+      // in the scratch folder. The round-up's mode is for its agents (and its prompt).
+      permissionMode: planning ? 'plan' : 'default',
+      // It reads its repo checkout (its cwd) and scratch folder without asking. Reads anywhere else,
+      // the feature branch's worktree included, and all edits go to `decide`.
+      allowedTools: ['mcp__kelpie', ...(scratch ? [`Read(${under(scratch)})`] : [])],
       ...(scratch ? { addDirs: [scratch] } : {}),
-      ...(fenced ? { disallowedTools: FILE_TOOLS.map((t) => `${t}(${under(cwd)})`) } : {}),
+      // A backstop for edit rules in the project's or the person's own settings, which would settle
+      // a request before `decide` sees it: never in the repo or in a worktree.
+      ...(denied.length && scratch ? { disallowedTools: denied.flatMap((dir) => SCRATCH_TOOLS.map((t) => `${t}(${under(dir)})`)) } : {}),
       mcpConfig: [JSON.stringify(mcp)],
       appendSystemPrompt: orchestratorPrompt(scratch, session.mode) + preface,
     };
@@ -234,7 +263,7 @@ export class Orchestrator implements SessionHooks {
     // then Kelpie's own refusals keep writers out).
     session.restartWhenIdle();
     if (session.mode !== 'plan') {
-      void session.switchMode('acceptEdits').catch((err) => console.error(`orchestrator ${session.id}: could not switch mode`, err));
+      void session.switchMode('default').catch((err) => console.error(`orchestrator ${session.id}: could not switch mode`, err));
     }
     const mode = agentMode(session.mode);
     // Not awaited: a wedged harness must not hold up the person's change. One that misses it keeps
@@ -248,9 +277,10 @@ export class Orchestrator implements SessionHooks {
   }
 
   /**
-   * Answers what the orchestrator's harness asks by policy: its kelpie tools, and its file tools in
-   * its scratch folder, are always fine; anything else is refused. Its plan goes to the person. An
-   * agent's requests all go to the person.
+   * Answers what the orchestrator's harness asks by policy: its kelpie tools, its read tools in its
+   * repo checkout, feature branch worktree and scratch folder, and its edit tools in its scratch
+   * folder, are always fine; anything else is refused. Its plan goes to the person. An agent's
+   * requests all go to the person.
    */
   decide(session: Session, req: EventData<'permission.requested'>): PermissionAnswer | undefined {
     if (session.role !== 'orchestrator') return undefined;
@@ -258,18 +288,32 @@ export class Orchestrator implements SessionHooks {
       return session.mode === 'plan' ? undefined : { allow: false, by: 'kelpie', message: 'This round-up is not in plan mode any more: carry on with the work.' };
     }
     if (req.tool.startsWith('mcp__kelpie__')) return { allow: true, by: 'kelpie' };
-    const input = (req.input ?? {}) as { file_path?: unknown };
+    const input = (req.input ?? {}) as { file_path?: unknown; path?: unknown; pattern?: unknown };
     const scratch = session.scratch;
-    if (scratch && SCRATCH_TOOLS.includes(req.tool) && typeof input.file_path === 'string') {
-      const path = resolve(scratch, input.file_path);
-      if (path.startsWith(scratch + sep)) return { allow: true, by: 'kelpie' };
+    const cwd = real(session.cwd) ?? session.cwd;
+    // Where a path really leads: relative ones from its cwd, as the harness takes them.
+    const place = (path: unknown) => (typeof path === 'string' && !goesUp(path) ? real(resolve(cwd, path)) : undefined);
+    if (ORCHESTRATOR_TOOLS.includes(req.tool)) {
+      // Read names a file; Grep and Glob a directory to search, their cwd when they name none.
+      const target = place(req.tool === 'Read' ? input.file_path : (input.path ?? cwd));
+      // A Glob pattern names files under that directory, so it may not lead anywhere of its own.
+      const pattern = input.pattern;
+      const contained = req.tool !== 'Glob' || (typeof pattern === 'string' && !isAbsolute(pattern) && !pattern.startsWith('~') && !goesUp(pattern));
+      const home = this.store.worktreeOf(session.id)?.path;
+      const readable = [cwd, home && real(home), scratch].filter((dir): dir is string => !!dir);
+      // Resolved through links, so none can lead out of those directories.
+      if (target && contained && readable.some((dir) => within(target, dir))) return { allow: true, by: 'kelpie' };
+    }
+    if (scratch && SCRATCH_TOOLS.includes(req.tool)) {
+      const path = place(input.file_path);
+      if (path?.startsWith(scratch + sep)) return { allow: true, by: 'kelpie' };
     }
     return {
       allow: false,
       by: 'kelpie',
       message: scratch
-        ? `You may only use your kelpie tools, and Read/Write inside your scratch folder (${scratch}). Give repo work to an agent.`
-        : 'You may only use your kelpie tools. Give this work to an agent.',
+        ? `You may only use your kelpie tools, read the repo and your feature branch, and write inside your scratch folder (${scratch}). Give changes, commands, and anything else to an agent.`
+        : 'You may only use your kelpie tools and read the repo and your feature branch. Give changes, commands, and anything else to an agent.',
     };
   }
 
@@ -353,10 +397,12 @@ export class Orchestrator implements SessionHooks {
     }
   }
 
-  list(parent: Session): AgentList {
+  async list(parent: Session): Promise<AgentList> {
+    const home = this.store.worktreeOf(parent.id);
     return {
       baseBranch: parent.baseBranch,
-      featureBranch: this.store.worktreeOf(parent.id)?.branch,
+      featureBranch: home?.branch,
+      featureCheckout: home && (await this.checkout(home)),
       mode: parent.mode,
       agents: this.manager.children(parent.id).map((c) => this.agentInfo(c)),
     };
@@ -669,6 +715,20 @@ export class Orchestrator implements SessionHooks {
   private async release(row: WorktreeRow): Promise<void> {
     if (!this.sessions) return;
     await Promise.all(this.manager.all().filter((s) => s.cwd === row.path && !this.isWorking(s)).map((s) => s.stop()));
+  }
+
+  /**
+   * The feature branch's worktree for the orchestrator to read, brought back if the sweep took it
+   * (its reads don't count as use). Undefined if it can't be: it has no other way to make one.
+   */
+  private async checkout(home: WorktreeRow): Promise<string | undefined> {
+    if (!this.worktrees) return existsSync(home.path) ? home.path : undefined;
+    try {
+      return (await this.worktrees.ensure(home)).path;
+    } catch (err) {
+      console.error(`could not bring back the feature branch's worktree ${home.path}`, err);
+      return undefined;
+    }
   }
 
   /** Someone is working in this worktree right now, or about to (its writer, Muster, or a reader). */
