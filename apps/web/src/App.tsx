@@ -14,6 +14,7 @@ import { AttachmentChips } from '@/components/chat/attachments';
 import { ChatLog } from '@/components/chat/chat-log';
 import { Composer } from '@/components/chat/composer';
 import { WorkingStatus } from '@/components/chat/working-status';
+import { AgentCrumb } from '@/components/shell/agent-crumb';
 import { KelpieLogo } from '@/components/shell/brand';
 import { Search } from '@/components/shell/search';
 import { AppSidebar } from '@/components/shell/sidebar';
@@ -173,7 +174,8 @@ export function App() {
     <AppSidebar
       className={className}
       roundUps={roundUps}
-      currentId={roundUpId}
+      // A sub-agent's page sits under its round-up.
+      currentId={current?.role === 'agent' ? current.parentId : roundUpId}
       onNavigate={() => {
         // On a phone the sidebar is a sheet over the chat; get it out of the way once something is picked.
         setMobileNav(false);
@@ -219,6 +221,7 @@ export function App() {
                   <PanelLeftIcon className="size-[17px]" strokeWidth={1.7} />
                 </button>
               )}
+              {current?.role === 'agent' && current.parentId && <AgentCrumb agent={current} roundUp={roundUps?.find((r) => r.id === current.parentId)} />}
               <span className="flex-1" />
               <Search roundUps={roundUps} />
               <AgentsButton />

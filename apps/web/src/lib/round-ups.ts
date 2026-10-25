@@ -7,6 +7,11 @@ import type { PendingApproval } from './approvals.js';
 export const ROUND_UP_ROUTE = '/r/:roundUpId';
 export const roundUpPath = (roundUpId: string) => generatePath(ROUND_UP_ROUTE, { roundUpId });
 
+/** History state on a page opened from inside the app: the path it was opened from. */
+export interface OpenedFrom {
+  from: string;
+}
+
 /** A round-up as the daemon lists it (mirrors the daemon's `SessionInfo`). */
 export interface RoundUp {
   id: string;
