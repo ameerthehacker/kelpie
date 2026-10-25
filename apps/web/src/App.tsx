@@ -7,12 +7,12 @@ import { AgentPaneSlot, AgentsButton } from '@/components/agents/agent-pane';
 import { AgentPaneProvider } from '@/components/agents/pane-state';
 import { PlanDock, TodoDock } from '@/components/agents/plan-dock';
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation';
-import { Shimmer } from '@/components/ai-elements/shimmer';
 import { AssistantParts } from '@/components/chat/assistant-part';
 import { ApprovalTray } from '@/components/approvals/approval-tray';
 import { ApprovalsPage } from '@/components/approvals/approvals-page';
 import { AttachmentChips } from '@/components/chat/attachments';
 import { Composer } from '@/components/chat/composer';
+import { WorkingStatus } from '@/components/chat/working-status';
 import { KelpieLogo } from '@/components/shell/brand';
 import { Search } from '@/components/shell/search';
 import { AppSidebar } from '@/components/shell/sidebar';
@@ -100,7 +100,7 @@ export function App() {
   const [modelError, setModelError] = useState<string | undefined>();
   const { roundUps, error: listError, defaultCwd, rename, remove, actionError, clearActionError } = useRoundUps();
   const onCreated = useCallback((id: string) => navigate(roundUpPath(id), { replace: true }), [navigate]);
-  const { items, todos, status, busy, error, send, interrupt } = useSession(roundUpId, onCreated, {
+  const { events, items, todos, status, busy, error, send, interrupt } = useSession(roundUpId, onCreated, {
     model: draftModel || undefined,
     baseBranch: draftBase || undefined,
     mode: draftMode,
@@ -122,8 +122,6 @@ export function App() {
   // opened directly is not known to be one until its own fetch answers.
   const agents = useAgents(current?.role === 'orchestrator' ? roundUpId : undefined);
   const last = items.at(-1);
-  // Show a working indicator unless the agent is visibly streaming text right now.
-  const working = busy && (last?.role !== 'assistant' || last.parts.at(-1)?.type !== 'text');
   // Steps on a sub-agent's own page are its own; everywhere else they are Kelpie's.
   const actor = current?.role === 'agent' ? titleOf(current) : 'Kelpie';
   const model = roundUpId ? (current?.model ?? '') : draftModel;
@@ -245,7 +243,8 @@ export function App() {
                         </div>
                       ),
                     )}
-                    {working && <Shimmer className="text-sm">Working…</Shimmer>}
+                    {/* Whenever the composer offers stop: the same busy state, whoever started the turn. */}
+                    {busy && <WorkingStatus events={events} agents={agents ?? NO_AGENTS} />}
                   </ConversationContent>
                   <ConversationScrollButton />
                 </Conversation>
