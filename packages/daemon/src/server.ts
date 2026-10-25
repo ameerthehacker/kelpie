@@ -7,6 +7,8 @@ import { bodyLimit } from 'hono/body-limit';
 import { streamSSE, type SSEMessage } from 'hono/streaming';
 import { getMimeType } from 'hono/utils/mime';
 import { Mode } from '@kelpie/protocol';
+import type { Connections } from './connectors/connector.js';
+import { connectionRoutes } from './connectors/routes.js';
 import { isLocalHost, isLocalOrigin } from './local.js';
 import { handleMcp } from './orchestrator/mcp.js';
 import { BaseFixedError, type Orchestrator } from './orchestrator/orchestrator.js';
@@ -29,6 +31,8 @@ export interface AppOptions {
   orchestrator?: Orchestrator;
   /** Largest file one upload may be. Default 25 MB. */
   maxUploadBytes?: number;
+  /** Services Kelpie connects to (GitHub), served at `/api/connections`. */
+  connections?: Connections;
 }
 
 /**
@@ -303,6 +307,8 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
       s.subscribe((u) => send({ event: 'kef', id: String(u.index), data: JSON.stringify(u.event) }), Number.isFinite(lastId) ? lastId + 1 : 0, end),
     );
   });
+
+  if (opts.connections) app.route('/api/connections', connectionRoutes(opts.connections));
 
   // Keep unknown API paths out of the SPA fallback below.
   app.all('/api/*', (c) => c.json({ error: 'not found' }, 404));
