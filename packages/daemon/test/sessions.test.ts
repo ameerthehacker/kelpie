@@ -165,12 +165,14 @@ describe('persistent round-ups', () => {
     let sessions = manager(store, { FAKE_RESUME_FAIL: '1' }, { adapter: recording(specs) });
     let session = sessions.get('s')!;
     session.send('hello again');
-    const failed = await until(session, 'process.exited', 1);
-    const log = await until(session, 'turn.ended', failed.length);
+    // Only the fresh run reports a session.
+    const fresh = await until(session, 'session.started', 2);
+    const log = await until(session, 'turn.ended', fresh.length);
     await sessions.stopAll();
     expect(specs.map((s) => [s.resume, s.todos?.length])).toEqual([['gone', 1], [undefined, undefined]]);
     // Right after the failed process: an empty list (no sub-agent's), which the pane and the next seed both read.
-    const reset = log[failed.length]!;
+    const failed = log.findIndex((e) => e.kind === 'process.exited' && e.data.code === 1);
+    const reset = log[failed + 1]!;
     expect(reset.parentCallId).toBeUndefined();
     expect(listOf(reset)).toEqual([]);
     expect(log.filter((e) => e.kind === 'todos')).toHaveLength(2);
