@@ -45,6 +45,8 @@ export function useRoundUps() {
             attention.sessions(rows);
             void queryClient.invalidateQueries({ queryKey: AGENTS });
           },
+          // Straight after, on every (re)connect: which sub-agents are working, for notifications.
+          'sub-agents': (msg) => attention.subAgents(JSON.parse(msg.data) as RoundUp[]),
           // Sub-agents' too: notifications tell them apart from their round-up's by parentId.
           session: (msg) => {
             const info = JSON.parse(msg.data) as RoundUp;
@@ -73,6 +75,7 @@ export function useRoundUps() {
           deleted: (msg) => {
             const { id } = JSON.parse(msg.data) as { id: string };
             queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => rows?.filter((r) => r.id !== id));
+            attention.deleted(id);
           },
         },
         onStatus: setStreamError,

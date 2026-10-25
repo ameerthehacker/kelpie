@@ -1,25 +1,28 @@
 import { useSyncExternalStore } from 'react';
-import type { AttentionSettings, AttentionSummary } from './attention.js';
+import { DEFAULT_SETTINGS, parseSettings, type AttentionSettings, type AttentionSummary } from './attention.js';
 
 // Notification settings, remembered per browser like the theme.
 const KEY = 'kelpie.notifications';
-const DEFAULTS: AttentionSettings = { enabled: false, sound: true, level: 'needed' };
 const listeners = new Set<() => void>();
 
 function read(): AttentionSettings {
   try {
-    const v = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<AttentionSettings>;
-    return {
-      enabled: typeof v.enabled === 'boolean' ? v.enabled : DEFAULTS.enabled,
-      sound: typeof v.sound === 'boolean' ? v.sound : DEFAULTS.sound,
-      level: v.level === 'all' ? 'all' : 'needed',
-    };
+    return parseSettings(localStorage.getItem(KEY));
   } catch {
-    return DEFAULTS;
+    return DEFAULT_SETTINGS;
   }
 }
 
 let current = read();
+
+// Changed in another tab: this one follows (it may be the one that notifies).
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== KEY && e.key !== null) return;
+    current = read();
+    listeners.forEach((l) => l());
+  });
+}
 
 export const notificationSettings = () => current;
 
@@ -51,21 +54,37 @@ export const permission = (): Permission => (typeof Notification === 'undefined'
  */
 export async function enableNotifications(): Promise<Permission> {
   let p = permission();
-  if (p === 'default') p = await Notification.requestPermission().catch(() => 'default' as const);
+  if (p === 'default') p = await requestPermission();
   setNotificationSettings({ enabled: true }); // re-renders the menu, which reads the permission
   return p;
 }
 
-/** The tab is hidden, or another window has focus: the only time to notify. */
+/** Older Safari takes a callback and returns nothing; newer browsers return a promise. */
+function requestPermission(): Promise<NotificationPermission> {
+  return new Promise((resolve) => {
+    try {
+      const asked = Notification.requestPermission(resolve) as Promise<NotificationPermission> | undefined;
+      asked?.then(resolve, () => resolve('default'));
+    } catch {
+      resolve('default');
+    }
+  });
+}
+
+/** The tab is hidden, or another window has focus. */
 export const isAway = () => document.visibilityState === 'hidden' || !document.hasFocus();
 
 // One notification at a time: each replaces the last (the same tag), so the tray never stacks.
 const TAG = 'kelpie-attention';
 let shown: Notification | undefined;
 
+/** Our notification is still in the tray: not clicked, dismissed, or closed as the person came back. */
+export const notificationShowing = () => !!shown;
+
 /**
  * Shows a bundle. An alert is a fresh banner (the old one closed first); otherwise the one in the
- * tray is updated in place, which the OS does without a banner. Our own chime is the sound.
+ * tray is updated in place, which the OS does without a banner (the tracker only asks for that
+ * while `notificationShowing`). Our own chime is the sound.
  */
 export function showNotification(summary: AttentionSummary, alert: boolean, onClick: (path: string) => void) {
   if (permission() !== 'granted') return;
@@ -76,6 +95,9 @@ export function showNotification(summary: AttentionSummary, alert: boolean, onCl
       window.focus();
       onClick(summary.path);
       n.close();
+    };
+    n.onclose = () => {
+      if (shown === n) shown = undefined;
     };
     shown = n;
   } catch {
