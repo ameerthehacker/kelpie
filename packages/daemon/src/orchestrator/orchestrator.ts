@@ -260,8 +260,9 @@ export class Orchestrator implements SessionHooks {
     if (event.kind === 'activity' && !event.data.busy && session.role === 'agent') {
       if (session.parentId) {
         this.schedule(session.parentId);
-        // Its Changes tab may show new work.
+        // Its Changes tab may show new work, and threads on its diff may sit elsewhere now.
         this.sessions?.publish({ type: 'changes', roundUpId: session.parentId, sessionId: session.id });
+        this.reviewMoved(session.parentId);
       }
       // A slot or the repo may have freed up for an agent waiting to resume.
       if (this.waiting.size) this.resumeWaiting();
@@ -797,9 +798,15 @@ export class Orchestrator implements SessionHooks {
     }
   }
 
-  /** The feature branch moved: its Changes tab should refetch. */
+  /** The feature branch moved: its Changes tab should refetch, and its threads may have moved or gone outdated. */
   private changesIn(roundUpId: string): void {
     this.sessions?.publish({ type: 'changes', roundUpId, sessionId: roundUpId });
+    this.reviewMoved(roundUpId);
+  }
+
+  /** A diff under a round-up's threads changed: where they sit (and whether outdated) goes out again, if it has any. */
+  private reviewMoved(roundUpId: string): void {
+    if (this.store.threadsOf(roundUpId).length) this.reviews.changed(roundUpId);
   }
 
   /** Ends the idle harness processes running in a worktree about to be removed. */

@@ -227,3 +227,28 @@ export function lineTextAt(
   }
   return undefined;
 }
+
+/**
+ * Where a comment being written goes when the diff under it changes (a muster, or a 409 "moved on"
+ * that reloaded it), as GitHub does with a pending comment: it stays on its line if that still says
+ * the same, or follows the text to the one line now saying it (`moved`). Undefined when the line is
+ * gone or ambiguous: the comment's text is kept, and the person picks the line again.
+ */
+export function followDraft<D extends { side: Side; line: number; text: string }>(
+  draft: D,
+  diff: Parameters<typeof lineTextAt>[0],
+): { draft: D; moved: boolean } | undefined {
+  if (lineTextAt(diff, draft.side, draft.line) === draft.text) return { draft, moved: false };
+  const want = draft.text.trim();
+  if (!want) return undefined;
+  let found: number | undefined;
+  for (const h of diff.hunks) {
+    const [start, count] = draft.side === 'additions' ? [h.additionStart, h.additionCount] : [h.deletionStart, h.deletionCount];
+    for (let line = start; line < start + count; line++) {
+      if (lineTextAt(diff, draft.side, line)?.trim() !== want) continue;
+      if (found !== undefined && found !== line) return undefined;
+      found = line;
+    }
+  }
+  return found === undefined ? undefined : { draft: { ...draft, line: found, text: lineTextAt(diff, draft.side, found)! }, moved: true };
+}

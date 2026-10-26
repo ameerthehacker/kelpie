@@ -68,6 +68,8 @@ export function checkBody(body: unknown): string {
  */
 export class Reviews {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** The latest state build started per round-up: only that one is sent. */
+  private readonly builds = new Map<string, number>();
 
   constructor(
     private readonly store: Store,
@@ -407,14 +409,22 @@ export class Reviews {
     };
   }
 
-  /** Something in a round-up's review changed: its whole state goes out, at most every 200 ms. */
+  /**
+   * Something in a round-up's review changed: its whole state goes out, at most every 200 ms. A state
+   * still being built when a newer one starts is dropped, so a slow build never overwrites a newer one.
+   */
   changed(roundUpId: string): void {
     if (this.timers.has(roundUpId)) return;
     const timer = setTimeout(() => {
       this.timers.delete(roundUpId);
-      if (!this.deps.session(roundUpId)) return;
+      if (!this.deps.session(roundUpId)) {
+        this.builds.delete(roundUpId);
+        return;
+      }
+      const build = (this.builds.get(roundUpId) ?? 0) + 1;
+      this.builds.set(roundUpId, build);
       this.state(roundUpId).then(
-        (state) => this.deps.publish({ type: 'review', roundUpId, state }),
+        (state) => this.builds.get(roundUpId) === build && this.deps.publish({ type: 'review', roundUpId, state }),
         (err) => console.error(`round-up ${roundUpId}: could not build its review state`, err),
       );
     }, PUBLISH_MS);
