@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { openStore } from '@kelpie/store';
 import { BaseFixedError, createApp, Orchestrator, SessionManager, ToolError, Worktrees, type Session } from '../src/index.js';
@@ -157,6 +157,7 @@ describe('worktrees for writing agents', () => {
 
   it('musters clean branches itself, hands a conflict to Muster, and believes git about the outcome', async () => {
     const hold = join(tmp('kelpie-hold-'), 'hold');
+    onTestFinished(() => rmSync(hold, { force: true })); // a failure must not leave the harnesses held
     const ctx = setup({ FAKE_EVERY_TURN: '1', FAKE_HOLD_FILE: hold });
     const { parent, call } = await orchestrator(ctx);
     await call('set_base_branch', { branch: 'origin/main' });

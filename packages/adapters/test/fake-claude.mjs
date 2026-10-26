@@ -15,7 +15,8 @@
 // asks to use that tool on the url FAKE_ASK. Interrupted while asking, it ends the turn the way the real
 // CLI does (ask-interrupt.jsonl): it cancels the request, unless FAKE_NO_CANCEL=1, then reports the turn aborted.
 // FAKE_ENV_FILE gets a line of JSON per start with the GitHub env it was given (GH_TOKEN, GITHUB_TOKEN).
-// FAKE_HOLD_FILE holds each user turn, unanswered, for as long as that file exists.
+// FAKE_HOLD_FILE holds each user turn, unanswered, for as long as that file exists; stdin is read in order,
+// so whatever comes after a held turn (control requests, interrupts, further turns) waits with it.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
