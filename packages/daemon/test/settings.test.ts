@@ -75,16 +75,28 @@ describe('settings', () => {
     expect(() => settings.update({ theme: 'dark' })).toThrow('unknown setting: theme');
     expect(() => settings.update({})).toThrow('nothing to change');
     expect(() => settings.update(null)).toThrow();
+    expect(() => settings.update({ maxAgents: undefined, extra: null })).toThrow('unknown setting: extra');
     expect(settings.get()).toEqual({ maxAgents: 4 });
     expect(changed).not.toHaveBeenCalled();
     settings.update({ maxAgents: 16 });
     expect(changed).toHaveBeenCalledWith({ maxAgents: 16 }, { maxAgents: 4 });
   });
 
+  it('forgets a saved limit on null, so the default (KELPIE_MAX_AGENTS) applies again', () => {
+    const store = openStore(':memory:');
+    const settings = new SavedSettings(store, { maxAgents: 6 });
+    settings.update({ maxAgents: 2 });
+    expect(store.settings()).toEqual({ maxAgents: 2 });
+    expect(settings.update({ maxAgents: null })).toEqual({ maxAgents: 6 });
+    expect(store.settings()).toEqual({});
+    expect(new SavedSettings(store, { maxAgents: 9 }).get().maxAgents).toBe(9);
+  });
+
   it('serves the settings with their range, and validates changes', async () => {
     const ctx = start(undefined, 3);
     const got = await ctx.app.request('/api/settings', { headers: LOCAL });
-    expect(await got.json()).toEqual({ maxAgents: 3, limits: { maxAgents: { min: 1, max: 16, default: 4 } } });
+    // The default a reset puts back is the one Kelpie was started with.
+    expect(await got.json()).toEqual({ maxAgents: 3, limits: { maxAgents: { min: 1, max: 16, default: 3 } } });
 
     const ok = await put(ctx.app, JSON.stringify({ maxAgents: 8 }));
     expect(ok.status).toBe(200);
@@ -96,7 +108,7 @@ describe('settings', () => {
       [{ maxAgents: 0 }, 'maxAgents must be at least 1'],
       [{ maxAgents: 33 }, 'maxAgents can be at most 16'],
       [{ maxAgents: 1.5 }, 'maxAgents must be a whole number'],
-      [{ maxAgents: null }, 'maxAgents must be a whole number'],
+      [{ maxAgents: '5' }, 'maxAgents must be a whole number'],
       [{ other: 1 }, 'unknown setting: other'],
       [{}, 'nothing to change: send maxAgents'],
     ] as const) {
@@ -106,6 +118,9 @@ describe('settings', () => {
     }
     expect((await put(ctx.app, 'not json')).status).toBe(400);
     expect(ctx.orch.maxAgents).toBe(8);
+    const reset = await put(ctx.app, JSON.stringify({ maxAgents: null }));
+    expect(await reset.json()).toMatchObject({ maxAgents: 3, limits: { maxAgents: { default: 3 } } });
+    expect(ctx.store.settings()).toEqual({});
     // Writes must be JSON, like every other (the CSRF guard).
     const form = await ctx.app.request('/api/settings', { method: 'PUT', headers: LOCAL, body: 'maxAgents=2' });
     expect(form.status).toBe(415);

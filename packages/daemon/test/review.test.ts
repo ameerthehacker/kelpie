@@ -438,7 +438,7 @@ describe("reviews made on an agent's own changes", () => {
     // The cap: Docs is working, and one agent at a time is the most.
     const busy = ctx.orch.message(parent, docs.id, 'one more thing');
     const cap = await submitted('at the cap');
-    expect(cap.text).toContain(`"at the cap" (made on "API"'s own changes, not sent straight to it: 1 agent is already working, the most at once)`);
+    expect(cap.text).toContain(`"at the cap" (made on "API"'s own changes, not sent straight to it: 1 agent is already working: the person allows at most 1 agent at once (they set this in Kelpie's Settings))`);
     await busy;
     await waitFor(() => !docs.working);
 

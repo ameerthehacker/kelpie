@@ -1,6 +1,20 @@
-import { MutationObserver, QueryClient } from '@tanstack/react-query';
+import { MutationObserver, QueryClient, QueryObserver } from '@tanstack/react-query';
+import { api } from '../src/lib/api.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MAX_AGENTS, parseAgents, saveSettingsOptions, settingsStream, SETTINGS, stepAgents, workingLabel, type Settings } from '../src/lib/settings.js';
+import {
+  defaultAgents,
+  MAX_AGENTS,
+  PAGE_STEP,
+  parseAgents,
+  saveSettingsOptions,
+  settingsStream,
+  SETTINGS,
+  stepAgents,
+  workingLabel,
+  type Settings,
+  type SettingsPatch,
+  type SettingsWithLimits,
+} from '../src/lib/settings.js';
 
 describe('the agent limit', () => {
   it('steps by one, never past the range', () => {
@@ -8,6 +22,8 @@ describe('the agent limit', () => {
     expect(stepAgents(4, -1)).toBe(3);
     expect(stepAgents(MAX_AGENTS.min, -1)).toBe(MAX_AGENTS.min);
     expect(stepAgents(MAX_AGENTS.max, 1)).toBe(MAX_AGENTS.max);
+    expect(stepAgents(14, PAGE_STEP)).toBe(MAX_AGENTS.max);
+    expect(stepAgents(3, -PAGE_STEP)).toBe(MAX_AGENTS.min);
   });
 
   it('takes a whole number in range, and says what is wrong with anything else', () => {
@@ -27,12 +43,12 @@ describe('the agent limit', () => {
 
 /** A PUT the test answers by hand: resolve with the daemon's answer, or reject with its refusal. */
 function deferredPuts() {
-  const calls: { body: Partial<Settings>; answer: (status: number, body: unknown) => void }[] = [];
+  const calls: { method: string; body: Partial<Record<keyof Settings, number | null>>; answer: (status: number, body: unknown) => void }[] = [];
   vi.stubGlobal(
     'fetch',
-    vi.fn((_url: string, init: RequestInit) => {
+    vi.fn((_url: string, init?: RequestInit) => {
       return new Promise<Response>((resolve) => {
-        calls.push({ body: JSON.parse(init.body as string), answer: (status, body) => resolve(new Response(JSON.stringify(body), { status })) });
+        calls.push({ method: init?.method ?? 'GET', body: init?.body ? JSON.parse(init.body as string) : {}, answer: (status, body) => resolve(new Response(JSON.stringify(body), { status })) });
       });
     }),
   );
@@ -47,7 +63,7 @@ describe('saving settings', () => {
   const setup = () => {
     const client = new QueryClient();
     client.setQueryData<Settings>(SETTINGS, { maxAgents: 4 });
-    const save = (patch: Partial<Settings>) => new MutationObserver(client, saveSettingsOptions(client)).mutate(patch).catch(() => undefined);
+    const save = (patch: SettingsPatch) => new MutationObserver(client, saveSettingsOptions(client)).mutate(patch).catch(() => undefined);
     return { client, save, shown: () => client.getQueryData<Settings>(SETTINGS)?.maxAgents };
   };
 
@@ -93,6 +109,44 @@ describe('saving settings', () => {
     await second;
     // Refused: back to what the daemon has, the first change.
     expect(shown()).toBe(5);
+  });
+
+  it('asks the daemon again once the last save settles, so two failures in a row leave what it has', async () => {
+    const puts = deferredPuts();
+    const { client, save, shown } = setup();
+    // The page's query: a refetch goes through it.
+    const unsubscribe = new QueryObserver(client, { queryKey: SETTINGS, queryFn: () => api<Settings>('GET', '/api/settings'), staleTime: Infinity }).subscribe(() => {});
+    const first = save({ maxAgents: 5 });
+    const second = save({ maxAgents: 6 });
+    await flush();
+    puts[0]!.answer(500, { error: 'down' });
+    await first;
+    await flush();
+    // The first had a save still behind it: no refetch yet.
+    expect(puts.filter((p) => p.method === 'GET')).toHaveLength(0);
+    puts[1]!.answer(500, { error: 'down' });
+    await second;
+    await flush();
+    // The second's "before" was the first's unconfirmed 5; the refetch puts the daemon's 4 back.
+    expect(shown()).toBe(5);
+    const gets = puts.filter((p) => p.method === 'GET');
+    expect(gets).toHaveLength(1);
+    gets[0]!.answer(200, { maxAgents: 4 });
+    await vi.waitFor(() => expect(shown()).toBe(4));
+    unsubscribe();
+  });
+
+  it('puts a reset’s default in at once: the daemon’s, from limits', async () => {
+    const puts = deferredPuts();
+    const { client, save, shown } = setup();
+    client.setQueryData<SettingsWithLimits>(SETTINGS, { maxAgents: 9, limits: { maxAgents: { min: 1, max: 16, default: 6 } } });
+    const done = save({ maxAgents: null });
+    await flush();
+    expect(shown()).toBe(6);
+    expect(puts[0]!.body).toEqual({ maxAgents: null });
+    puts[0]!.answer(200, { maxAgents: 6, limits: { maxAgents: { min: 1, max: 16, default: 6 } } });
+    await done;
+    expect(defaultAgents(client.getQueryData(SETTINGS))).toBe(6);
   });
 
   it('takes changes from the stream, but not over a save still going out', async () => {

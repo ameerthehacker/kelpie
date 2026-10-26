@@ -511,10 +511,14 @@ export class Store {
     return Object.fromEntries(this.db.select().from(schema.settings).all().map((r) => [r.key, JSON.parse(r.value) as unknown]));
   }
 
-  /** Saves settings (each value as JSON), all or none. */
+  /** Saves settings (each value as JSON), all or none; null forgets one, so it has its default again. */
   setSettings(values: Record<string, unknown>, now = Date.now()): void {
     this.atomically(() => {
       for (const [key, v] of Object.entries(values)) {
+        if (v === null) {
+          this.db.delete(schema.settings).where(eq(schema.settings.key, key)).run();
+          continue;
+        }
         const value = JSON.stringify(v);
         this.db.insert(schema.settings).values({ key, value, updatedAt: now }).onConflictDoUpdate({ target: schema.settings.key, set: { value, updatedAt: now } }).run();
       }

@@ -6,16 +6,19 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { useSaveSettings, useSettings } from '@/hooks/use-settings';
-import { MAX_AGENTS, parseAgents, stepAgents } from '@/lib/settings';
+import { defaultAgents, MAX_AGENTS, PAGE_STEP, parseAgents, stepAgents, type SettingsPatch } from '@/lib/settings';
 
 /** How long "Saved" stays after the last change lands. */
 const SAVED_FOR = 1800;
+/** A −/+ at its bound looks disabled but keeps focus (stepping past the bound does nothing). */
+const bound = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-background dark:aria-disabled:hover:bg-input/30';
 
 /**
- * Parallel agents: −, the number (typed, or stepped with the arrow keys), +. Each change is saved as
- * it is made, shown at once and put back if the daemon refuses it.
+ * Parallel agents: −, the number (typed, or stepped with the arrow, Page and Home/End keys), +. Each
+ * change is saved as it is made, shown at once and put back if the daemon refuses it. Reset forgets
+ * the saved value, so the default (maybe KELPIE_MAX_AGENTS) applies again.
  */
-function ParallelAgents({ value }: { value: number }) {
+function ParallelAgents({ value, fallback }: { value: number; fallback: number }) {
   const save = useSaveSettings();
   const labelId = useId();
   const hintId = useId();
@@ -26,14 +29,11 @@ function ParallelAgents({ value }: { value: number }) {
   const statusId = useId();
   useEffect(() => () => clearTimeout(timer.current), []);
 
-  const set = (next: number) => {
-    setDraft(undefined);
-    setInvalid(undefined);
-    if (next === value) return;
+  const send = (patch: SettingsPatch) => {
     setSaved(false);
     clearTimeout(timer.current);
     save.mutate(
-      { maxAgents: next },
+      patch,
       {
         onSuccess: () => {
           setSaved(true);
@@ -42,6 +42,11 @@ function ParallelAgents({ value }: { value: number }) {
       },
     );
   };
+  const set = (next: number) => {
+    setDraft(undefined);
+    setInvalid(undefined);
+    if (next !== value) send({ maxAgents: next });
+  };
   const commit = () => {
     if (draft === undefined) return;
     const parsed = parseAgents(draft);
@@ -49,7 +54,7 @@ function ParallelAgents({ value }: { value: number }) {
     else set(parsed.value);
   };
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    const step = { ArrowUp: 1, ArrowDown: -1 }[e.key] as 1 | -1 | undefined;
+    const step = { ArrowUp: 1, ArrowDown: -1, PageUp: PAGE_STEP, PageDown: -PAGE_STEP }[e.key];
     const to = { Home: MAX_AGENTS.min, End: MAX_AGENTS.max }[e.key];
     if (step || to) {
       e.preventDefault();
@@ -62,6 +67,9 @@ function ParallelAgents({ value }: { value: number }) {
     }
   };
 
+  // What a screen reader hears as the value: what is typed, once it is a limit.
+  const typed = draft === undefined ? undefined : parseAgents(draft);
+  const shown = typed && 'value' in typed ? typed.value : value;
   const status = invalid ? (
     <span className="text-fail">{invalid}</span>
   ) : save.isPending ? (
@@ -86,12 +94,20 @@ function ParallelAgents({ value }: { value: number }) {
           How many agents can work at once in a round-up. More agents finish sooner but use your Claude usage faster.
         </p>
         <p className="text-mu2 flex items-center gap-1.5 text-xs">
-          {MAX_AGENTS.min}–{MAX_AGENTS.max} · default {MAX_AGENTS.default}
-          {value !== MAX_AGENTS.default && (
+          {MAX_AGENTS.min}–{MAX_AGENTS.max} · default {fallback}
+          {value !== fallback && (
             <>
               <span aria-hidden="true">·</span>
-              <button type="button" onClick={() => set(MAX_AGENTS.default)} className="hover:text-fg rounded-sm underline-offset-2 hover:underline">
-                Reset to {MAX_AGENTS.default}
+              <button
+                type="button"
+                onClick={() => {
+                  setDraft(undefined);
+                  setInvalid(undefined);
+                  send({ maxAgents: null });
+                }}
+                className="hover:text-fg rounded-sm underline-offset-2 hover:underline"
+              >
+                Reset to {fallback}
               </button>
             </>
           )}
@@ -99,7 +115,8 @@ function ParallelAgents({ value }: { value: number }) {
       </div>
       <div className="flex flex-col items-end gap-1.5 max-sm:items-start">
         <ButtonGroup aria-labelledby={labelId}>
-          <Button variant="outline" size="icon" aria-label="Fewer agents" disabled={value <= MAX_AGENTS.min} onClick={() => set(stepAgents(value, -1))}>
+          {/* aria-disabled, not disabled: a button that goes disabled at the bound would drop the keyboard's focus. */}
+          <Button variant="outline" size="icon" aria-label="Fewer agents" aria-disabled={value <= MAX_AGENTS.min} onClick={() => set(stepAgents(value, -1))} className={bound}>
             <MinusIcon />
           </Button>
           <Input
@@ -109,7 +126,7 @@ function ParallelAgents({ value }: { value: number }) {
             aria-describedby={`${hintId} ${statusId}`}
             aria-valuemin={MAX_AGENTS.min}
             aria-valuemax={MAX_AGENTS.max}
-            aria-valuenow={value}
+            aria-valuenow={shown}
             aria-invalid={!!invalid}
             value={draft ?? String(value)}
             onChange={(e) => {
@@ -121,7 +138,7 @@ function ParallelAgents({ value }: { value: number }) {
             onFocus={(e) => e.target.select()}
             className="h-8 w-12 flex-none rounded-none text-center font-mono text-sm tabular-nums"
           />
-          <Button variant="outline" size="icon" aria-label="More agents" disabled={value >= MAX_AGENTS.max} onClick={() => set(stepAgents(value, 1))}>
+          <Button variant="outline" size="icon" aria-label="More agents" aria-disabled={value >= MAX_AGENTS.max} onClick={() => set(stepAgents(value, 1))} className={bound}>
             <PlusIcon />
           </Button>
         </ButtonGroup>
@@ -146,7 +163,7 @@ export function AgentsSection() {
       </div>
       {error && <p className="text-fail text-sm">Couldn’t load settings: {error.message}</p>}
       {!data && !error && <Skeleton className="h-[104px] w-full rounded-[20px]" />}
-      {data && <ParallelAgents value={data.maxAgents} />}
+      {data && <ParallelAgents value={data.maxAgents} fallback={defaultAgents(data)} />}
     </section>
   );
 }

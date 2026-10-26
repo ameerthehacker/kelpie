@@ -229,6 +229,16 @@ describe('recovery after Kelpie stops', () => {
     const parent = second.sessions.get(orchSession.id)!;
     expect((await second.orch.list(parent)).agents.map((a) => a.status).sort()).toEqual(['waiting', 'waiting', 'working']);
 
+    // Raised twice in a row (a lower in between): the two resume passes run one after the other, so
+    // the second sees the agent the first is still starting and the limit holds.
+    second.orch.settings.update({ maxAgents: 2 });
+    second.orch.settings.update({ maxAgents: 1 });
+    second.orch.settings.update({ maxAgents: 2 });
+    await waitFor(() => agentArgs().length === 2);
+    await sleep(300);
+    expect(agentArgs()).toHaveLength(2);
+    expect((await second.orch.list(parent)).agents.map((a) => a.status).sort()).toEqual(['waiting', 'working', 'working']);
+
     second.orch.settings.update({ maxAgents: 3 });
     await waitFor(() => agentArgs().length === 3);
     expect((await second.orch.list(parent)).agents.map((a) => a.status)).toEqual(['working', 'working', 'working']);

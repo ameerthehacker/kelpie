@@ -1,4 +1,4 @@
-import { clampMaxAgents, DEFAULT_SETTINGS, Settings, SettingsPatch } from '@kelpie/protocol';
+import { clampMaxAgents, DEFAULT_SETTINGS, MAX_AGENTS, Settings, SettingsPatch, type SettingsWithLimits } from '@kelpie/protocol';
 import type { Store } from '@kelpie/store';
 
 /** A change `PUT /api/settings` refuses: the message says what is wrong. */
@@ -9,7 +9,8 @@ export class SettingsError extends Error {}
  * or one Kelpie was started with (KELPIE_MAX_AGENTS), clamped into its range.
  */
 export class SavedSettings {
-  private readonly defaults: Settings;
+  /** What a setting is when none is saved, and what a reset puts back. */
+  readonly defaults: Settings;
   private current: Settings;
   private readonly listeners = new Set<(next: Settings, prev: Settings) => void>();
 
@@ -25,14 +26,16 @@ export class SavedSettings {
     return this.current;
   }
 
-  /** Validates and saves a change (only the fields given), then tells every listener. */
+  /** Validates and saves a change (only the fields given; null puts a default back), then tells every listener. */
   update(patch: unknown): Settings {
     const parsed = SettingsPatch.safeParse(patch);
     if (!parsed.success) throw new SettingsError(parsed.error.issues.map((i) => (i.code === 'unrecognized_keys' ? `unknown setting: ${i.keys.join(', ')}` : i.message)).join('; '));
     if (!Object.keys(parsed.data).length) throw new SettingsError('nothing to change: send maxAgents');
     const prev = this.current;
     this.store.setSettings(parsed.data);
-    this.current = { ...prev, ...parsed.data };
+    const next = { ...prev };
+    for (const [key, v] of Object.entries(parsed.data) as [keyof Settings, number | null][]) next[key] = v ?? this.defaults[key];
+    this.current = next;
     for (const listener of this.listeners) {
       try {
         listener(this.current, prev);
@@ -41,6 +44,11 @@ export class SavedSettings {
       }
     }
     return this.current;
+  }
+
+  /** The settings with each one's range and the default a reset puts back, as the API answers. */
+  withLimits(): SettingsWithLimits {
+    return { ...this.current, limits: { maxAgents: { min: MAX_AGENTS.min, max: MAX_AGENTS.max, default: this.defaults.maxAgents } } };
   }
 
   /** Called after every change, with the settings before it. Returns the unsubscribe. */

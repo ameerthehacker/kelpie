@@ -6,7 +6,7 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE, type SSEMessage } from 'hono/streaming';
 import { getMimeType } from 'hono/utils/mime';
-import { Answers, MAX_AGENTS, Mode } from '@kelpie/protocol';
+import { Answers, Mode } from '@kelpie/protocol';
 import { checkHarnesses, shared, type HarnessStatus } from './harness-status.js';
 import type { Connections } from './connectors/connector.js';
 import { connectionRoutes } from './connectors/routes.js';
@@ -156,9 +156,8 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
 
   // The person's settings, with each one's range; `/api/events` sends a `settings` event when they change.
   if (orch) {
-    const settingsBody = () => ({ ...orch.settings.get(), limits: { maxAgents: MAX_AGENTS } });
-    app.get('/api/settings', (c) => c.json(settingsBody()));
-    // Only the fields sent change; anything out of range or unknown changes nothing.
+    app.get('/api/settings', (c) => c.json(orch.settings.withLimits()));
+    // Only the fields sent change (null puts a default back); anything out of range or unknown changes nothing.
     app.put('/api/settings', async (c) => {
       const body = await c.req.json<unknown>().catch(() => undefined);
       try {
@@ -167,7 +166,7 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
         if (err instanceof SettingsError) return c.json({ error: err.message }, 400);
         throw err;
       }
-      return c.json(settingsBody());
+      return c.json(orch.settings.withLimits());
     });
   }
 

@@ -21,7 +21,7 @@ export {
 } from './sessions.js';
 export { createApp, localOnly, type AppOptions } from './server.js';
 export { canStart, checkHarnesses, claudeCodeStatus, installDirs, parseVersion, type CheckOptions, type HarnessStatus } from './harness-status.js';
-export { Orchestrator, ToolError, BaseFixedError, capRefusal, limitNotice, ORCHESTRATOR_TOOLS, READ_ONLY_TOOLS, type AgentInfo, type AgentList, type OrchestratorOptions } from './orchestrator/orchestrator.js';
+export { Orchestrator, ToolError, BaseFixedError, capReason, capRefusal, limitNotice, ORCHESTRATOR_TOOLS, READ_ONLY_TOOLS, type AgentInfo, type AgentList, type OrchestratorOptions } from './orchestrator/orchestrator.js';
 export { Worktrees, GitError, runGit, slug, type Branch, type Git, type GitOptions, type WorktreesOptions } from './worktrees.js';
 export { ReviewError } from './errors.js';
 export { Changes, NoSuchRound, excerpt, findLine, type View } from './review/changes.js';
