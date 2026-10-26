@@ -1,6 +1,6 @@
 import type { ReviewCommentRow, ReviewRow, ReviewThreadRow, Store } from '@kelpie/store';
 import { ReviewError, ToolError } from '../errors.js';
-import { NOTIFICATION_TAG } from '../orchestrator/prompt.js';
+import { NOTIFICATION_TAG, reviewBrief } from '../orchestrator/prompt.js';
 import type { ManagerUpdate, Session } from '../sessions.js';
 import type { Changes } from './changes.js';
 import type { AgentRef, Review, ReviewComment, ReviewState, ReviewThread, Side, Verdict } from './types.js';
@@ -43,6 +43,17 @@ export interface ReviewsDeps {
   /** Sends a live update to every `/api/events` client. */
   publish: (u: ManagerUpdate) => void;
   session: (id: string) => Session | undefined;
+  /** Whether threads made on an agent's own Changes tab go straight to it. Without it, the orchestrator routes them all. */
+  claim?: (roundUp: Session, agentId: string) => ReviewClaim;
+}
+
+/** An agent that takes review threads straight away (its slot held until `release`), or why it can't. */
+export type ReviewClaim = { agent: Session; release: () => void } | { reason: string };
+
+/** Threads sent straight to the agent whose Changes tab they were made on. */
+interface DirectGroup {
+  agent: Session;
+  threads: ReviewThreadRow[];
 }
 
 /** One group of a submitted review's threads, by the agent they go back to (none: base code, Muster, or gone). */
@@ -172,7 +183,9 @@ export class Reviews {
 
   /**
    * Submits the draft and tells the orchestrator, in one transaction: its threads grouped by the agent
-   * each goes back to. Refused (409) while Kelpie shuts down; then nothing is submitted.
+   * each goes back to. Threads made on an agent's own Changes tab go straight to that agent (assigned,
+   * and its brief queued, in the same transaction) when it can take them; the orchestrator is told.
+   * Refused (409) while Kelpie shuts down; then nothing is submitted.
    */
   async submit(roundUpId: string, verdict: Verdict, body = ''): Promise<{ review: Review }> {
     const orchestrator = this.deps.session(roundUpId);
@@ -184,11 +197,32 @@ export class Reviews {
     const review = draft ?? this.store.ensurePendingReview(roundUpId);
     const threads = this.store.threadsOf(roundUpId, { ids: [...new Set(comments.map((c) => c.threadId))] });
     const ids = comments.map((c) => c.id);
-    const text = notification(verdict, body, this.groups(roundUpId, threads), comments);
+    const { direct, routed, refused, release } = this.route(orchestrator, threads);
     try {
+      const drafted = new Set(ids);
+      const together = await Promise.all(
+        direct.map(async (d) => ({
+          session: d.agent,
+          text: reviewBrief(await this.toolThreads(d.threads, false, drafted), { direct: { verdict: VERDICTS[verdict], body } }),
+          source: 'orchestrator' as const,
+        })),
+      );
+      const text = notification(verdict, body, this.groups(roundUpId, routed), comments, direct, refused);
       await orchestrator.send(text, 'kelpie', {
-        alsoInTx: () => this.store.submitReview(review.id, verdict, body, ids),
-        meta: { review: { reviewId: review.id, verdict, comments: ids.length, threads: threads.length } },
+        alsoInTx: () => {
+          this.store.submitReview(review.id, verdict, body, ids);
+          for (const d of direct) this.store.assignThreads(d.threads.map((t) => t.id), d.agent.id);
+        },
+        together,
+        meta: {
+          review: {
+            reviewId: review.id,
+            verdict,
+            comments: ids.length,
+            threads: threads.length,
+            ...(direct.length ? { direct: direct.map((d) => ({ agentId: d.agent.id, title: d.agent.title, threads: d.threads.length })) } : {}),
+          },
+        },
       });
     } catch (err) {
       // Submitted and queued, but the harness could not start: it is sent on the next start.
@@ -199,9 +233,42 @@ export class Reviews {
       }
       console.error(`round-up ${roundUpId}: review submitted, but the orchestrator did not start`, err);
     } finally {
+      release();
       this.changed(roundUpId);
     }
     return { review: this.review(this.store.review(review.id)!) };
+  }
+
+  /**
+   * Splits a review's threads: those made on an agent's own Changes tab that it can take now go
+   * straight to it; the rest are the orchestrator's to route, with why any made on an agent's tab
+   * did not go to it.
+   */
+  private route(roundUp: Session, threads: ReviewThreadRow[]) {
+    const direct = new Map<string, DirectGroup>();
+    const claims = new Map<string, ReviewClaim>();
+    const routed: ReviewThreadRow[] = [];
+    const refused = new Map<string, string>();
+    for (const t of threads) {
+      if (t.view !== 'agent' || !this.deps.claim) {
+        routed.push(t);
+        continue;
+      }
+      const id = t.viewSessionId;
+      const claim = id ? (claims.get(id) ?? this.deps.claim(roundUp, id)) : { reason: 'that agent was deleted' };
+      if (id) claims.set(id, claim);
+      if ('reason' in claim) {
+        const title = id ? this.store.getSession(id)?.title : undefined;
+        refused.set(t.id, `made on ${title ? `"${title}"'s` : "an agent's"} own changes, not sent straight to it: ${claim.reason}`);
+        routed.push(t);
+        continue;
+      }
+      const group = direct.get(claim.agent.id) ?? { agent: claim.agent, threads: [] };
+      group.threads.push(t);
+      direct.set(claim.agent.id, group);
+    }
+    const release = () => claims.forEach((c) => 'release' in c && c.release());
+    return { direct: [...direct.values()], routed, refused, release };
   }
 
   /**
@@ -310,9 +377,10 @@ export class Reviews {
     return { open: rows.filter((t) => t.status === 'open').length, resolved: rows.filter((t) => t.status === 'resolved').length };
   }
 
-  async toolThreads(rows: ReviewThreadRow[], full: boolean): Promise<ToolThread[]> {
+  /** `drafted`: comments of the review being submitted, as good as published. */
+  async toolThreads(rows: ReviewThreadRow[], full: boolean, drafted?: Set<string>): Promise<ToolThread[]> {
     const locate = this.changes.locator();
-    const comments = this.store.commentsOf(rows.map((r) => r.id)).filter((c) => c.state === 'published');
+    const comments = this.store.commentsOf(rows.map((r) => r.id)).filter((c) => c.state === 'published' || drafted?.has(c.id));
     return Promise.all(
       rows.map(async (t) => {
         const current = await locate(t);
@@ -439,10 +507,13 @@ function checkTool(body: string): string {
 }
 
 /** What the orchestrator reads when the person submits a review. */
-function notification(verdict: Verdict, body: string, groups: ReviewGroup[], comments: ReviewCommentRow[]): string {
+function notification(verdict: Verdict, body: string, groups: ReviewGroup[], comments: ReviewCommentRow[], direct: DirectGroup[], refused: Map<string, string>): string {
   const first = (t: ReviewThreadRow) => comments.find((c) => c.threadId === t.id)?.body ?? '';
   const plural = (n: number) => `${n} thread${n === 1 ? '' : 's'}`;
-  const line = (t: ReviewThreadRow) => `- [${t.id}] ${t.path}:${t.line} (${t.side}): "${oneLine(first(t), FIRST_COMMENT_CHARS)}"`;
+  const line = (t: ReviewThreadRow) => {
+    const why = refused.get(t.id);
+    return `- [${t.id}] ${t.path}:${t.line} (${t.side}): "${oneLine(first(t), FIRST_COMMENT_CHARS)}"${why ? ` (${why})` : ''}`;
+  };
   const parts = [
     `The person submitted a review of the feature's changes: ${VERDICTS[verdict]}.`,
     ...(body.trim() ? [body.trim().split('\n').map((l) => `> ${l}`).join('\n')] : []),
@@ -452,6 +523,7 @@ function notification(verdict: Verdict, body: string, groups: ReviewGroup[], com
         ...g.threads.map(line),
       ].join('\n'),
     ),
+    ...direct.map((d) => [`## Sent straight to agent "${d.agent.title}" (${d.agent.id}): ${plural(d.threads.length)} (made on its own changes)`, ...d.threads.map(line)].join('\n')),
     'Act on it now (see your rules). This message is from Kelpie, not the person.',
   ];
   return `<${NOTIFICATION_TAG}>\n${parts.join('\n')}\n</${NOTIFICATION_TAG}>`;

@@ -153,6 +153,11 @@ describe('orchestrator notifications', () => {
     });
     expect(reviewNotice({ verdict: 'approve', comments: 0 })).toBe('You submitted a review · Approve');
     expect(reviewNotice({ verdict: 'comment', comments: 1 })).toBe('You submitted a review · Comment · 1 comment');
+    // Threads made on an agent's own Changes tab went straight to it.
+    expect(reviewNotice({ verdict: 'comment', comments: 3, direct: [{ agentId: 'a1', title: 'gateway-web', threads: 2 }] })).toBe('You submitted a review · Comment · 3 comments · 2 sent to gateway-web');
+    expect(reviewNotice({ verdict: 'request_changes', comments: 4, direct: [{ agentId: 'a1', title: 'API', threads: 2 }, { agentId: 'a2', title: 'Docs', threads: 1 }] })).toBe(
+      'You submitted a review · Request changes · 4 comments · 2 sent to API, 1 to Docs',
+    );
   });
 
   it('reads the review line of an idle notification as a detail, not the report', () => {

@@ -39,7 +39,7 @@ export const orchestratorPrompt = (scratch?: string, mode: Mode = 'auto') => {
     `When an agent asks something only the person can answer, ask the person, then relay the answer with message_agent. Never invent answers.`,
     `When all of a request's agents are done, their reports accepted, and their work mustered (or standalone), give the person a short roll-up: the outcome of each unit, its branch, files changed, and anything left open. Refer to agents by title, not by id.`,
     `Keep your own messages short. You coordinate; the agents do the work.`,
-    `The person reviews the feature's changes in Kelpie, like a pull request, and a <${NOTIFICATION_TAG}> tells you when they submit a review: its threads grouped by the agent whose code each is on. Act on it at once: call assign_threads once per agent group with that agentId, and once without agentId for the "No agent" group (Kelpie starts a "Review fixes" writer for those). Answer a thread that is only a question yourself with reply_to_thread, and resolve_thread it once fully answered. A "Comment" review is routed the same way, but agents change code only where a comment asks for it. On "Approve" with nothing open, give the person the roll-up. When the assigned agents go idle, check their reports and read_review, follow up with message_agent on threads they left open, then call muster_agents on them so the fixes reach the feature branch (standalone agents' fixes stay on their own branch).`,
+    `The person reviews the feature's changes in Kelpie, like a pull request, and a <${NOTIFICATION_TAG}> tells you when they submit a review: its threads grouped by the agent whose code each is on. Act on it at once: call assign_threads once per agent group with that agentId, and once without agentId for the "No agent" group (Kelpie starts a "Review fixes" writer for those). Threads under "Sent straight to agent" were made on that agent's own changes, and Kelpie has already given them to it: do not assign them again or message that agent about them; wait for its idle notification, then follow up as below. Answer a thread that is only a question yourself with reply_to_thread, and resolve_thread it once fully answered. A "Comment" review is routed the same way, but agents change code only where a comment asks for it. On "Approve" with nothing open, give the person the roll-up. When the assigned agents (and those sent threads straight) go idle, check their reports and read_review, follow up with message_agent on threads they left open, then call muster_agents on them so the fixes reach the feature branch (standalone agents' fixes stay on their own branch).`,
     `An agent may stop to ask the person's permission for something (list_agents shows it as "needs approval"). The person answers it in Kelpie; don't message the agent about it. If an agent reports that something was declined, tell the person what it needed and why.`,
     ...(MODE_RULES[mode] ? [MODE_RULES[mode]] : []),
   ];
@@ -146,22 +146,29 @@ Kelpie restarted while you were working; your turn was cut off. Sub-agents that 
 /** A fence that no line of `text` can close early. */
 const fence = (text: string) => '`'.repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1)));
 
-/**
- * The brief for a writer given review threads: what to do with them, then each thread with its
- * code and comments. `fresh`: a new agent, so the code is the feature's rather than its own.
- */
-export const reviewBrief = (threads: ToolThread[], notes?: string, fresh = false) => {
+/** How a writer came by review threads: `fresh`, a new agent (the code is the feature's, not its own); `direct`, sent straight from its own Changes tab. */
+export interface BriefOptions {
+  notes?: string | undefined;
+  fresh?: boolean;
+  direct?: { verdict: string; body: string };
+}
+
+/** The brief for a writer given review threads: what to do with them, then each thread with its code and comments. */
+export const reviewBrief = (threads: ToolThread[], opts: BriefOptions = {}) => {
   const parts = threads.map((t, i) => {
     const where = `${t.path}:${t.currentLine ?? t.line} (${t.side})${t.outdated ? ' [outdated]' : ''}`;
     const f = fence(t.diffHunk);
     const said = t.comments.map((c) => `- ${c.author}: ${c.body.replace(/\n/g, '\n  ')}`);
     return [`## ${i + 1}. ${where}`, `Thread: ${t.threadId}`, `${f}diff`, t.diffHunk, f, ...said].join('\n');
   });
+  const direct = opts.direct;
+  const summary = direct?.body.trim() ? `\n${direct.body.trim().split('\n').map((l) => `> ${l}`).join('\n')}` : '';
   return [
-    `The person reviewed changes and left these threads on ${fresh ? "the feature's code" : 'code you changed'}. For each: make the change asked for (or decide not to), commit, then reply_to_thread saying what you did and resolve_thread once it's addressed. Leave it open, with a reply saying why, if you disagree or need the person's answer.`,
+    `The person reviewed changes and left these threads on ${opts.fresh ? "the feature's code" : 'code you changed'}. For each: make the change asked for (or decide not to), commit, then reply_to_thread saying what you did and resolve_thread once it's addressed. Leave it open, with a reply saying why, if you disagree or need the person's answer.`,
+    ...(direct ? [`They made these on your own changes, so Kelpie sent them straight to you. Their review: ${direct.verdict}.${direct.verdict === 'Comment' ? ' Change code only where a comment asks for it.' : ''}${summary}`] : []),
     '',
     ...parts.flatMap((p) => [p, '']),
-    ...(notes?.trim() ? [`Notes from the orchestrator: ${notes.trim()}`] : []),
+    ...(opts.notes?.trim() ? [`Notes from the orchestrator: ${opts.notes.trim()}`] : []),
   ]
     .join('\n')
     .trim();

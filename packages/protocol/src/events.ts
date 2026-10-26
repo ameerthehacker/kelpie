@@ -91,6 +91,8 @@ export const ReviewNotice = z.object({
   /** Comments it published, and the threads they are on. */
   comments: z.number(),
   threads: z.number(),
+  /** Threads made on an agent's own Changes tab, sent straight to that agent rather than routed by the orchestrator. */
+  direct: z.array(z.object({ agentId: z.string(), title: z.string(), threads: z.number() })).optional(),
 });
 export type ReviewNotice = z.infer<typeof ReviewNotice>;
 

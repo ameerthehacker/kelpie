@@ -10,7 +10,7 @@ import { logLines, report, type AgentReport, type LogPage } from './digest.js';
 import { ToolError } from '../errors.js';
 import { GitError, type Branch, type Worktrees } from '../worktrees.js';
 import { Changes } from '../review/changes.js';
-import { Reviews } from '../review/reviews.js';
+import { Reviews, type ReviewClaim } from '../review/reviews.js';
 import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, musterPrompt, orchestratorPrompt, reviewBrief, type WorkPlace } from './prompt.js';
 
 /**
@@ -180,7 +180,11 @@ export class Orchestrator implements SessionHooks {
     this.maxAgents = opts.maxAgents ?? 4;
     this.notifyDelayMs = opts.notifyDelayMs ?? 1500;
     this.changes = new Changes(this.store);
-    this.reviews = new Reviews(this.store, this.changes, { publish: (u) => this.sessions?.publish(u), session: (id) => this.sessions?.get(id) });
+    this.reviews = new Reviews(this.store, this.changes, {
+      publish: (u) => this.sessions?.publish(u),
+      session: (id) => this.sessions?.get(id),
+      claim: (parent, agentId) => this.claimForReview(parent, agentId),
+    });
   }
 
   attach(sessions: SessionManager): void {
@@ -632,17 +636,43 @@ export class Orchestrator implements SessionHooks {
       if (!child.writes || child.kind !== 'worker') {
         throw new ToolError(`"${child.title}" ${child.kind === 'muster' ? 'is Muster' : 'is read-only'}: review threads go to a writing agent; omit agentId to start one`);
       }
-      const r = await this.message(parent, child.id, reviewBrief(threads, input.notes), undefined, () => this.store.assignThreads(ids, child.id));
+      const r = await this.message(parent, child.id, reviewBrief(threads, { notes: input.notes }), undefined, () => this.store.assignThreads(ids, child.id));
       result = { agentId: child.id, ...r };
     } else {
       result = await this.spawn(
         parent,
-        { title: input.title?.trim() || 'Review fixes', task: reviewBrief(threads, input.notes, true), writes: true, deliver: 'muster' },
+        { title: input.title?.trim() || 'Review fixes', task: reviewBrief(threads, { notes: input.notes, fresh: true }), writes: true, deliver: 'muster' },
         { alsoInTx: (agentId) => this.store.assignThreads(ids, agentId) },
       );
     }
     this.reviews.changed(parent.id);
     return { ...result, threads: ids.length };
+  }
+
+  /**
+   * Whether review threads the person made on an agent's own Changes tab can go straight to it now,
+   * by message_agent's rules: the agent, its slot held (counted by the cap and writer guard) until
+   * `release`, or why not, in a few words.
+   */
+  claimForReview(parent: Session, agentId: string): ReviewClaim {
+    const child = this.manager.get(agentId);
+    if (!child || child.parentId !== parent.id) return { reason: 'that agent was deleted' };
+    if (child.kind === 'muster') return { reason: `"${child.title}" is Muster` };
+    if (!child.writes) return { reason: `"${child.title}" is read-only` };
+    if (parent.mode === 'plan') return { reason: 'the round-up is in plan mode, so writers wait' };
+    if (!this.isWorking(child)) {
+      if (this.working(parent) + (this.starting.get(parent.id) ?? 0) >= this.maxAgents) return { reason: `${this.maxAgents} agent${this.maxAgents === 1 ? ' is' : 's are'} already working, the most at once` };
+      const writer = this.busyWriter(child.cwd, child.id);
+      if (writer) return { reason: `writing agent "${writer.title}" is working in the same place` };
+      const browser = child.browser ? this.browserInUse(parent, child.id) : undefined;
+      if (browser) return { reason: browser };
+    }
+    const held = !this.reserved.has(child.id);
+    if (held) this.reserved.add(child.id);
+    // Picked up now: no restart turn later.
+    this.waiting.delete(child.id);
+    child.clearResumePending();
+    return { agent: child, release: () => held && this.reserved.delete(child.id) };
   }
 
   async interrupt(parent: Session, agentId: string): Promise<{ status: string }> {
