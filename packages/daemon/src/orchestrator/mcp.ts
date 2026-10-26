@@ -101,7 +101,7 @@ function orchestratorServer(orch: Orchestrator, parent: Session): McpServer {
     {
       description:
         'Start a sub-agent on one self-contained unit of work. Returns at once; Kelpie notifies you when it goes idle. ' +
-        `At most ${orch.maxAgents} agents work at once. Each writing agent gets its own git worktree and branch, cut from your feature branch; ` +
+        `At most ${orch.maxAgents} agents work at once (the person's limit, which they may change; list_agents has the current one). Each writing agent gets its own git worktree and branch, cut from your feature branch; ` +
         'the first writer needs a base branch (see set_base_branch).',
       inputSchema: {
         title: z.string().min(1).describe('Short name for this unit of work, shown to the person.'),
@@ -134,7 +134,8 @@ function orchestratorServer(orch: Orchestrator, parent: Session): McpServer {
     'list_agents',
     {
       description:
-        'The base branch, your feature branch and where it is checked out (featureCheckout, which you may read; brought back if it was cleaned up), and your sub-agents with their status (working, idle, or waiting to resume), last turn result, cost, ' +
+        'The base branch, your feature branch and where it is checked out (featureCheckout, which you may read; brought back if it was cleaned up), ' +
+        'how many agents may work at once (maxAgents, set by the person) and how many are working, and your sub-agents with their status (working, idle, or waiting to resume), last turn result, cost, ' +
         'and for writers their branch and whether it is still to muster, mustered, or standalone.',
     },
     () => result(() => orch.list(parent)),

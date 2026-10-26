@@ -445,6 +445,45 @@ describe('orchestrator round-ups', () => {
     expect(agentArgv.filter((a) => a[a.indexOf('--tools') + 1]!.includes('Edit'))).toHaveLength(1);
   });
 
+  it('caps working agents at the limit the person sets, applied live', async () => {
+    const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
+    const ctx = setup({ FAKE_HANG: '1', FAKE_STDIN_FILE: stdin }, { maxAgents: 2 });
+    const { parent, argv, call, client } = await orchestrator(ctx);
+    const spawnDescription = async () => (await client.listTools()).tools.find((t) => t.name === 'spawn_agent')!.description;
+    expect(argv[argv.indexOf('--append-system-prompt') + 1]).toContain('At most 2 of your agents work at once');
+    expect(await spawnDescription()).toContain('At most 2 agents work at once');
+    expect((await call('spawn_agent', { title: 'R1', task: 'read', writes: false })).error).toBeUndefined();
+    expect((await call('spawn_agent', { title: 'R2', task: 'read', writes: false })).error).toBeUndefined();
+    expect((await call('spawn_agent', { title: 'R3', task: 'read', writes: false })).error).toBe(
+      "2 agents are already working: the person allows at most 2 agents at once (they set this in Kelpie's Settings). End your turn; you will be notified as they finish.",
+    );
+    expect((await call('list_agents')).data).toMatchObject({ maxAgents: 2, working: 2 });
+
+    // Raised: there is room at once, and the orchestrator that was refused hears so.
+    const updates: unknown[] = [];
+    ctx.sessions.watch((u) => u.type === 'settings' && updates.push(u.settings));
+    ctx.orch.settings.update({ maxAgents: 3 });
+    expect(updates).toEqual([{ maxAgents: 3 }]);
+    const notice = await waitFor(() => jsonLines<{ text: string }>(stdin).find((l) => l.text.includes('raised the limit')));
+    expect(notice.text).toContain('The person raised the limit to 3 agents working at once. 2 working now, so one more can start');
+    expect(ctx.store.undelivered(parent.id).map((r) => r.source)).toEqual(['kelpie']);
+    expect(await spawnDescription()).toContain('At most 3 agents work at once');
+    expect((await call('spawn_agent', { title: 'R3', task: 'read', writes: false })).error).toBeUndefined();
+    expect((await call('list_agents')).data).toMatchObject({ maxAgents: 3, working: 3 });
+
+    // Lowered: nothing working stops, and new work waits until the count is under it.
+    ctx.orch.settings.update({ maxAgents: 1 });
+    await sleep(100);
+    const listed = (await call('list_agents')).data as { maxAgents: number; working: number; agents: { status: string }[] };
+    expect(listed).toMatchObject({ maxAgents: 1, working: 3 });
+    expect(listed.agents.map((a) => a.status)).toEqual(['working', 'working', 'working']);
+    expect((await call('spawn_agent', { title: 'R4', task: 'read', writes: false })).error).toMatch(/^3 agents are working and the limit is now 1: the person allows at most 1 agent at once/);
+    // A refused orchestrator is told about a raise only while there is room.
+    ctx.orch.settings.update({ maxAgents: 2 });
+    await sleep(100);
+    expect(jsonLines<{ text: string }>(stdin).filter((l) => l.text.includes('raised the limit'))).toHaveLength(1);
+  });
+
   it("keeps one orchestrator out of another's agents", async () => {
     const ctx = setup({ FAKE_HANG: '1' });
     const first = await orchestrator(ctx);

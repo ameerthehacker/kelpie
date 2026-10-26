@@ -77,6 +77,36 @@ describe('store', () => {
     expect(store.deleteConnection('github')).toBe(false);
   });
 
+  it('saves settings as JSON, one row per key, replacing a value set again', () => {
+    const store = openStore(':memory:');
+    expect(store.settings()).toEqual({});
+    store.setSettings({ maxAgents: 6 }, 1000);
+    store.setSettings({ maxAgents: 8, other: { on: true } }, 2000);
+    expect(store.settings()).toEqual({ maxAgents: 8, other: { on: true } });
+  });
+
+  it('adds the settings table on top of every earlier migration, keeping what was there', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
+    const before = join(dir, 'drizzle');
+    cpSync(join(import.meta.dirname, '../drizzle'), before, { recursive: true });
+    const journal = join(before, 'meta/_journal.json');
+    const j = JSON.parse(readFileSync(journal, 'utf8')) as { entries: { tag: string }[] };
+    expect(j.entries.at(-1)!.tag).toBe('0014_settings');
+    j.entries = j.entries.filter((e) => e.tag < '0014');
+    writeFileSync(journal, JSON.stringify(j));
+    const path = join(dir, 'kelpie.db');
+    const old = openStore(path, { migrationsFolder: before });
+    old.createSession({ id: 'r', cwd: '/r' });
+    expect(() => old.settings()).toThrow(/no such table/);
+    old.close();
+    const store = openStore(path);
+    expect(store.getSession('r')).toBeDefined();
+    expect(store.settings()).toEqual({});
+    store.setSettings({ maxAgents: 3 });
+    expect(store.settings()).toEqual({ maxAgents: 3 });
+    store.close();
+  });
+
   it('adds the tickets table to a store made before it, keeping its round-ups', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
     const before = join(dir, 'drizzle');

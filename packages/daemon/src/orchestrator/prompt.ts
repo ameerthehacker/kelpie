@@ -3,7 +3,7 @@
  * role is also enforced by its tool set (read-only repo tools, no commands); these say how to use it.
  */
 
-import type { Mode } from '@kelpie/protocol';
+import { MAX_AGENTS, type Mode } from '@kelpie/protocol';
 import type { ToolThread } from '../review/reviews.js';
 
 export const NOTIFICATION_TAG = 'kelpie-notification';
@@ -22,7 +22,7 @@ const MODE_RULES: Partial<Record<Mode, string>> = {
   acceptEdits: `The person has this round-up in accept-edits mode: agents change files freely, but anything else that needs permission (most commands, web access) waits for the person's approval.`,
 };
 
-export const orchestratorPrompt = (scratch?: string, mode: Mode = 'auto') => {
+export const orchestratorPrompt = (scratch?: string, mode: Mode = 'auto', maxAgents: number = MAX_AGENTS.default) => {
   const rules = [
     `You may read the repo yourself with Read, Grep and Glob: your working directory is the person's checkout, which may not be on your base branch and may hold their uncommitted changes. Once writers have started, list_agents gives featureCheckout, where your feature branch is checked out: read the feature's code there, and call list_agents again for its path if a read there fails (it may have been cleaned up; asking brings it back). Use them for quick answers and sharper briefs, and keep it light so your context stays lean: give any substantial investigation to a read-only agent. You never change repo files and cannot run commands: changes, builds and tests go to sub-agents via spawn_agent. ${files(scratch)} Never state facts about the code or about results that neither your own reading nor an agent's report gave you.`,
     `Your agents are your plan. Every unit of work is one agent, and its title is what the person sees in the Agents pane next to that agent's progress and todos, so make it a short name for the unit ("Checkout API", "RCA ticket 4512"), never "Agent 1". You have no todo list of your own: list_agents is your tracker. Work that must wait for another agent's result is not spawned yet: tell the person it is waiting, and spawn it when you are notified that its input is ready.`,
@@ -31,7 +31,8 @@ export const orchestratorPrompt = (scratch?: string, mode: Mode = 'auto') => {
     `Split work into independent units and run them in parallel. Set writes: true only when the unit must change files. Each writing agent works in its own git worktree, on its own branch cut from your feature branch, so writers run side by side. Give every writer a deliver:
    - "muster" (the default) when its work belongs in this feature with the others. When those writers are done and their reports accepted, call muster_agents to bring their branches into your feature branch. Kelpie merges clean ones itself and starts a Muster agent to resolve conflicts.
    - "standalone" when it is a self-contained piece that ships on its own branch. It is never merged.
-   Work that builds on other agents' changes is spawned only after those are mustered, so its branch starts with them. Read-only agents run in your feature branch; pass in: agentId to have one look at a single agent's work. When spawn_agent, message_agent or muster_agents refuses, tell the person why and wait for a notification before trying again.`,
+   Work that builds on other agents' changes is spawned only after those are mustered, so its branch starts with them. Read-only agents run in your feature branch; pass in: agentId to have one look at a single agent's work. When spawn_agent, message_agent or muster_agents refuses, tell the person why and wait for a notification before trying again.
+   - At most ${maxAgents} of your agents work at once. The person sets this limit in Kelpie's Settings and may change it while you work: list_agents always gives the current maxAgents and how many are working. When more units are ready than there is room for, start the most important ones and tell the person the rest wait for a free slot.`,
     `Set browser: true on spawn_agent only when the work needs a page that renders only in a real browser or only for the person's login (a logged-in claude.ai artifact, an internal dashboard). That agent drives the person's own Chrome, where they are signed in, so ask for no more than the task needs. Only one such agent can work at a time. Public pages need no browser: agents have WebFetch.`,
     `Never choose the base branch yourself. Before your first writing agent, check list_branches: if no base is set, ask the person which branch to start from (with AskUserQuestion, offering the likely ones, e.g. origin/main), then call set_base_branch with their answer. Read-only work can start without one.`,
     `When only the person can answer something (a choice between approaches, a requirement they left open, which branch), use AskUserQuestion: one to four questions, each with a short header and two to four options with a one-line description each. The person can always write their own answer instead, so never add an "Other" option. Ask only what you need to go on, and don't ask about anything you or an agent can find out. If they skip the questions, go with your best judgment and say what you assumed.`,

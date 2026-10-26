@@ -34,6 +34,6 @@ kelpie
 | `--model <model>`: for new round-ups, e.g. `opus` | `KELPIE_MODEL` | Claude Code's default |
 | `--no-open`: don't open a browser | | |
 
-These limits are set through the environment: `KELPIE_MAX_AGENTS` (agents one round-up runs at once, default 4), `KELPIE_MAX_WORKTREES` (20), `KELPIE_WORKTREE_IDLE_DAYS` (3), and `KELPIE_MAX_UPLOAD_MB` (25).
+These limits are set through the environment: `KELPIE_MAX_AGENTS` (agents one round-up runs at once, 1–16, default 4; once you set it in Settings, that wins), `KELPIE_MAX_WORKTREES` (20), `KELPIE_WORKTREE_IDLE_DAYS` (3), and `KELPIE_MAX_UPLOAD_MB` (25).
 
 Kelpie listens on 127.0.0.1 only: its agents can run commands on your machine.

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import { attachmentsBlock, findTickets, mergeUsage, type LinkedTicket, type TicketLink, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
+import { attachmentsBlock, findTickets, mergeUsage, type LinkedTicket, type TicketLink, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings } from '@kelpie/protocol';
 import { claudeCode, isChromeTool, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store, TicketRow, TicketSource } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary, type Now } from './agent-summary.js';
@@ -124,7 +124,9 @@ export type ManagerUpdate =
   /** A round-up's review changed (a comment, a reply, a resolution): its whole state, throttled. */
   | { type: 'review'; roundUpId: string; state: ReviewState }
   /** What `GET /api/sessions/:sessionId/changes` returns may have changed (an agent went idle, a muster merged). */
-  | { type: 'changes'; roundUpId: string; sessionId: string };
+  | { type: 'changes'; roundUpId: string; sessionId: string }
+  /** The person changed their settings: all of them, as they are now. */
+  | { type: 'settings'; settings: Settings };
 
 /** Run settings a round-up does not decide per process: everything but what `start` fills in. */
 export type SessionDefaults = Omit<RunSpec, 'cwd' | 'prompt' | 'resume' | 'todos' | 'runId' | 'runDir'>;

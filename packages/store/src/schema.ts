@@ -303,3 +303,13 @@ export const tickets = sqliteTable(
   },
   (t) => [unique('tickets_round_up_ref').on(t.roundUpId, t.ref)],
 );
+
+/**
+ * The person's settings (see `Settings` in @kelpie/protocol), one row per setting, each value as
+ * JSON. A setting with no row has its default.
+ */
+export const settings = sqliteTable('settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
