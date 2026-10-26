@@ -8,7 +8,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useCardActions } from '@/hooks/use-workbench';
 import type { PendingApproval } from '@/lib/approvals';
 import { roundUpPath } from '@/lib/round-ups';
-import { calloutOf, cardApprovals, chatWhen, footer, PRIMARY_LABEL, primaryAction, reviewTurn, tally, topItems } from '@/lib/workbench';
+import { calloutOf, cardApprovals, chatWhen, footer, landing, PRIMARY_LABEL, primaryAction, reviewTurn, tally, topItems } from '@/lib/workbench';
 import { cn } from '@/lib/utils';
 import { AnswerSheet } from './answer-sheet';
 import { ItemRow } from './item-row';
@@ -49,6 +49,7 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
   const items = topItems(card.items, SHOWN);
   const more = tally(card.items, SHOWN);
   const foot = footer(card);
+  const land = landing(card);
   const notes = card.notes.slice(-NOTES_SHOWN);
   const [answering, setAnswering] = useState(false);
   const [noting, setNoting] = useState(false);
@@ -160,13 +161,15 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
       )}
 
       {notes.length > 0 && (
-        <button type="button" onClick={() => setNoting(true)} className="hover:bg-hov -mx-1.5 flex flex-col gap-1 rounded-lg px-1.5 py-1 text-left" aria-label={`Notes on ${card.title}`}>
-          <ul className="flex flex-col gap-1">
+        // The list stays a list: a button laid over it opens the notes.
+        <div className="hover:bg-hov relative -mx-1.5 rounded-lg px-1.5 py-1">
+          <ul aria-label="Latest notes" className="flex flex-col gap-1">
             {notes.map((n) => (
               <NoteRow key={n.id} note={n} now={now} compact />
             ))}
           </ul>
-        </button>
+          <button type="button" onClick={() => setNoting(true)} aria-label={`All notes on ${card.title}`} className="absolute inset-0 rounded-lg" />
+        </div>
       )}
 
       <div className="border-ln flex items-center gap-2 border-t pt-3 text-xs">
@@ -174,11 +177,11 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
         <button
           type="button"
           onClick={() => setNoting(true)}
-          aria-label={card.notes.length ? `${card.notes.length} notes` : 'Leave a note'}
+          aria-label={card.noteCount ? `${card.noteCount} note${card.noteCount === 1 ? '' : 's'}` : 'Leave a note'}
           className="text-mu2 hover:text-fg flex shrink-0 items-center gap-1"
         >
           <MessageSquareTextIcon className="size-3.5" strokeWidth={1.9} />
-          {card.notes.length > 0 && <span className="font-mono text-[11px]">{card.notes.length}</span>}
+          {card.noteCount > 0 && <span className="font-mono text-[11px]">{card.noteCount}</span>}
         </button>
         {foot.needsYou && (
           <span className="text-wait shrink-0 font-medium">
@@ -193,7 +196,11 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
           {PRIMARY_LABEL[action]}
         </button>
       )}
-      {error && <p className="text-fail -mt-1 text-xs">{error}</p>}
+      {error && (
+        <p role="alert" className="text-fail -mt-1 text-xs">
+          {error}
+        </p>
+      )}
 
       <AnswerSheet card={card} approvals={approvals} callout={callout} open={answering} onOpenChange={setAnswering} />
       <NotesSheet card={card} now={now} open={noting} onOpenChange={setNoting} />
@@ -203,12 +210,17 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
           <DialogHeader>
             <DialogTitle>Merge “{card.title}”?</DialogTitle>
             <DialogDescription>
-              Kelpie merges {card.branch ? <span className="font-mono">{card.branch}</span> : 'this card’s work'} into{' '}
-              {card.base ? <span className="font-mono">{card.base}</span> : 'its base branch'}
-              {card.repo ? ` in ${card.repo}` : ''}.
+              Kelpie merges {land.from ? <span className="font-mono">{land.from}</span> : 'this card’s work'} into your local{' '}
+              <span className="font-mono">{land.into}</span> branch{card.repo ? ` in ${card.repo}` : ''}: in the checkout that has it out, which must have
+              no uncommitted changes, or in a temporary worktree if none does. Nothing is pushed; push{' '}
+              <span className="font-mono">{land.into}</span> yourself when you’re ready.
             </DialogDescription>
           </DialogHeader>
-          {mergeError && <p className="text-fail text-sm">Couldn’t merge: {mergeError}</p>}
+          {mergeError && (
+            <p role="alert" className="text-fail text-sm">
+              Couldn’t merge: {mergeError}
+            </p>
+          )}
           <DialogFooter>
             <DialogClose asChild>
               <Button variant="outline" disabled={busy}>

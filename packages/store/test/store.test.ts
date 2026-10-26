@@ -360,7 +360,7 @@ describe('workbench', () => {
     const store = base();
     const card = store.createCard({ roundUpId: 'r', title: 'Checkout', stage: 'building' });
     const note = (body: string, at: number, to?: string) =>
-      store.addNote({ roundUpId: 'r', cardId: card.id, fromId: 'a', fromTitle: 'A', toId: to ?? null, toTitle: to ? to.toUpperCase() : null, body }, at);
+      store.addNote({ roundUpId: 'r', cardId: card.id, fromKind: 'agent', fromId: 'a', fromTitle: 'A', toId: to ?? null, toTitle: to ? to.toUpperCase() : null, body }, at);
     note('hello all', 1000);
     const n2 = note('b, your types?', 2000, 'b');
     note('and again', 3000, 'b');
@@ -371,6 +371,7 @@ describe('workbench', () => {
     expect(store.undeliveredNotes('b').map((n) => n.body)).toEqual(['and again']);
     expect(store.notesFromSince('a', 2000)).toBe(2);
     expect(store.notesFromSince('a', 0, 'b')).toBe(2);
+    expect(store.noteCount(card.id)).toBe(3);
   });
 
   it('drops cards, items, entries and notes with their round-up; a deleted agent leaves its item and notes', () => {
@@ -378,7 +379,7 @@ describe('workbench', () => {
     const card = store.createCard({ roundUpId: 'r', title: 'Checkout', stage: 'building' });
     store.upsertItem(card.id, { key: 'a', agentId: 'a' });
     store.setEntry('a', 'r', { focus: 'x' });
-    store.addNote({ roundUpId: 'r', cardId: card.id, fromId: 'a', fromTitle: 'A', toId: 'b', toTitle: 'B', body: 'hi' });
+    store.addNote({ roundUpId: 'r', cardId: card.id, fromKind: 'agent', fromId: 'a', fromTitle: 'A', toId: 'b', toTitle: 'B', body: 'hi' });
     store.deleteSession('a');
     expect(store.itemsOf([card.id])[0]).toMatchObject({ key: 'a', agentId: null });
     expect(store.notesOf('r')[0]).toMatchObject({ fromId: null, fromTitle: 'A' });

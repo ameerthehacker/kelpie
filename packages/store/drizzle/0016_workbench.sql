@@ -46,6 +46,7 @@ CREATE TABLE `workbench_notes` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`round_up_id` text NOT NULL,
 	`card_id` text,
+	`from_kind` text NOT NULL,
 	`from_id` text,
 	`from_title` text NOT NULL,
 	`to_id` text,

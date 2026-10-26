@@ -172,6 +172,8 @@ export interface WorkbenchCard {
   branch?: string;
   /** The branch it will be merged into. */
   base?: string;
+  /** The local branch Merge lands it on: the base without its remote (`origin/main` lands on `main`). Merge never pushes. */
+  landsOn?: string;
   stage: Stage;
   callout?: string;
   tickets: CardTicket[];
@@ -180,8 +182,9 @@ export interface WorkbenchCard {
   agents: { total: number; working: number };
   /** Open approvals of the agents linked to this card's items. */
   needsYou: number;
-  /** The card's latest notes, oldest first. */
+  /** The card's latest notes, oldest first (at most 20), and how many it has in all. */
   notes: WorkbenchNote[];
+  noteCount: number;
   /**
    * The person removed it from the board. The daemon clears it (its `archivedAt`) when an update
    * sets a stage other than `done`, so the card comes back.
@@ -201,8 +204,10 @@ export interface WorkbenchCard {
 /**
  * Body of `PATCH /api/workbench/:cardId`, which answers with the card (or 404).
  *
- * `POST /api/workbench/:cardId/merge` (no body) lands the card's work and answers 200 with the
- * updated `WorkbenchCard`, or 4xx with a `MergeError`.
+ * `POST /api/workbench/:cardId/merge` (no body) lands the card's work on its local base branch
+ * (`landsOn`; nothing is pushed) and answers 200 with the updated `WorkbenchCard`, 404 for no such
+ * card, 409 with a `MergeError` when it won't (agents working, work not mustered, uncommitted
+ * changes, a conflict, a hook said no), or 500 with one when git itself failed.
  */
 export const CardArchive = z.object({ archived: z.boolean() });
 export type CardArchive = z.infer<typeof CardArchive>;

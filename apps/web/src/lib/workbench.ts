@@ -200,8 +200,11 @@ export const noteFrom = (n: Pick<WorkbenchNote, 'from'>) => (n.from.kind === 'pe
 /** Whom a note is for, if anyone: "Kelpie" for an orchestrator. */
 export const noteTo = (n: Pick<WorkbenchNote, 'to'>) => (n.to ? (n.to.title === 'Orchestrator' ? 'Kelpie' : n.to.title) : undefined);
 
-/** Where a note to someone stands: handed over, or waiting for their next turn. Nothing for a note to everyone. */
-export const noteState = (n: Pick<WorkbenchNote, 'to' | 'deliveredAt'>) => (n.to ? (n.deliveredAt ? 'Seen' : 'Waiting for their next turn') : undefined);
+/**
+ * Where a note to someone stands: handed over (with a turn, or as they read the board; whether they
+ * acted on it is theirs to say), or waiting for their next turn. Nothing for a note to everyone.
+ */
+export const noteState = (n: Pick<WorkbenchNote, 'to' | 'deliveredAt'>) => (n.to ? (n.deliveredAt ? 'Handed over' : 'Waiting for their next turn') : undefined);
 
 /** The agents a person's note can go to: the card's, once each, in item order. */
 export function noteTargets(card: Pick<WorkbenchCard, 'items'>): { id: string; title: string }[] {
@@ -210,5 +213,7 @@ export function noteTargets(card: Pick<WorkbenchCard, 'items'>): { id: string; t
   return [...out].map(([id, title]) => ({ id, title }));
 }
 
-/** The card's items whose agent says it is blocked. */
-export const blockedAgents = (card: Pick<WorkbenchCard, 'items'>) => card.items.filter((i) => i.entry?.blocker);
+/** What Merge lands where: the feature branch onto the local base branch (`landsOn`), never pushed. */
+export function landing(card: Pick<WorkbenchCard, 'branch' | 'base' | 'landsOn'>): { from?: string; into: string } {
+  return { ...(card.branch ? { from: card.branch } : {}), into: card.landsOn ?? card.base ?? 'base' };
+}

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
 import {
   DONE_FOR,
@@ -16,7 +17,7 @@ import {
 import type { CardRow, EntryRow, ItemRow, NoteRow, Store } from '@kelpie/store';
 import { ToolError } from './errors.js';
 import type { ManagerUpdate, Session, SessionManager } from './sessions.js';
-import { runGit, type Worktrees } from './worktrees.js';
+import { GitError, localBranch, runGit, type LandResult, type Worktrees } from './worktrees.js';
 
 /** How many of a card's latest notes it carries. */
 const CARD_NOTES = 20;
@@ -35,7 +36,7 @@ export const WORKBENCH_TAG = 'kelpie-workbench';
 export class WorkbenchError extends Error {
   constructor(
     message: string,
-    readonly status: 404 | 409,
+    readonly status: 404 | 409 | 500,
   ) {
     super(message);
   }
@@ -71,6 +72,16 @@ export function claimsOverlap(a: string, b: string): boolean {
   if (!x || !y) return true;
   return x === y || y.startsWith(`${x}/`) || x.startsWith(`${y}/`);
 }
+
+/** Keeps a `<kelpie-…>` tag in someone's text from opening or closing a block of the turn it goes into. */
+const untag = (text: string) => text.replace(/<(\/?)(\s*)kelpie-/gi, '‹$1$2kelpie-');
+
+/**
+ * A note as its reader gets it: a header naming the sender, then the body quoted line by line, so no
+ * line of it can pass for another note or a sender of its own.
+ */
+export const quoteNote = (n: Pick<NoteRow, 'fromTitle' | 'body'>) =>
+  [`- From "${untag(n.fromTitle).replace(/\s+/g, ' ')}":`, ...untag(n.body).split(/\r?\n/).map((l) => `  > ${l}`)].join('\n');
 
 const clip = (text: string, max: number) => {
   const t = text.replace(/\s+/g, ' ').trim();
@@ -114,6 +125,8 @@ export class Workbench {
   /** Each round-up's repo as cards show it, by cwd: resolved once (git), then read from here. */
   private readonly names = new Map<string, string>();
   private readonly naming = new Map<string, Promise<string>>();
+  /** Each round-up's git remotes, by cwd, for the local branch a card lands on. */
+  private readonly remotes = new Map<string, string[]>();
   /** Each repo's main checkout, by cwd, for finding other round-ups in the same repo. */
   private readonly roots = new Map<string, Promise<string>>();
   /** Every card id that exists, with its round-up: a deleted round-up's cards are gone from the store by the time it says so. */
@@ -162,35 +175,58 @@ export class Workbench {
   }
 
   /**
-   * Lands a card's work: its round-up's feature branch is merged into its base branch's local
-   * branch. Refused while agents work or writers' branches wait to be mustered; the card is done once it lands.
+   * Lands a card's work: its round-up's feature branch is merged into its base's local branch
+   * (`landsOn`); nothing is pushed. Refused while the round-up has another open card (one feature
+   * branch holds both), and, checked under the repo's lock so nothing starts meanwhile, while agents
+   * work, writers' branches wait to be mustered, or the feature branch's worktree has uncommitted
+   * changes. Once it lands the card is done and its agents' items merged.
    */
   async merge(id: string): Promise<WorkbenchCard> {
     const card = this.store.card(id);
     if (!card) throw new WorkbenchError('no such card', 404);
     const roundUp = this.manager.get(card.roundUpId);
     const home = this.store.worktreeOf(card.roundUpId);
-    if (!roundUp || !home || !this.worktrees || !roundUp.baseBranch) {
+    const worktrees = this.worktrees;
+    if (!roundUp || !home || !worktrees || !roundUp.baseBranch) {
       throw new WorkbenchError('nothing to merge yet: no writing agent has worked on this feature’s branch', 409);
     }
-    const busy = this.manager.children(roundUp.id).filter((c) => c.working);
-    if (busy.length) throw new WorkbenchError(`${busy.map((b) => `“${b.title}”`).join(', ')} ${busy.length === 1 ? 'is' : 'are'} still working: merge once they are done`, 409);
-    const waiting: string[] = [];
-    for (const row of this.store.worktreesOf(roundUp.id)) {
-      if (row.kind !== 'agent' || row.deliver !== 'muster' || row.state === 'mustered') continue;
-      if ((await this.worktrees.ownCommits(row)) > 0 && !(await this.worktrees.isMerged(row.repoRoot, row.branch, home.branch))) {
-        waiting.push(this.manager.get(row.sessionId)?.title ?? row.branch);
-      }
-    }
-    if (waiting.length) {
-      throw new WorkbenchError(`${waiting.map((t) => `“${t}”`).join(', ')} ${waiting.length === 1 ? 'isn’t' : 'aren’t'} in the feature branch yet: ask Kelpie to muster first`, 409);
-    }
-    const landed = await this.worktrees.land(home.repoRoot, home.branch, roundUp.baseBranch, `Merge ${home.branch}: ${card.title}`);
-    if (!landed.ok) throw new WorkbenchError(landed.error, 409);
     const now = Date.now();
+    const others = this.store.cards(roundUp.id).filter((c) => c.id !== id && onBoard(c, now) && c.stage !== 'done');
+    if (others.length) {
+      throw new WorkbenchError(
+        `${others.map((c) => `“${c.title}”`).join(', ')} ${others.length === 1 ? 'is' : 'are'} on the same feature branch, so merging would land ${others.length === 1 ? 'its' : 'their'} work too: finish or remove ${others.length === 1 ? 'it' : 'them'} first`,
+        409,
+      );
+    }
+    // Under the repo's lock: no muster can merge into the feature branch between these checks and the landing.
+    const check = async (): Promise<string | undefined> => {
+      const busy = this.manager.children(roundUp.id).filter((c) => c.working);
+      if (busy.length) return `${busy.map((b) => `“${b.title}”`).join(', ')} ${busy.length === 1 ? 'is' : 'are'} still working: merge once they are done`;
+      const waiting: string[] = [];
+      for (const row of this.store.worktreesOf(roundUp.id)) {
+        if (row.kind !== 'agent' || row.deliver !== 'muster' || row.state === 'mustered') continue;
+        if ((await worktrees.ownCommits(row)) > 0 && !(await worktrees.isMerged(row.repoRoot, row.branch, home.branch))) {
+          waiting.push(this.manager.get(row.sessionId)?.title ?? row.branch);
+        }
+      }
+      if (waiting.length) return `${waiting.map((t) => `“${t}”`).join(', ')} ${waiting.length === 1 ? 'isn’t' : 'aren’t'} in the feature branch yet: ask Kelpie to muster first`;
+      const now = this.store.worktreeOf(roundUp.id) ?? home;
+      if (existsSync(now.path) && (await worktrees.dirty(now.path))) return 'the feature branch’s worktree has uncommitted changes: ask Kelpie to commit or muster them first';
+      return undefined;
+    };
+    let landed: LandResult;
+    try {
+      landed = await worktrees.land(home.repoRoot, home.branch, roundUp.baseBranch, `Merge ${home.branch}: ${card.title}`, check);
+    } catch (err) {
+      if (err instanceof GitError) throw new WorkbenchError(`git failed while merging: ${err.message}`, 500);
+      throw err;
+    }
+    if (!landed.ok) throw new WorkbenchError(landed.error, 409);
+    const at = Date.now();
     const row = this.store.atomically(() => {
-      for (const item of this.store.itemsOf([id])) if (item.status !== 'closed') this.store.upsertItem(id, { key: item.key, status: 'merged' }, now);
-      return this.store.updateCard(id, { stage: 'done', doneAt: card.stage === 'done' ? card.doneAt : now, archivedAt: null }, now)!;
+      // Only its agents' work landed here: other items (PRs elsewhere) keep what the orchestrator said.
+      for (const item of this.store.itemsOf([id])) if (item.agentId && item.status !== 'closed') this.store.upsertItem(id, { key: item.key, status: 'merged' }, at);
+      return this.store.updateCard(id, { stage: 'done', doneAt: card.stage === 'done' ? card.doneAt : at, archivedAt: null }, at)!;
     });
     return this.send(row);
   }
@@ -204,11 +240,11 @@ export class Workbench {
     const tickets: CardTicket[] = input.tickets ?? parent.tickets().map(({ source: _s, addedAt: _a, ...t }) => t);
     const row = this.store.atomically(() => {
       const card = this.store.createCard({ roundUpId: parent.id, title: input.title, stage: input.stage ?? 'building', callout: input.callout ?? null, tickets }, now);
-      this.applyItems(parent, card.id, input.items ?? [], now);
-      return card;
+      return { ...card, moved: this.applyItems(parent, card.id, input.items ?? [], now) };
     });
     this.known.set(row.id, parent.id);
     await this.nameOf(parent.id);
+    this.resend(row.moved);
     return toolCard(this.send(this.store.card(row.id)!));
   }
 
@@ -218,8 +254,9 @@ export class Workbench {
     if (!card || card.roundUpId !== parent.id) throw new ToolError(`no such card in this round-up: ${input.card}. workbench_read lists your cards with their ids.`);
     const now = Date.now();
     const stage = input.stage;
+    let moved: string[] = [];
     const row = this.store.atomically(() => {
-      this.applyItems(parent, card.id, input.items ?? [], now);
+      moved = this.applyItems(parent, card.id, input.items ?? [], now);
       return this.store.updateCard(
         card.id,
         {
@@ -233,11 +270,25 @@ export class Workbench {
       )!;
     });
     await this.nameOf(parent.id);
+    this.resend(moved);
     return toolCard(this.send(row));
   }
 
-  private applyItems(parent: Session, cardId: string, items: ItemPatch[], now: number): void {
-    if (!items.length) return;
+  /** Cards an agent's item left: they go out again as they are now. */
+  private resend(cardIds: string[]): void {
+    for (const id of cardIds) {
+      const card = this.store.card(id);
+      if (card) this.send(card);
+    }
+  }
+
+  /**
+   * Upserts and removes a card's items. An agent of the round-up is on one card at a time: its item
+   * on any other of the round-up's cards goes. Returns the ids of the cards it left.
+   */
+  private applyItems(parent: Session, cardId: string, items: ItemPatch[], now: number): string[] {
+    if (!items.length) return [];
+    const moved = new Set<string>();
     const existing = new Set(this.store.itemsOf([cardId]).map((i) => i.key));
     for (const p of items) {
       if (p.remove) {
@@ -259,7 +310,15 @@ export class Workbench {
         },
         now,
       );
+      if (!own) continue;
+      const theirs = new Set(this.store.cards(parent.id).map((c) => c.id));
+      for (const other of this.store.itemsOfAgent(own.id)) {
+        if (other.cardId === cardId || !theirs.has(other.cardId)) continue;
+        this.store.removeItem(other.cardId, other.key);
+        moved.add(other.cardId);
+      }
     }
+    return [...moved];
   }
 
   // ── agents' entries and notes ────────────────────────────────────────
@@ -322,6 +381,7 @@ export class Workbench {
         roundUpId,
         cardId,
         fromId: from?.id ?? null,
+        fromKind: !from ? 'person' : from.role === 'orchestrator' ? 'orchestrator' : 'agent',
         fromTitle: from ? this.titleOf(from) : 'The person',
         toId: to?.session.id ?? null,
         toTitle: to?.title ?? null,
@@ -359,7 +419,7 @@ export class Workbench {
     if (!notes.length) return undefined;
     this.store.markNotesDelivered(notes.map((n) => n.id));
     this.changed(session.roundUpId);
-    return `<${WORKBENCH_TAG}>\nNotes for you on the Workbench:\n${notes.map((n) => `- From "${n.fromTitle}": ${n.body}`).join('\n')}\n\nAnswer one with workbench_post only if it asks something of you; never just to acknowledge it.\n</${WORKBENCH_TAG}>`;
+    return `<${WORKBENCH_TAG}>\nNotes for you on the Workbench:\n${notes.map(quoteNote).join('\n')}\n\nAnswer one with workbench_post only if it asks something of you; never just to acknowledge it.\n</${WORKBENCH_TAG}>`;
   }
 
   /** `workbench_read`: the round-up's cards and agents, others' claims in the same repo, and notes. Hands over the reader's notes. */
@@ -407,11 +467,11 @@ export class Workbench {
     if (waiting.length) {
       this.store.markNotesDelivered(waiting.map((n) => n.id), now);
       this.changed(roundUp.id);
-      out.push('', '## Notes for you', ...waiting.map((n) => `- From "${n.fromTitle}": ${n.body}`), 'Answer one with workbench_post only if it asks something of you.');
+      out.push('', '## Notes for you', ...waiting.map(quoteNote), 'Answer one with workbench_post only if it asks something of you.');
     }
     const fresh = new Set(waiting.map((n) => n.id));
     const recent = this.store.notesOf(roundUp.id, { limit: READ_NOTES + fresh.size }).filter((n) => !fresh.has(n.id)).slice(-READ_NOTES);
-    if (recent.length) out.push('', '## Recent notes', ...recent.map((n) => `- "${n.fromTitle}"${n.toTitle ? ` → "${n.toTitle}"` : ''}: ${clip(n.body, 300)}`));
+    if (recent.length) out.push('', '## Recent notes', ...recent.map((n) => `- "${clip(untag(n.fromTitle), 120)}"${n.toTitle ? ` → "${clip(untag(n.toTitle), 120)}"` : ''}: ${clip(untag(n.body), 300)}`));
     if (!cards.length && !listed.length && !recent.length) out.push('', 'Nothing on the board yet.');
     return out.join('\n');
   }
@@ -435,8 +495,8 @@ export class Workbench {
   }
 
   /**
-   * Who else claims what `agent` claims: agents of its own round-up whose work isn't mustered yet
-   * (their branches still have to come together), and those working in other round-ups in its repo.
+   * Who else claims what `agent` claims: agents of its own round-up whose claims still stand (see
+   * `stillClaims`), and those working in other round-ups in its repo.
    */
   private async clashes(agent: Session, claims: string[]): Promise<string[]> {
     if (!claims.length) return [];
@@ -445,7 +505,7 @@ export class Workbench {
     for (const e of this.store.entriesOf([agent.roundUpId])) {
       if (e.sessionId === agent.id) continue;
       const other = this.manager.get(e.sessionId);
-      if (!other || this.store.worktreeOf(other.id)?.state === 'mustered') continue;
+      if (!other || !this.stillClaims(other)) continue;
       const hit = overlap(e.claims);
       if (hit.length) out.push(`"${other.title}" (${statusOf(other)}) claims ${hit.join(', ')}`);
     }
@@ -455,6 +515,16 @@ export class Workbench {
       if (hit.length) out.push(`"${o.agent}" in round-up "${o.roundUp}" (${o.status}) claims ${hit.join(', ')}`);
     }
     return out;
+  }
+
+  /**
+   * Whether an agent's claims still stand: while it works, and for a writer whose work is still to be
+   * mustered (its branch has yet to meet the others'). A finished reader's, or mustered work's, don't.
+   */
+  private stillClaims(agent: Session): boolean {
+    if (active(statusOf(agent))) return true;
+    const wt = this.store.worktreeOf(agent.id);
+    return agent.writes && wt?.deliver === 'muster' && wt.state !== 'mustered';
   }
 
   /** Agents working now with claims, in other round-ups in the same repo. */
@@ -536,7 +606,7 @@ export class Workbench {
       chat: roundUp?.title || 'Untitled',
       ...(name ? { repo: name } : {}),
       ...(home ? { branch: home.branch } : {}),
-      ...(roundUp?.baseBranch ? { base: roundUp.baseBranch } : {}),
+      ...(roundUp?.baseBranch ? { base: roundUp.baseBranch, landsOn: localBranch(roundUp.baseBranch, this.remotes.get(roundUp.cwd) ?? []) } : {}),
       stage: card.stage,
       ...(card.callout ? { callout: card.callout } : {}),
       tickets: card.tickets as CardTicket[],
@@ -544,6 +614,7 @@ export class Workbench {
       agents: { total: agents.length, working: agents.filter((a) => a.working).length },
       needsYou: agents.reduce((n, a) => n + a.approvals().length, 0),
       notes: this.store.notesOf(card.roundUpId, { cardId: card.id, limit: CARD_NOTES }).map((n) => this.noteView(n)),
+      noteCount: this.store.noteCount(card.id),
       archived: !!card.archivedAt,
       createdAt: card.createdAt,
       updatedAt: card.updatedAt,
@@ -573,11 +644,7 @@ export class Workbench {
     const from = n.fromId ? this.sessions?.get(n.fromId) : undefined;
     return {
       id: n.id,
-      from: !n.fromId && n.fromTitle === 'The person'
-        ? { kind: 'person', title: n.fromTitle }
-        : from?.role === 'orchestrator'
-          ? { kind: 'orchestrator', title: n.fromTitle }
-          : { kind: 'agent', title: n.fromTitle, ...(from ? { agentId: from.id, harness: from.info().harness } : {}) },
+      from: n.fromKind === 'agent' ? { kind: 'agent', title: n.fromTitle, ...(from ? { agentId: from.id, harness: from.info().harness } : {}) } : { kind: n.fromKind, title: n.fromTitle },
       ...(n.toTitle ? { to: { title: n.toTitle, ...(n.toId ? { agentId: n.toId } : {}) } } : {}),
       body: n.body,
       createdAt: n.createdAt,
@@ -660,6 +727,8 @@ export class Workbench {
       p = (async () => {
         const root = await this.rootOf(cwd);
         const remote = await runGit(root, ['remote', 'get-url', 'origin']);
+        const remotes = await runGit(root, ['remote']);
+        this.remotes.set(cwd, remotes.code === 0 ? remotes.stdout.split('\n').filter(Boolean) : []);
         const name = (remote.code === 0 && repoFromRemote(remote.stdout)) || basename(root);
         this.names.set(cwd, name);
         return name;

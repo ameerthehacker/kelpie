@@ -4,7 +4,6 @@ import { DONE_FOR, type WorkbenchCard, type WorkbenchItem, type WorkbenchNote } 
 import { HttpError } from '../src/lib/api.js';
 import type { PendingApproval } from '../src/lib/approvals.js';
 import {
-  blockedAgents,
   boardOf,
   calloutOf,
   cardApprovals,
@@ -12,6 +11,7 @@ import {
   columns,
   dropCard,
   entryOf,
+  landing,
   footer,
   needsYouTotal,
   noteFrom,
@@ -46,6 +46,7 @@ const card = (over: Partial<WorkbenchCard>): WorkbenchCard => ({
   agents: { total: 0, working: 0 },
   needsYou: 0,
   notes: [],
+  noteCount: 0,
   archived: false,
   createdAt: NOW - 60 * MIN,
   updatedAt: NOW - MIN,
@@ -276,7 +277,6 @@ describe('coordination on a card', () => {
       blocker: 'needs the schema',
     });
     expect(entryOf(item({ entry: entry({ progress: 'routes done' }) }))).toEqual({ focus: 'routes done', claims: [], more: 0 });
-    expect(blockedAgents(card({ items: [item({ key: 'a', entry: entry({ blocker: 'x' }) }), item({ key: 'b', entry: entry({}) })] })).map((i) => i.key)).toEqual(['a']);
   });
 
   it('names who wrote a note, to whom, and whether it has reached them', () => {
@@ -289,7 +289,7 @@ describe('coordination on a card', () => {
     expect(noteTo(note({ to: { title: 'Docs', agentId: 'd' } }))).toBe('Docs');
     expect(noteState(note({}))).toBeUndefined();
     expect(noteState(note({ to: { title: 'Docs' } }))).toBe('Waiting for their next turn');
-    expect(noteState(note({ to: { title: 'Docs' }, deliveredAt: NOW }))).toBe('Seen');
+    expect(noteState(note({ to: { title: 'Docs' }, deliveredAt: NOW }))).toBe('Handed over');
   });
 
   it("offers the card's agents, once each, as a note's recipients", () => {
@@ -305,5 +305,13 @@ describe('coordination on a card', () => {
       { id: 'a', title: 'API' },
       { id: 'b', title: 'UI' },
     ]);
+  });
+});
+
+describe('landing', () => {
+  it('lands on the local base branch, never the remote one', () => {
+    expect(landing({ branch: 'kelpie/checkout', base: 'origin/main', landsOn: 'main' })).toEqual({ from: 'kelpie/checkout', into: 'main' });
+    expect(landing({ base: 'develop' })).toEqual({ into: 'develop' });
+    expect(landing({})).toEqual({ into: 'base' });
   });
 });

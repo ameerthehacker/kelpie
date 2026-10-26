@@ -94,6 +94,7 @@ export function NotesSheet({ card, now, open, onOpenChange }: Props) {
           <SheetDescription>What the agents and Kelpie tell each other. A note to an agent reaches it with its next turn; it never interrupts it.</SheetDescription>
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 pb-4">
+          {card.noteCount > card.notes.length && <p className="text-mu2 pb-3 text-xs">The latest {card.notes.length} of {card.noteCount} notes.</p>}
           {card.notes.length ? (
             <ul className="flex flex-col gap-3.5">
               {card.notes.map((n) => (
@@ -148,7 +149,11 @@ export function NotesSheet({ card, now, open, onOpenChange }: Props) {
               <ArrowUpIcon className="size-3.5" strokeWidth={2.4} />
             </button>
           </div>
-          {error && <p className="text-fail px-1 text-xs">Couldn’t post it: {error}</p>}
+          {error && (
+            <p role="alert" className="text-fail px-1 text-xs">
+              Couldn’t post it: {error}
+            </p>
+          )}
         </form>
       </SheetContent>
     </Sheet>

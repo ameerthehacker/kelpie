@@ -394,7 +394,9 @@ export const workbenchNotes = sqliteTable(
       .references(() => sessions.id, { onDelete: 'cascade' }),
     /** The card it shows on, if the round-up had one. */
     cardId: text('card_id').references(() => workbenchCards.id, { onDelete: 'set null' }),
-    /** Null: the person. */
+    /** Who posted it; an agent's `fromId` goes to null if it is deleted, its kind stays. */
+    fromKind: text('from_kind', { enum: ['agent', 'orchestrator', 'person'] }).notNull(),
+    /** The agent or orchestrator that posted it; null for the person (or once it is deleted). */
     fromId: text('from_id').references(() => sessions.id, { onDelete: 'set null' }),
     fromTitle: text('from_title').notNull(),
     toId: text('to_id').references(() => sessions.id, { onDelete: 'set null' }),

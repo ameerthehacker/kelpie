@@ -28,7 +28,12 @@ export function ItemRow({ item }: { item: WorkbenchItem }) {
         ) : (
           <span className="text-fg2 min-w-0 flex-1 truncate">{name}</span>
         )}
-        {item.agentStatus === 'working' && <span aria-label="Working" className="bg-run size-1.5 shrink-0 animate-pulse rounded-full" />}
+        {item.agentStatus === 'working' && (
+          <>
+            <span aria-hidden="true" className="bg-run size-1.5 shrink-0 animate-pulse rounded-full" />
+            <span className="sr-only">Working</span>
+          </>
+        )}
         <Badge variant="secondary" className={cn('h-5 rounded-full px-2 text-[11px]', pill.className)}>
           {pill.label}
         </Badge>
@@ -37,7 +42,8 @@ export function ItemRow({ item }: { item: WorkbenchItem }) {
         <div className={cn('flex flex-col gap-0.5 text-xs', item.harness && 'pl-6')}>
           {entry.focus && <p className="text-mu truncate">{entry.focus}</p>}
           {entry.claims.length > 0 && (
-            <p className="flex min-w-0 items-center gap-1" aria-label="Claims">
+            <p className="flex min-w-0 items-center gap-1">
+              <span className="sr-only">Claims: </span>
               {entry.claims.map((c) => (
                 <span key={c} className="bg-chip text-fg3 max-w-[11rem] truncate rounded-md px-1.5 py-px font-mono text-[10.5px]">
                   {c}

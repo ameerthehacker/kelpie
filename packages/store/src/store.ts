@@ -669,6 +669,11 @@ export class Store {
       .reverse();
   }
 
+  /** How many notes a card has. */
+  noteCount(cardId: string): number {
+    return this.db.select({ n: sql<number>`count(*)` }).from(schema.workbenchNotes).where(eq(schema.workbenchNotes.cardId, cardId)).get()?.n ?? 0;
+  }
+
   /** Notes to a session it has not been handed yet, oldest first. */
   undeliveredNotes(toId: string): NoteRow[] {
     const n = schema.workbenchNotes;

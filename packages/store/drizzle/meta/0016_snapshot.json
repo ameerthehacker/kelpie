@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "ec6176c6-5289-48ac-b793-5fd5fe41a4d1",
+  "id": "ea400dda-152b-4592-ba0c-efdb49072cd4",
   "prevId": "e612ff14-68f3-4eae-8a43-746b1b8de0c7",
   "tables": {
     "attachments": {
@@ -1571,6 +1571,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false,
+          "autoincrement": false
+        },
+        "from_kind": {
+          "name": "from_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
           "autoincrement": false
         },
         "from_id": {
