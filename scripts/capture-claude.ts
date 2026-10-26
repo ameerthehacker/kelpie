@@ -32,8 +32,8 @@ interface Scenario {
   queueWhen?: (o: Obj) => boolean;
   /** Settings for this scenario beyond the defaults (e.g. no Bash allow, so the CLI asks). */
   spec?: Partial<RunSpec>;
-  /** How to answer the CLI's permission requests (can_use_tool): yes, no, or a response of its own. */
-  answer?: 'allow' | 'deny' | ((request: Obj) => Obj);
+  /** How to answer the CLI's permission requests (can_use_tool): yes, no, a response of its own, or not at all. */
+  answer?: 'allow' | 'deny' | 'none' | ((request: Obj) => Obj);
 }
 
 const usesTool = (name: string) => (o: Obj) =>
@@ -127,6 +127,26 @@ const SCENARIOS: Record<string, Scenario> = {
       updatedInput: { ...req.input, answers: Object.fromEntries((req.input.questions ?? []).map((q: Obj) => [q.question, q.options?.[1]?.label ?? 'Blue'])) },
     }),
   },
+  // The person stops the turn while a question waits on them: what the CLI says of the open request.
+  'ask-interrupt': {
+    turns: [
+      'Use AskUserQuestion to ask me one question, "Which color should the button be?", header "Color", options "Red" and "Blue", each with a short description. Then tell me in one line which color I picked.',
+    ],
+    spec: { tools: ['AskUserQuestion'], allowedTools: [] },
+    interruptWhen: (o) => o.type === 'control_request' && o.request?.subtype === 'can_use_tool',
+    answer: 'none',
+  },
+  // Open-ended and numeric questions (`kind`), answered in the person's own words and digits.
+  'ask-kinds': {
+    turns: [
+      'Use AskUserQuestion once, with two questions: a "text" kind question "What should the app be called?" (header "Name", no options), and a "number" kind question "How many slides should the deck have?" (header "Slides", min 3, max 20, unit "slides"). Then tell me in one line what I answered.',
+    ],
+    spec: { tools: ['AskUserQuestion'], allowedTools: [] },
+    answer: (req) => ({
+      behavior: 'allow',
+      updatedInput: { ...req.input, answers: Object.fromEntries((req.input.questions ?? []).map((q: Obj) => [q.question, q.kind === 'number' ? '7' : 'Kelp'])) },
+    }),
+  },
   // The person skips a question: a deny, which the model reads as declined.
   'ask-skip': {
     turns: [
@@ -176,7 +196,7 @@ async function capture(name: string, s: Scenario): Promise<void> {
     lines.push(line);
     const o = JSON.parse(line) as Obj;
     if (o.type === 'system' && o.subtype === 'init') sessions[name] = o.session_id;
-    if (o.type === 'control_request' && o.request?.subtype === 'can_use_tool') {
+    if (o.type === 'control_request' && o.request?.subtype === 'can_use_tool' && s.answer !== 'none') {
       const response =
         typeof s.answer === 'function'
           ? s.answer(o.request)

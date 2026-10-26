@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { Question } from '@kelpie/protocol';
-import { answered, answersOf, chosen, emptyDraft, isPicked, otherIndex, pick, questionsLine } from '../src/lib/questions.js';
+import { clearDrafts, draftKey, getDrafts, setDrafts, subscribeDrafts } from '../src/lib/question-drafts.js';
+import { answered, answersOf, canSubmit, chosen, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, questionsLine } from '../src/lib/questions.js';
 
 const color: Question = { question: 'Which color?', header: 'Color', options: [{ label: 'Red' }, { label: 'Blue' }] };
 const extras: Question = { question: 'Which extras?', options: [{ label: 'Tests' }, { label: 'Docs' }, { label: 'Lint' }], multiSelect: true };
+const name: Question = { question: 'Name?', kind: 'text', options: [] };
+const slides: Question = { question: 'Slides?', kind: 'number', min: 3, max: 20, defaultValue: 8, unit: 'slides', options: [] };
 
 describe('answering questions', () => {
   it('picks one option at a time, or "Other" in its place', () => {
@@ -40,5 +43,51 @@ describe('answering questions', () => {
     expect(chosen(undefined, color)).toEqual([]);
     expect(questionsLine([color])).toBe('Which color?');
     expect(questionsLine([color, extras])).toBe('2 questions: Color, Question 2');
+  });
+
+  it('takes a text question in words and a number question in range, starting at its default', () => {
+    expect(emptyDraft(slides).text).toBe('8');
+    expect(emptyDraft(name).text).toBe('');
+    // They have no options to pick.
+    expect(pick(name, emptyDraft(name), 0)).toEqual(emptyDraft(name));
+    expect(answersOf([name, slides], [{ ...emptyDraft(), text: ' Kelp ' }, emptyDraft(slides)])).toEqual({ 'Name?': 'Kelp', 'Slides?': '8' });
+    expect(numberProblem(slides, '30')).toBe('A number from 3 to 20');
+    expect(numberProblem(slides, 'ten')).toBe('A number from 3 to 20');
+    expect(numberProblem(slides, '')).toBeUndefined();
+    expect(numberProblem(name, 'ten')).toBeUndefined();
+    expect(answered(slides, { ...emptyDraft(), text: '30' })).toBe(false);
+    expect(chosen({ 'Slides?': '12' }, slides)).toEqual(['12 slides']);
+  });
+
+  it('submits with some questions unanswered, but not none, and not with a number out of range', () => {
+    const none = [emptyDraft(), emptyDraft(), emptyDraft()];
+    expect(canSubmit([color, extras, name], none)).toBe(false);
+    expect(canSubmit([color, extras, name], [pick(color, emptyDraft(), 0), emptyDraft(), emptyDraft()])).toBe(true);
+    expect(canSubmit([color, slides], [pick(color, emptyDraft(), 0), { ...emptyDraft(), text: '99' }])).toBe(false);
+    // Enter goes on to the next question still unanswered after this one, and submits after the last.
+    const ds = [emptyDraft(), pick(extras, emptyDraft(), 0), emptyDraft()];
+    expect(nextUnanswered([color, extras, name], ds, 0)).toBe(2);
+    expect(nextUnanswered([color, extras, name], ds, 2)).toBe(-1);
+  });
+});
+
+describe('question drafts', () => {
+  it('are one per question, for every card showing it, until it is answered', () => {
+    const key = draftKey('s', 'r');
+    let calls = 0;
+    const stop = subscribeDrafts(() => calls++);
+    expect(getDrafts(key)).toBeUndefined();
+    const ds = [pick(color, emptyDraft(), 1)];
+    setDrafts(key, ds);
+    expect(getDrafts(key)).toBe(ds);
+    expect(getDrafts(draftKey('s', 'other'))).toBeUndefined();
+    clearDrafts(key);
+    clearDrafts(key);
+    expect(getDrafts(key)).toBeUndefined();
+    expect(calls).toBe(2);
+    stop();
+    setDrafts(key, ds);
+    expect(calls).toBe(2);
+    clearDrafts(key);
   });
 });

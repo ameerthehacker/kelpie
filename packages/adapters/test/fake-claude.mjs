@@ -11,7 +11,8 @@
 // command (can_use_tool) before the first turn's output, and goes on once answered; FAKE_ANSWER_FILE
 // gets a line of JSON per answer. FAKE_ASK_TOOL=ExitPlanMode asks to put FAKE_ASK as a plan instead;
 // FAKE_ASK_TOOL=AskUserQuestion asks FAKE_ASK as a question (options "Red" and "Blue"), or FAKE_ASK_INPUT's
-// questions (the tool's input, as JSON) if set.
+// questions (the tool's input, as JSON) if set. Interrupted while asking, it ends the turn the way the real
+// CLI does (ask-interrupt.jsonl): it cancels the request, unless FAKE_NO_CANCEL=1, then reports the turn aborted.
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -41,6 +42,15 @@ for await (const line of createInterface({ input: process.stdin })) {
     continue;
   }
   if (msg.type === 'control_request') {
+    if (msg.request?.subtype === 'interrupt' && asking && !hang) {
+      asking = false;
+      const session_id = JSON.parse(lines[0]).session_id;
+      if (process.env.FAKE_NO_CANCEL !== '1') out({ type: 'control_cancel_request', request_id: ASK_ID });
+      out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } });
+      out({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] }, session_id, parent_tool_use_id: null });
+      out({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_streaming', session_id, total_cost_usd: 0, usage: {} });
+      continue;
+    }
     if (!hang) out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } });
   } else if (msg.type === 'user' && process.env.FAKE_STDIN_FILE) {
     appendFileSync(process.env.FAKE_STDIN_FILE, JSON.stringify({ resume: args.includes('--resume') ? resume : null, text: msg.message.content[0].text }) + '\n');

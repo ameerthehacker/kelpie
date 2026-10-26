@@ -93,6 +93,12 @@ export function answersError(questions: Question[], answers: Answers): string | 
     if (Array.isArray(answer) && !q.multiSelect) return `"${text}" takes one answer`;
     if (!parts.length || parts.some((p) => typeof p !== 'string' || !p.trim() || p.length > 4000)) return `"${text}" needs an answer (at most 4000 characters each)`;
     if (parts.length > q.options.length + 1) return `"${text}" has more answers than options`;
+    if (q.kind === 'number') {
+      const n = Number(parts[0]!.trim());
+      if (!/^-?\d+(\.\d+)?$/.test(parts[0]!.trim()) || (q.min !== undefined && n < q.min) || (q.max !== undefined && n > q.max)) {
+        return `"${text}" takes a number${q.min !== undefined && q.max !== undefined ? ` between ${q.min} and ${q.max}` : ''}`;
+      }
+    }
   }
   return undefined;
 }
@@ -1019,6 +1025,10 @@ export class SessionManager {
         }
         const roundUp = this.sessions.get(session.roundUpId);
         if (roundUp) await this.setMode(roundUp, opts.mode);
+      }
+      if (opts.answers && !pending.questions) {
+        results.push({ sessionId, requestId, ok: false, error: 'answers are for questions, and this is not a question' });
+        continue;
       }
       // Questions take their answers: a bare yes would tell the agent the person said nothing.
       const answers = pending.questions && opts.allow ? opts.answers : undefined;
