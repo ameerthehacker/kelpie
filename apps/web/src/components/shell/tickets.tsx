@@ -1,7 +1,6 @@
 import { ArrowUpRightIcon, ChevronDownIcon, TicketIcon } from 'lucide-react';
-import type { LinkedTicket } from '@kelpie/protocol';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ticketsDisplay, type TicketView } from '@/lib/tickets';
+import { ticketsDisplay, type ShownTicket, type TicketView } from '@/lib/tickets';
 import { cn } from '@/lib/utils';
 
 const chip =
@@ -12,10 +11,10 @@ const out = <ArrowUpRightIcon aria-hidden="true" className="text-fa size-3 shrin
 const Label = ({ t }: { t: TicketView }) => <span className={cn('truncate', t.mono && 'font-mono text-[11.5px]')}>{t.label}</span>;
 
 /**
- * The Jira and Asana tickets linked to a round-up, in its title block: one ticket is a chip
+ * The Jira and Asana tickets linked to a round-up, in its title block (and on its Workbench cards): one ticket is a chip
  * that opens it; several are an "N tickets" chip whose menu lists them, each opening in a new tab.
  */
-export function TicketChips({ tickets }: { tickets: readonly LinkedTicket[] | undefined }) {
+export function TicketChips({ tickets }: { tickets: readonly ShownTicket[] | undefined }) {
   const view = ticketsDisplay(tickets);
   if (view.kind === 'none') return null;
   if (view.kind === 'one') {

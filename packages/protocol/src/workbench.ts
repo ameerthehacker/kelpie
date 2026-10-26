@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { LinkedTicket } from './tickets.js';
 
 /**
  * Workbench: the person's board of features. A round-up's orchestrator creates a card per feature
@@ -23,15 +24,17 @@ export type Stage = z.infer<typeof Stage>;
 export const ItemStatus = z.enum(['draft', 'checks', 'review', 'approved', 'merged', 'blocked', 'closed']);
 export type ItemStatus = z.infer<typeof ItemStatus>;
 
-/** A ticket the person named for this work, shown as a chip on the card. */
-export const Ticket = z.object({
-  /** As the tracker shows it: `PROJ-142`, `#88`. */
-  key: z.string().min(1).max(40),
-  system: z.enum(['jira', 'asana', 'linear', 'github', 'other']),
+/**
+ * A ticket the person named for this work, shown as a chip on the card: a linked ticket (see
+ * tickets.ts), without the round-up's own record of how it was linked (`source`, `addedAt`).
+ */
+export const CardTicket = LinkedTicket.omit({ source: true, addedAt: true }).extend({
+  url: z.url(),
+  /** A Jira issue's key (`SHOP-412`); Asana links carry none. */
+  key: z.string().min(1).max(40).optional(),
   title: z.string().max(200).optional(),
-  url: z.url().optional(),
 });
-export type Ticket = z.infer<typeof Ticket>;
+export type CardTicket = z.infer<typeof CardTicket>;
 
 /** A change to one item, upserted by `key`. Only the fields given change. */
 export const ItemPatch = z.object({
@@ -56,7 +59,7 @@ export const CardPatch = z.object({
   /** One line on what the round-up needs from the person; `null` clears it. */
   callout: z.string().max(280).nullable().optional(),
   /** Replaces the card's tickets. */
-  tickets: z.array(Ticket).max(20).optional(),
+  tickets: z.array(CardTicket).max(20).optional(),
   /** Upserted by key; items not named are left alone. */
   items: z.array(ItemPatch).max(200).optional(),
 });
@@ -113,7 +116,7 @@ export interface WorkbenchCard {
   base?: string;
   stage: Stage;
   callout?: string;
-  tickets: Ticket[];
+  tickets: CardTicket[];
   items: WorkbenchItem[];
   /** The agents linked to this card's items: all of them, and those working now. */
   agents: { total: number; working: number };

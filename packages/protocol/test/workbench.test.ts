@@ -7,7 +7,7 @@ describe('CardPatch', () => {
       title: 'Workbench board',
       stage: 'blocked',
       callout: 'Two agents need approval',
-      tickets: [{ key: 'KEL-12', system: 'linear', url: 'https://linear.app/kelpie/issue/KEL-12' }],
+      tickets: [{ provider: 'jira', kind: 'issue', key: 'KEL-12', url: 'https://kelpie.atlassian.net/browse/KEL-12' }],
       items: [
         { key: 'agent-1', status: 'review' },
         { key: 'docs-pr', title: 'Docs', ref: '#412', url: null },
@@ -21,7 +21,15 @@ describe('CardPatch', () => {
   it('rejects a bad stage, item status or url', () => {
     expect(CardPatch.safeParse({ stage: 'shipped' }).success).toBe(false);
     expect(CardPatch.safeParse({ items: [{ key: 'a', status: 'done' }] }).success).toBe(false);
-    expect(CardPatch.safeParse({ tickets: [{ key: 'X-1', system: 'jira', url: 'not a url' }] }).success).toBe(false);
+    expect(CardPatch.safeParse({ tickets: [{ provider: 'jira', kind: 'issue', key: 'X-1', url: 'not a url' }] }).success).toBe(false);
+  });
+
+  it('takes tickets as linked tickets, without how a round-up linked them', () => {
+    const asana = { provider: 'asana', kind: 'project', url: 'https://app.asana.com/0/1201/list', title: 'Q4 checkout launch' };
+    expect(CardPatch.parse({ tickets: [asana] })).toEqual({ tickets: [asana] });
+    // A round-up's own record of the link is not the card's to keep.
+    expect(CardPatch.parse({ tickets: [{ ...asana, source: 'orchestrator', addedAt: 1 }] })).toEqual({ tickets: [asana] });
+    expect(CardPatch.safeParse({ tickets: [{ provider: 'linear', kind: 'issue', key: 'KEL-12', url: 'https://linear.app/kelpie/issue/KEL-12' }] }).success).toBe(false);
   });
 });
 

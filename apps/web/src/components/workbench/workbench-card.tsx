@@ -12,7 +12,7 @@ import { calloutOf, cardApprovals, chatWhen, footer, PRIMARY_LABEL, primaryActio
 import { cn } from '@/lib/utils';
 import { AnswerSheet } from './answer-sheet';
 import { ItemRow } from './item-row';
-import { TicketChips } from './ticket-chip';
+import { TicketChips } from '@/components/shell/tickets';
 
 const SHOWN = 3;
 
