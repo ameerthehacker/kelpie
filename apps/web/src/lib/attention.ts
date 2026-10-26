@@ -1,5 +1,5 @@
-import { format } from 'date-fns';
 import { isPlan, isQuestion, type PendingApproval } from './approvals.js';
+import { clock } from './limits.js';
 import { roundUpPath, titleOf as roundUpTitle, type RoundUp } from './round-ups.js';
 
 /**
@@ -39,14 +39,25 @@ export function parseSettings(raw: string | null): AttentionSettings {
 }
 
 /**
- * In priority order: what a mixed bundle leads with and where clicking it goes. `paused`: work stopped
- * at the usage limit (Kelpie resumes it); `resumed`: it picked up again, which never chimes.
+ * In priority order: what a mixed bundle leads with and where clicking it goes. Of the usage limit:
+ * `gave-up`, Kelpie stopped resuming work on its own and it needs the person; `paused`, work stopped
+ * at the limit and Kelpie will resume it; `resumed`, it picked up again.
  */
-export const ATTENTION_KINDS = ['approval', 'question', 'plan', 'failed', 'paused', 'reply', 'finished', 'resumed'] as const;
+export const ATTENTION_KINDS = ['approval', 'question', 'plan', 'gave-up', 'failed', 'paused', 'reply', 'finished', 'resumed'] as const;
 export type AttentionKind = (typeof ATTENTION_KINDS)[number];
 
-/** Kinds that update the notification without a banner or the chime: automatic resumes, maybe at night. */
-export const isQuietKind = (k: AttentionKind) => k === 'resumed';
+/**
+ * How a bundle is put to the person. `alert`: a banner and the chime (within the cooldown). `quiet`:
+ * a notification, never the chime: work paused at the limit needs nothing of them, maybe at night.
+ * `update`: only an update of a notification already showing (a resume): nothing new appears.
+ */
+export type Loudness = 'alert' | 'quiet' | 'update';
+
+/** The loudness a bundle of `kinds` calls for: its loudest. */
+export function loudness(kinds: readonly AttentionKind[]): Loudness {
+  if (kinds.some((k) => k !== 'paused' && k !== 'resumed')) return 'alert';
+  return kinds.includes('paused') ? 'quiet' : 'update';
+}
 
 export interface Attention {
   kind: AttentionKind;
@@ -92,13 +103,14 @@ export function fullyIdle(roundUpId: string, sessions: Iterable<SessionLike>): b
  * (its round-up has gone fully idle, see `fullyIdle`); turns in between — "I've started 5 agents",
  * one agent's report while others work — are not. A sub-agent finishing is not either — Kelpie
  * hears of it and rolls it up — unless they asked for every agent. Failures always are. A turn that
- * stopped at the usage limit is no failure: work paused, once per pause (its `since`); and a paused
- * session picking up again (the limit reset) is news too, if quiet.
+ * stopped at the usage limit is no failure: work paused (once per pause, its `since`), and a paused
+ * session picking up again is news too, both quietly. Kelpie giving up on resuming it needs the person.
  */
 export function classifySession(prev: SessionLike | undefined, next: SessionLike, level: AttentionLevel, idle: boolean): Attention | undefined {
   const top = !next.parentId;
   const base = { roundUpId: next.parentId ?? next.id, sessionId: next.id, who: top ? 'Kelpie' : next.title || 'An agent' };
   if (prev?.limited && !next.limited && next.busy) return { ...base, kind: 'resumed', key: `resumed:${next.id}:${prev.limited.since}` };
+  if (next.limited?.gaveUp && !prev?.limited?.gaveUp) return { ...base, kind: 'gave-up', key: `gave-up:${next.id}:${next.limited.since}` };
   const ended = endedTurn(prev, next);
   if (!ended) return undefined;
   if (ended === 'failed' && next.limited) return { ...base, kind: 'paused', key: `paused:${next.id}:${next.limited.since}`, ...(next.limited.retryAt ? { until: next.limited.retryAt } : {}) };
@@ -159,6 +171,11 @@ export function summarize(items: readonly Attention[], titleOf: (roundUpId: stri
   }
   const plans = of('plan');
   if (plans.length) lines.push(plural(plans.length, 'A plan is ready for review', `${plans.length} plans are ready for review`));
+  const gaveUp = of('gave-up');
+  if (gaveUp.length) {
+    const n = distinct(gaveUp, (i) => i.sessionId);
+    lines.push(n === 1 ? `${gaveUp[0]!.who} is still at the usage limit: resume it when you can` : `${n} agents are still at the usage limit: resume them when you can`);
+  }
   const failed = of('failed');
   if (failed.length) {
     const f = failed[0]!;
@@ -175,7 +192,7 @@ export function summarize(items: readonly Attention[], titleOf: (roundUpId: stri
   if (paused.length) {
     const who = distinct(paused, (i) => i.sessionId) === 1 && paused[0]!.who !== 'Kelpie' ? `${paused[0]!.who} paused` : 'Paused';
     const at = paused.map((i) => i.until).filter((t): t is number => !!t).sort((a, b) => a - b)[0];
-    lines.push(at ? `${who} until ${format(at, 'p')} · Kelpie will resume automatically` : `${who} at the usage limit`);
+    lines.push(at ? `${who} until ${clock(at, Date.now())} · Kelpie will resume automatically` : `${who} at the usage limit`);
   }
   const resumed = of('resumed');
   if (resumed.length) {
@@ -260,14 +277,15 @@ export function createAttention(opts: AttentionOptions): AttentionTracker {
 
   /**
    * Puts everything unseen to the person: a banner and the chime, or a quiet update inside the
-   * cooldown. Only quiet news (`quiet`: automatic resumes) never chimes, and leaves the cooldown be.
+   * cooldown. Quiet news (see `Loudness`) never chimes, and leaves the cooldown be.
    */
-  const notify = (quiet = false) => {
+  const notify = (how: Loudness = 'alert') => {
     for (const [k, i] of unseen) if (!live(i)) unseen.delete(k);
     changed();
     const summary = summarize(unseenList, titleOf);
     if (!summary) return;
-    if (quiet) return opts.deliver({ summary, alert: false });
+    if (how === 'update') return (opts.showing?.() ?? true) ? opts.deliver({ summary, alert: false }) : undefined;
+    if (how === 'quiet') return opts.deliver({ summary, alert: false });
     const t = Date.now();
     const wait = lastAlert + ALERT_COOLDOWN_MS - t;
     if (wait <= 0) {
@@ -289,16 +307,17 @@ export function createAttention(opts: AttentionOptions): AttentionTracker {
     bundle = [];
     if (!fresh.length || !opts.away()) return;
     for (const i of fresh) unseen.set(i.key, i);
-    notify(fresh.every((i) => isQuietKind(i.kind)));
+    notify(loudness(fresh.map((i) => i.kind)));
   };
 
-  /** Pauses already put to the person (by key): a session limited again keeps its pause, and is not news twice. */
+  /** Pauses (and give-ups) already put to the person, by key: a session limited again keeps its pause, and is not news twice. */
   const told = new Set<string>();
+  const once = (i: Attention) => i.kind === 'paused' || i.kind === 'gave-up';
   const add = (items: Attention[]) => {
     const { enabled } = opts.settings();
-    const fresh = items.filter((i) => i.kind !== 'paused' || !told.has(i.key));
+    const fresh = items.filter((i) => !once(i) || !told.has(i.key));
     if (!enabled || !fresh.length) return;
-    for (const i of fresh) if (i.kind === 'paused') told.add(i.key);
+    for (const i of fresh) if (once(i)) told.add(i.key);
     bundle.push(...fresh);
     timer ??= setTimeout(flush, BUNDLE_MS);
   };

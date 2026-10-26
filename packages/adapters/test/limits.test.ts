@@ -64,6 +64,7 @@ const replay = (name: string) => {
     .flatMap((l, i) => parser.parse(JSON.parse(l), i + 1));
 };
 const ended = (evs: KelpieEvent[]) => evs.filter((e): e is EventOf<'turn.ended'> => e.kind === 'turn.ended');
+const MESSAGE = "You've hit your session limit · resets 6pm (Asia/Calcutta)";
 const turnEnded = (data: EventOf<'turn.ended'>['data']): KelpieEvent => ({ id: 'r:9', runId: 'r', seq: 9, ts: '2026-10-26T08:43:20.000Z', harness: 'claude-code', kind: 'turn.ended', data });
 
 describe('claude-code usage limit stops', () => {
@@ -81,6 +82,29 @@ describe('claude-code usage limit stops', () => {
     const stop = claudeLimitOf(turnEnded({ status: 'failed', error: "You've hit your session limit · resets 10pm (Asia/Calcutta)" }), at('2026-10-26T08:43:20Z'));
     expect(stop?.resetsAt?.toISOString()).toBe('2026-10-26T16:30:00.000Z');
     expect(claudeLimitOf(turnEnded({ status: 'failed', error: "You've hit your Opus limit" }))).toEqual({ message: "You've hit your Opus limit" });
+  });
+
+  it('pauses only for the usage limit, not for a throttle that shares the rate_limit error', () => {
+    const parse = (lines: object[]) => {
+      const parser = new ClaudeCodeParser({ runId: 'run', now: () => '2026-10-26T08:43:20.000Z' });
+      return ended(lines.flatMap((l, i) => parser.parse(l, i + 1)))[0]!.data;
+    };
+    const session_id = 's';
+    const init = { type: 'system', subtype: 'init', session_id, cwd: '/r', tools: [], model: 'm' };
+    const said = (text: string, extra: object) => ({ type: 'assistant', message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text }] }, session_id, parent_tool_use_id: null, error: 'rate_limit', ...extra });
+    const failed = (text: string) => ({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, terminal_reason: 'api_error', result: text, session_id, usage: {} });
+    const rejected = { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1793017800, rateLimitType: 'five_hour' }, session_id };
+    // A temporary server throttle (or capacity): a failure, and no pause, even with a rejected report earlier in the turn.
+    const throttle = 'API Error: Request rejected (429) · this may be a temporary capacity issue';
+    expect(parse([init, said(throttle, { api_error: 'rate_limit_error' }), failed(throttle)]).limit).toBeUndefined();
+    expect(parse([init, rejected, said(throttle, { api_error: 'rate_limit_error' }), failed(throttle)]).limit).toBeUndefined();
+    expect(parse([init, said(throttle, {}), failed(throttle)]).limit).toBeUndefined();
+    // The usage limit itself.
+    expect(parse([init, said(MESSAGE, { api_error: 'usage_limit_reached', api_error_params: { rate_limit_info: { status: 'rejected', resetsAt: 1793017800, rateLimitType: 'five_hour' } } }), failed(MESSAGE)]).limit).toEqual({ resetsAt: '2026-10-26T12:30:00.000Z', window: 'five_hour' });
+    // A CLI from before the error was typed: only with a rejected limit in its params.
+    expect(parse([init, said(MESSAGE, { api_error_params: { rate_limit_info: { status: 'rejected', resetsAt: 1793017800, rateLimitType: 'five_hour' } } }), failed(MESSAGE)]).limit).toMatchObject({ window: 'five_hour' });
+    // No synthetic message at all, but the API refused with the limit reported rejected.
+    expect(parse([init, rejected, failed(MESSAGE)]).limit).toMatchObject({ window: 'five_hour' });
   });
 
   it('leaves other failures, and other turns, alone', () => {

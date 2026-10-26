@@ -14,7 +14,8 @@ export function PausedBanner({ sessionId, pause, className }: { sessionId: strin
   const now = useNow(30_000);
   const { resumeNow, cancel, pending, error } = useLimitActions(sessionId);
   return (
-    <div role="status" className={cn('bg-surf border-ln flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[20px] border px-4 py-2.5 text-sm', className)}>
+    // Not a live region: the countdown in it changes every half minute.
+    <div className={cn('bg-surf border-ln flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[20px] border px-4 py-2.5 text-sm', className)}>
       <MoonIcon aria-hidden="true" className="text-run size-4 shrink-0" strokeWidth={1.9} />
       <span className="min-w-0 flex-1">
         {pausedLabel(pause, now)}

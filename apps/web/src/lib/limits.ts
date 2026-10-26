@@ -16,17 +16,18 @@ export function until(ms: number, now: number): string {
 
 /** "Resumes 6:00 PM", or "Won't auto-resume": the short line on an agent's row. */
 export function pausedShort(p: UsageLimitPause, now: number): string {
-  return p.retryAt ? `Resumes ${clock(p.retryAt, now)}` : 'Won’t auto-resume';
+  return p.retryAt ? `Resumes ${clock(p.retryAt, now)}` : p.gaveUp ? 'Auto-resume gave up' : 'Won’t auto-resume';
 }
 
 /** "Paused · resumes 6:00 PM": a round-up's status line, and its row in the sidebar. */
 export function pausedStatus(p: UsageLimitPause, now: number): string {
-  return p.retryAt ? `Paused · resumes ${clock(p.retryAt, now)}` : 'Paused · won’t auto-resume';
+  return p.retryAt ? `Paused · resumes ${clock(p.retryAt, now)}` : p.gaveUp ? 'Paused · auto-resume gave up' : 'Paused · won’t auto-resume';
 }
 
 /** "Paused for usage limit · resumes at 6:00 PM (in 2h 14m)", or that Kelpie won't on its own. */
 export function pausedLabel(p: UsageLimitPause, now: number): string {
   if (p.retryAt) return `Paused for usage limit · resumes at ${clock(p.retryAt, now)}${p.retryAt > now ? ` (in ${until(p.retryAt, now)})` : ''}`;
+  if (p.gaveUp) return `Paused for usage limit · Kelpie stopped trying after ${p.attempts} tries`;
   return `Paused for usage limit · won’t resume on its own${p.resetsAt && p.resetsAt > now ? ` (resets ${clock(p.resetsAt, now)})` : ''}`;
 }
 

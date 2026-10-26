@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KelpieEvent, UsageLimitPause } from '@kelpie/protocol';
 import type { AgentSummary } from '../src/lib/agents.js';
-import { BUNDLE_MS, classifySession, createAttention, summarize, type AttentionSettings, type Delivery } from '../src/lib/attention.js';
+import { BUNDLE_MS, classifySession, createAttention, loudness, summarize, type AttentionSettings, type Delivery } from '../src/lib/attention.js';
 import { buildChat, type AssistantPart } from '../src/lib/chat.js';
 import { clock, limitLine, pausedLabel, pausedShort, soonest, until } from '../src/lib/limits.js';
 import { planBar, planLabel } from '../src/lib/plan.js';
@@ -30,6 +30,8 @@ describe('limit times', () => {
     expect(pausedShort(pause(), NOW)).toBe('Resumes 6:00 PM');
     expect(pausedLabel(pause({ retryAt: undefined, resetsAt: SIX_PM }), NOW)).toBe('Paused for usage limit · won’t resume on its own (resets 6:00 PM)');
     expect(pausedShort(pause({ retryAt: undefined }), NOW)).toBe('Won’t auto-resume');
+    expect(pausedShort(pause({ retryAt: undefined, gaveUp: true }), NOW)).toBe('Auto-resume gave up');
+    expect(pausedLabel(pause({ retryAt: undefined, attempts: 12, gaveUp: true }), NOW)).toBe('Paused for usage limit · Kelpie stopped trying after 12 tries');
     expect(soonest([pause(), undefined, pause({ retryAt: SIX_PM - 1000 }), pause({ retryAt: undefined })])).toBe(SIX_PM - 1000);
   });
 
@@ -118,6 +120,16 @@ describe('notifications', () => {
     expect(classifySession(agent({ busy: true, limited: p }), agent({ lastTurn: 'failed', limited: p }), 'needed', false)).toMatchObject({ kind: 'paused', until: SIX_PM, key: `paused:a1:${p.since}` });
     expect(classifySession(agent({ limited: p }), agent({ busy: true, lastTurn: 'failed' }), 'needed', false)).toMatchObject({ kind: 'resumed' });
     expect(classifySession(agent({ busy: true }), agent({ lastTurn: 'failed' }), 'needed', false)).toMatchObject({ kind: 'failed' });
+    // Kelpie ran out of tries: that one needs the person.
+    expect(classifySession(agent({ limited: p }), agent({ limited: { ...p, attempts: 12, retryAt: undefined, gaveUp: true } }), 'needed', false)).toMatchObject({ kind: 'gave-up', key: `gave-up:a1:${p.since}` });
+  });
+
+  it('chimes only for what needs the person: a pause is quiet, a resume only updates', () => {
+    expect(loudness(['paused'])).toBe('quiet');
+    expect(loudness(['paused', 'resumed'])).toBe('quiet');
+    expect(loudness(['resumed'])).toBe('update');
+    expect(loudness(['gave-up'])).toBe('alert');
+    expect(loudness(['paused', 'approval'])).toBe('alert');
   });
 
   it('says until when, and that Kelpie resumes on its own', () => {
@@ -135,6 +147,10 @@ describe('notifications', () => {
       ),
     ).toMatchObject({ title: '2 round-ups', body: 'Paused until 6:00 PM · Kelpie will resume automatically' });
     expect(summarize([{ ...base, sessionId: 'a1', kind: 'resumed', key: 'r' }, { ...base, sessionId: 'a2', kind: 'resumed', key: 'r2' }], titleOf)?.body).toBe('2 agents resumed after the usage limit');
+    // Another day's time says the day.
+    expect(summarize([{ ...base, sessionId: 'a1', kind: 'paused', key: 'p1', until: new Date(2099, 0, 1, 9, 0).getTime() }], titleOf)?.body).toMatch(/^Checkout API paused until \w{3} 9:00 AM/);
+    expect(summarize([{ ...base, sessionId: 'a1', kind: 'gave-up', key: 'g' }], titleOf)).toMatchObject({ body: 'Checkout API is still at the usage limit: resume it when you can' });
+    expect(summarize([{ ...base, sessionId: 'a1', kind: 'gave-up', key: 'g' }, { roundUpId: 'r2', sessionId: 'a2', who: 'B', kind: 'gave-up', key: 'g2' }], titleOf)?.title).toBe('2 round-ups need you');
   });
 
   describe('delivery', () => {
@@ -146,28 +162,45 @@ describe('notifications', () => {
     });
     afterEach(() => vi.useRealTimers());
 
-    it('notifies once per pause, however often it is tried again, and never chimes for a resume', () => {
-      const t = createAttention({ settings: () => settings, away: () => true, showing: () => false, deliver: (d) => delivered.push(d) });
+    it('tells of a pause once and quietly, however often it is tried again; a resume only updates; giving up chimes', () => {
+      let showing = false;
+      const t = createAttention({ settings: () => settings, away: () => true, showing: () => showing, deliver: (d) => delivered.push(d) });
       t.sessions([{ id: 'r1', title: 'Checkout', busy: false }]);
       t.subAgents([agent()]);
       const p = pause();
-      // Paused: one banner.
+      // Paused: one notification, without the chime.
       t.session(agent({ busy: true }));
       t.session(agent({ busy: true, limited: p }));
       t.session(agent({ lastTurn: 'failed', limited: p }));
       vi.advanceTimersByTime(BUNDLE_MS);
-      expect(delivered).toEqual([{ summary: expect.objectContaining({ body: 'Checkout API paused until 6:00 PM · Kelpie will resume automatically' }), alert: true }]);
+      expect(delivered).toEqual([{ summary: expect.objectContaining({ body: 'Checkout API paused until 6:00 PM · Kelpie will resume automatically' }), alert: false }]);
       // A try that finds the limit still there: the same pause, no news.
       const later = { ...p, attempts: 1, retryAt: SIX_PM + 3_600_000 };
       t.session(agent({ busy: true, limited: p }));
       t.session(agent({ lastTurn: 'failed', limited: later }));
       vi.advanceTimersByTime(BUNDLE_MS);
       expect(delivered).toHaveLength(1);
-      // It picks up: said quietly.
+      // It picks up, with no notification on screen: nothing new appears (it may be the middle of the night).
       t.seen();
       t.session(agent({ busy: true }));
       vi.advanceTimersByTime(BUNDLE_MS);
+      expect(delivered).toHaveLength(1);
+      // With one showing, it is updated in place, quietly.
+      showing = true;
+      t.session(agent({ busy: true, limited: { ...p, since: p.since + 1 } }));
+      t.session(agent({ busy: true }));
+      vi.advanceTimersByTime(BUNDLE_MS);
       expect(delivered[1]).toEqual({ summary: expect.objectContaining({ body: 'Checkout API resumed after the usage limit' }), alert: false });
+      // Kelpie gives up on it: the one notification that chimes.
+      t.seen();
+      showing = false;
+      const stuck = { ...p, attempts: 12, retryAt: undefined, gaveUp: true };
+      t.session(agent({ busy: true, limited: p }));
+      t.session(agent({ busy: true, limited: stuck }));
+      t.session(agent({ lastTurn: 'failed', limited: stuck }));
+      vi.advanceTimersByTime(BUNDLE_MS);
+      expect(delivered[2]).toEqual({ summary: expect.objectContaining({ body: 'Checkout API is still at the usage limit: resume it when you can' }), alert: true });
+      expect(delivered).toHaveLength(3);
     });
   });
 });
