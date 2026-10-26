@@ -123,7 +123,12 @@ function TicketList({ view, edits }: { view: Exclude<ReturnType<typeof ticketsDi
           <span>{view.label}</span>
           <ChevronDownIcon aria-hidden="true" className="text-mu2 size-3 shrink-0" strokeWidth={2.2} />
         </PopoverTrigger>
-        <PopoverContent align="start" className="bg-surf text-fg w-auto max-w-96 min-w-64 gap-0 rounded-xl p-1.5">
+        <PopoverContent
+          align="start"
+          // Escape while naming a ticket only puts its name back.
+          onEscapeKeyDown={(e) => editing && e.preventDefault()}
+          className="bg-surf text-fg w-auto max-w-96 min-w-64 gap-0 rounded-xl p-1.5"
+        >
           <p className="text-mu2 px-2 pt-1 pb-1.5 text-[11px]">Linked tickets</p>
           <ul>
             {view.tickets.map((t) => (
