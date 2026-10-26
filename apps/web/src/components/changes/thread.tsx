@@ -20,6 +20,7 @@ export function CommentBox({
   autoFocus,
   onSubmit,
   onCancel,
+  onTextChange,
   className,
 }: {
   placeholder: string;
@@ -28,6 +29,8 @@ export function CommentBox({
   autoFocus?: boolean;
   onSubmit: (body: string) => Promise<unknown>;
   onCancel?: () => void;
+  /** Every edit, so whoever opened the box can keep what was written if the box has to move. */
+  onTextChange?: (text: string) => void;
   className?: string;
 }) {
   const [text, setText] = useState(initial);
@@ -52,7 +55,10 @@ export function CommentBox({
     <form onSubmit={send} className={cn('border-acc bg-background flex flex-col gap-2 rounded-xl border px-3.5 pt-3 pb-2.5 font-sans', className)}>
       <textarea
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          setText(e.target.value);
+          onTextChange?.(e.target.value);
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
           // Esc leaves the box, not the full-screen view around it.

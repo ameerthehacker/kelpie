@@ -5,6 +5,7 @@ import {
   annotationsFor,
   authorLabel,
   canSubmit,
+  followDraft,
   lineTextAt,
   reviewCounts,
   splitOutdated,
@@ -193,5 +194,37 @@ describe('anchorFor', () => {
 
   it('names the agent for a line in an agent’s diff, at the commit it was read at', () => {
     expect(anchorFor({ roundUpId: 'r', view: 'agent', viewSessionId: 'a1', commitSha: 'g1' }, at)).toEqual({ ...at, view: 'agent', viewSessionId: 'a1', commitSha: 'g1' });
+  });
+});
+
+describe('followDraft', () => {
+  const diffOf = (body: string) =>
+    parsePatchFiles(`diff --git a/a.js b/a.js\nindex 1111111..2222222 100644\n--- a/a.js\n+++ b/a.js\n${body}`)[0]!.files[0]!;
+  // Before: line 3 added. After a re-muster, a header was added above it, so it is line 4.
+  const before = diffOf('@@ -1,3 +1,4 @@\n one\n two\n+three\n four\n');
+  const shifted = diffOf('@@ -1,3 +1,5 @@\n+// header\n one\n two\n+three\n four\n');
+  const rewritten = diffOf('@@ -1,3 +1,4 @@\n one\n two\n+THREE\n four\n');
+  const twice = diffOf('@@ -1,3 +1,5 @@\n one\n+three\n two\n+three\n four\n');
+  const draft = { side: 'additions' as const, line: 3, text: 'three', body: 'kept' };
+
+  it('stays on its line while that line still says the same', () => {
+    expect(followDraft(draft, before)).toEqual({ draft, moved: false });
+  });
+
+  it('follows its text to the one line now saying it, keeping what was written', () => {
+    expect(followDraft(draft, shifted)).toEqual({ draft: { ...draft, line: 4 }, moved: true });
+  });
+
+  it('lets go when the line is gone or could be either of two', () => {
+    expect(followDraft(draft, rewritten)).toBeUndefined();
+    expect(followDraft(draft, twice)).toBeUndefined();
+    expect(followDraft({ ...draft, text: '' }, rewritten)).toBeUndefined();
+  });
+
+  it('follows a removed line on the old side', () => {
+    const removed = diffOf('@@ -1,3 +1,2 @@\n one\n-two\n four\n');
+    const later = diffOf('@@ -1,4 +1,3 @@\n+zero\n one\n-two\n four\n');
+    expect(followDraft({ side: 'deletions', line: 2, text: 'two' }, removed)?.moved).toBe(false);
+    expect(followDraft({ side: 'deletions', line: 2, text: 'two' }, later)).toEqual({ draft: { side: 'deletions', line: 2, text: 'two' }, moved: false });
   });
 });
