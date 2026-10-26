@@ -1,6 +1,7 @@
 import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { parseTicketUrl, type KelpieEvent, type TicketLink } from '@kelpie/protocol';
 import { openStore } from '../src/index.js';
@@ -91,7 +92,7 @@ describe('store', () => {
     cpSync(join(import.meta.dirname, '../drizzle'), before, { recursive: true });
     const journal = join(before, 'meta/_journal.json');
     const j = JSON.parse(readFileSync(journal, 'utf8')) as { entries: { tag: string }[] };
-    expect(j.entries.at(-1)!.tag).toBe('0014_settings');
+    expect(j.entries.map((e) => e.tag)).toContain('0014_settings');
     j.entries = j.entries.filter((e) => e.tag < '0014');
     writeFileSync(journal, JSON.stringify(j));
     const path = join(dir, 'kelpie.db');
@@ -258,16 +259,49 @@ describe('reviews', () => {
     expect(store.setThreadStatus(t2.id, 'resolved', 'a', 5)).toMatchObject({ status: 'resolved', resolvedBy: 'a', resolvedAt: 5 });
   });
 
+  it("fills in the harness of replies written before it was kept, from agents still there", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
+    const before = join(dir, 'drizzle');
+    cpSync(join(import.meta.dirname, '../drizzle'), before, { recursive: true });
+    const journal = join(before, 'meta/_journal.json');
+    const j = JSON.parse(readFileSync(journal, 'utf8')) as { entries: { tag: string }[] };
+    j.entries = j.entries.filter((e) => e.tag < '0015');
+    writeFileSync(journal, JSON.stringify(j));
+    const path = join(dir, 'kelpie.db');
+    const old = openStore(path, { migrationsFolder: before });
+    old.createSession({ id: 'r', cwd: '/r' });
+    old.createSession({ id: 'a', cwd: '/r', parentId: 'r', role: 'agent', title: 'API', harness: 'codex' });
+    const review = old.ensurePendingReview('r');
+    const t = old.addThread(anchor('r', { status: 'open' }));
+    old.close();
+    // Written as that version did: it had no such column for the store's insert to fill.
+    const db = new Database(path);
+    const add = db.prepare(
+      "INSERT INTO review_comments (id, thread_id, round_up_id, review_id, author, author_session_id, author_title, body, state, created_at, updated_at) VALUES (?, ?, 'r', ?, ?, ?, ?, 'x', ?, ?, ?)",
+    );
+    add.run('c1', t.id, review.id, 'person', null, null, 'pending', 1, 1);
+    add.run('c2', t.id, null, 'agent', 'a', 'API', 'published', 2, 2);
+    add.run('c3', t.id, null, 'orchestrator', 'r', 'Kelpie', 'published', 3, 3);
+    db.close();
+    const store = openStore(path);
+    expect(store.commentsOf([t.id]).map((c) => [c.author, c.authorHarness])).toEqual([
+      ['person', null],
+      ['agent', 'codex'],
+      ['orchestrator', null],
+    ]);
+    store.close();
+  });
+
   it('cascades with the round-up and sets an agent that goes to null', () => {
     const store = roundUp();
     const review = store.ensurePendingReview('r');
     const t = store.addThread(anchor('r', { agentId: 'a', agentTitle: 'API', status: 'open' }));
     store.assignThreads([t.id], 'a');
-    store.addComment({ ...person(t.id, 'r', review.id), author: 'agent', authorSessionId: 'a', authorTitle: 'API', reviewId: null, state: 'published' });
+    store.addComment({ ...person(t.id, 'r', review.id), author: 'agent', authorSessionId: 'a', authorTitle: 'API', authorHarness: 'codex', reviewId: null, state: 'published' });
     store.addDelivery({ roundUpId: 'r', sessionId: 'a', title: 'API', harness: 'claude-code', branch: 'b', forkCommit: 'f', tipCommit: 't' });
     store.deleteSession('a');
     expect(store.thread(t.id)).toMatchObject({ agentId: null, assignedTo: null, agentTitle: 'API' });
-    expect(store.commentsOf([t.id])[0]).toMatchObject({ authorSessionId: null, authorTitle: 'API' });
+    expect(store.commentsOf([t.id])[0]).toMatchObject({ authorSessionId: null, authorTitle: 'API', authorHarness: 'codex' });
     expect(store.deliveriesOf('r')[0]).toMatchObject({ sessionId: null, title: 'API' });
     store.deleteSession('r');
     expect(store.thread(t.id)).toBeUndefined();

@@ -66,6 +66,8 @@ export interface ReviewComment {
   author: 'person' | 'orchestrator' | 'agent';
   authorId?: string;
   authorTitle?: string;
+  /** An agent's harness, as it was when it wrote; absent for the person, Kelpie, and agents deleted before it was kept. */
+  authorHarness?: string;
   body: string;
   state: 'pending' | 'published';
   createdAt: number;

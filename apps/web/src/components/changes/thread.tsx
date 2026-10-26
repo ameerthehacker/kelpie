@@ -1,8 +1,11 @@
-import { CheckIcon, ChevronRightIcon } from 'lucide-react';
+import { BotIcon, CheckIcon, ChevronRightIcon, UserIcon, type LucideIcon } from 'lucide-react';
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { MessageResponse } from '@/components/ai-elements/message';
+import { HarnessMark } from '@/components/harness-mark';
+import { KelpieLogo } from '@/components/shell/brand';
+import { useOpenSession } from '@/hooks/use-open-session';
 import { useReview } from '@/hooks/use-review';
-import { authorLabel, type ReviewComment, type ReviewThread } from '@/lib/review';
+import { authorLabel, commentAvatar, type ReviewComment, type ReviewThread } from '@/lib/review';
 import { cn } from '@/lib/utils';
 
 export const pill = 'flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] disabled:opacity-50';
@@ -89,9 +92,27 @@ export function CommentBox({
   );
 }
 
-/** One comment: who, and what; the person's own unsent comments can still be edited or deleted. */
+/** A neutral circle with a glyph: the person's, or an agent's whose harness is unknown. */
+function GlyphAvatar({ icon: Icon }: { icon: LucideIcon }) {
+  return (
+    <span aria-hidden="true" className="bg-raise text-mu border-bd inline-flex size-5 shrink-0 items-center justify-center rounded-full border">
+      <Icon className="size-3" strokeWidth={2.2} />
+    </span>
+  );
+}
+
+/** Who wrote a comment, at a glance: the person's neutral circle, Kelpie's mark, or the agent's harness. */
+function Avatar({ comment }: { comment: ReviewComment }) {
+  const a = commentAvatar(comment);
+  if (a.kind === 'kelpie') return <KelpieLogo className="size-5" />;
+  if (a.kind === 'harness') return <HarnessMark harness={a.harness} className="size-5" />;
+  return <GlyphAvatar icon={a.kind === 'agent' ? BotIcon : UserIcon} />;
+}
+
+/** One comment: who, and what; the person's own unsent comments can still be edited or deleted. Agents' and Kelpie's replies sit on a faint tint. */
 function Comment({ comment: c, roundUpId }: { comment: ReviewComment; roundUpId: string }) {
   const review = useReview(roundUpId);
+  const openSession = useOpenSession();
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const pending = c.state === 'pending';
@@ -109,26 +130,38 @@ function Comment({ comment: c, roundUpId }: { comment: ReviewComment; roundUpId:
         }}
       />
     );
+  const notPerson = c.author !== 'person';
+  // The store clears authorId when the agent's session is deleted, so a deleted agent's title is no link.
+  const agentId = c.author === 'agent' ? c.authorId : undefined;
   return (
-    <div className="flex flex-col gap-1">
-      <div className="text-mu2 flex items-center gap-2 text-xs">
-        <span className={cn('font-medium', c.author === 'person' ? 'text-fg' : 'text-fg2')}>{authorLabel(c)}</span>
-        {pending && <span className="bg-wbg text-wait rounded-full px-1.5 py-px text-[10px] font-medium">Pending</span>}
-        {pending && (
-          <span className="ml-auto flex gap-2">
-            <button type="button" onClick={() => setEditing(true)} className="hover:text-fg">
-              Edit
+    <div className={cn('flex gap-2.5', notPerson && 'bg-raise -mx-2 rounded-lg p-2')}>
+      <Avatar comment={c} />
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="text-mu2 flex min-h-5 items-center gap-2 text-xs">
+          {agentId ? (
+            <button type="button" onClick={() => openSession(agentId)} title={`Open ${authorLabel(c)}`} className="text-fg truncate font-semibold hover:underline">
+              {authorLabel(c)}
             </button>
-            <button type="button" onClick={() => review.remove(c.id).catch((err: Error) => setError(err.message))} className="hover:text-fail">
-              Delete
-            </button>
-          </span>
-        )}
+          ) : (
+            <span className={cn('text-fg truncate', notPerson ? 'font-semibold' : 'font-medium')}>{authorLabel(c)}</span>
+          )}
+          {pending && <span className="bg-wbg text-wait rounded-full px-1.5 py-px text-[10px] font-medium">Pending</span>}
+          {pending && (
+            <span className="ml-auto flex gap-2">
+              <button type="button" onClick={() => setEditing(true)} className="hover:text-fg">
+                Edit
+              </button>
+              <button type="button" onClick={() => review.remove(c.id).catch((err: Error) => setError(err.message))} className="hover:text-fail">
+                Delete
+              </button>
+            </span>
+          )}
+        </div>
+        <div className="text-fg text-sm leading-[1.45] break-words [&>*>:first-child]:mt-0 [&>*>:last-child]:mb-0">
+          <MessageResponse>{c.body}</MessageResponse>
+        </div>
+        {error && <p className="text-fail text-xs">{error}</p>}
       </div>
-      <div className="text-fg text-sm leading-[1.45] break-words [&>*>:first-child]:mt-0 [&>*>:last-child]:mb-0">
-        <MessageResponse>{c.body}</MessageResponse>
-      </div>
-      {error && <p className="text-fail text-xs">{error}</p>}
     </div>
   );
 }

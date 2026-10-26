@@ -1,4 +1,4 @@
-import type { ReviewCommentRow, ReviewRow, ReviewThreadRow, Store } from '@kelpie/store';
+import type { ReviewCommentRow, ReviewRow, ReviewThreadRow, SessionRow, Store } from '@kelpie/store';
 import { ReviewError, ToolError } from '../errors.js';
 import { NOTIFICATION_TAG, reviewBrief } from '../orchestrator/prompt.js';
 import type { ManagerUpdate, Session } from '../sessions.js';
@@ -339,6 +339,7 @@ export class Reviews {
       author: session.parentId ? 'agent' : 'orchestrator',
       authorSessionId: session.id,
       authorTitle: session.title,
+      authorHarness: session.parentId ? session.harness : null,
       body,
       state: 'published',
     });
@@ -412,8 +413,9 @@ export class Reviews {
     return c;
   }
 
-  private ref(id: string | null, title: string | null): AgentRef | undefined {
-    const row = id ? this.store.getSession(id) : undefined;
+  private ref(id: string | null, title: string | null, sessions = new Map<string, SessionRow | undefined>()): AgentRef | undefined {
+    if (id && !sessions.has(id)) sessions.set(id, this.store.getSession(id));
+    const row = id ? sessions.get(id) : undefined;
     if (row) return { id: row.id, title: row.title, harness: row.harness };
     return title ? { id: null, title, harness: 'claude-code' } : undefined;
   }
@@ -421,11 +423,13 @@ export class Reviews {
   private async threads(rows: ReviewThreadRow[]): Promise<ReviewThread[]> {
     const locate = this.changes.locator();
     const comments = this.store.commentsOf(rows.map((r) => r.id));
+    // One lookup per agent, not per thread, on every rebuild.
+    const sessions = new Map<string, SessionRow | undefined>();
     return Promise.all(
       rows.map(async (t) => {
         const current = await locate(t);
-        const agent = this.ref(t.agentId, t.agentTitle);
-        const assigned = t.assignedTo ? this.ref(t.assignedTo, null) : undefined;
+        const agent = this.ref(t.agentId, t.agentTitle, sessions);
+        const assigned = t.assignedTo ? this.ref(t.assignedTo, null, sessions) : undefined;
         return {
           id: t.id,
           view: t.view,
@@ -458,6 +462,7 @@ export class Reviews {
       author: c.author,
       ...(c.authorSessionId ? { authorId: c.authorSessionId } : {}),
       ...(c.authorTitle ? { authorTitle: c.authorTitle } : {}),
+      ...(c.authorHarness ? { authorHarness: c.authorHarness } : {}),
       body: c.body,
       state: c.state,
       createdAt: c.createdAt,

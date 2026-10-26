@@ -27,7 +27,7 @@ export type ReviewThreadRow = typeof schema.reviewThreads.$inferSelect;
 export type ThreadStatus = ReviewThreadRow['status'];
 export type NewThread = Omit<ReviewThreadRow, 'id' | 'status' | 'assignedTo' | 'resolvedBy' | 'resolvedAt' | 'createdAt' | 'updatedAt'> & { id?: string; status?: ThreadStatus };
 export type ReviewCommentRow = typeof schema.reviewComments.$inferSelect;
-export type NewComment = Omit<ReviewCommentRow, 'id' | 'createdAt' | 'updatedAt'> & { id?: string };
+export type NewComment = Omit<ReviewCommentRow, 'id' | 'authorHarness' | 'createdAt' | 'updatedAt'> & { id?: string; authorHarness?: string | null };
 export interface ThreadFilter {
   status?: ThreadStatus[];
   assignedTo?: string;
