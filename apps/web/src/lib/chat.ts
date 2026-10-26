@@ -110,7 +110,7 @@ function kelpieTurn(data: EventOf<'message'>['data'], ts: string): AssistantPart
 }
 
 /** Kelpie's own turns. Logs from before echoes carried `source` only have the tag to go by. */
-const fromKelpie = (data: EventOf<'message'>['data']) =>
+export const fromKelpie = (data: EventOf<'message'>['data']) =>
   data.source === 'kelpie' || (data.source === undefined && data.sent === true && data.text.startsWith(NOTIFICATION_OPEN));
 
 /**

@@ -9,6 +9,8 @@ import type { HarnessUsage } from '@/lib/usage';
 import { USAGE } from './use-usage';
 import { APPROVALS } from './use-approvals';
 import type { PendingApproval } from '@/lib/approvals';
+import { attention } from './use-attention';
+import { dropSession, SUB_AGENTS, upsertSubAgent } from './use-round-up-status';
 
 const ROUND_UPS = ['round-ups'] as const;
 
@@ -18,7 +20,8 @@ const upsert = (list: RoundUp[] = [], next: RoundUp) =>
 
 /**
  * The daemon's round-ups: fetched once, then kept live by its event stream; plus rename and
- * delete. The same stream keeps harness usage (use-usage) current.
+ * delete. The same stream keeps harness usage (use-usage) current, and tells notifications
+ * (use-attention) what needs the person.
  */
 export function useRoundUps() {
   const queryClient = useQueryClient();
@@ -38,10 +41,24 @@ export function useRoundUps() {
         on: {
           // Sent on every (re)connect: agent updates missed while away are caught up by refetching.
           sessions: (msg) => {
-            queryClient.setQueryData(ROUND_UPS, JSON.parse(msg.data) as RoundUp[]);
+            const rows = JSON.parse(msg.data) as RoundUp[];
+            queryClient.setQueryData(ROUND_UPS, rows);
+            attention.sessions(rows);
             void queryClient.invalidateQueries({ queryKey: AGENTS });
           },
-          session: (msg) => queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => upsert(rows, JSON.parse(msg.data) as RoundUp)),
+          // Straight after, on every (re)connect: which sub-agents are working, for notifications and the sidebar's dots.
+          'sub-agents': (msg) => {
+            const rows = JSON.parse(msg.data) as RoundUp[];
+            queryClient.setQueryData(SUB_AGENTS, rows);
+            attention.subAgents(rows);
+          },
+          // Sub-agents' too: notifications tell them apart from their round-up's by parentId.
+          session: (msg) => {
+            const info = JSON.parse(msg.data) as RoundUp;
+            queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => upsert(rows, info));
+            if (info.parentId) queryClient.setQueryData<RoundUp[]>(SUB_AGENTS, (rows) => upsertSubAgent(rows, info));
+            attention.session(info);
+          },
           usage: (msg) => queryClient.setQueryData(USAGE, JSON.parse(msg.data) as HarnessUsage[]),
           agent: (msg) => {
             const agent = JSON.parse(msg.data) as AgentSummary;
@@ -51,14 +68,21 @@ export function useRoundUps() {
             else queryClient.setQueryData<AgentSummary[]>(key, (list) => upsertAgent(list, agent));
           },
           // Every round-up's open approvals as the stream connects, then each round-up's list as it changes.
-          'approvals-snapshot': (msg) => queryClient.setQueryData(APPROVALS, JSON.parse(msg.data) as PendingApproval[]),
+          'approvals-snapshot': (msg) => {
+            const all = JSON.parse(msg.data) as PendingApproval[];
+            queryClient.setQueryData(APPROVALS, all);
+            attention.approvalsSnapshot(all);
+          },
           approvals: (msg) => {
             const { roundUpId, approvals } = JSON.parse(msg.data) as { roundUpId: string; approvals: PendingApproval[] };
             queryClient.setQueryData<PendingApproval[]>(APPROVALS, (all = []) => [...all.filter((a) => a.roundUpId !== roundUpId), ...approvals]);
+            attention.approvals(roundUpId, approvals);
           },
           deleted: (msg) => {
             const { id } = JSON.parse(msg.data) as { id: string };
             queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => rows?.filter((r) => r.id !== id));
+            queryClient.setQueryData<RoundUp[]>(SUB_AGENTS, (rows) => dropSession(rows, id));
+            attention.deleted(id);
           },
         },
         onStatus: setStreamError,
@@ -72,7 +96,10 @@ export function useRoundUps() {
   });
   const remove = useMutation({
     mutationFn: (id: string) => api('DELETE', `/api/sessions/${id}`),
-    onSuccess: (_, id) => queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => rows?.filter((r) => r.id !== id)),
+    onSuccess: (_, id) => {
+      queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => rows?.filter((r) => r.id !== id));
+      queryClient.setQueryData<RoundUp[]>(SUB_AGENTS, (rows) => dropSession(rows, id));
+    },
   });
 
   const actionError = rename.error

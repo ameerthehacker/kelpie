@@ -1,34 +1,55 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { realpathSync, statSync } from 'node:fs';
-import { basename, resolve, sep } from 'node:path';
+import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
-import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer, type RunSpec } from '@kelpie/adapters';
+import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
 import { Harness, type AgentUpdate, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import type { Connections } from '../connectors/connector.js';
-import type { RunContext, SentFile, Session, SessionHooks, SessionManager } from '../sessions.js';
+import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
 import { logLines, report, type AgentReport, type LogPage } from './digest.js';
 import { GitError, type Branch, type Worktrees } from '../worktrees.js';
 import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, musterPrompt, orchestratorPrompt, type WorkPlace } from './prompt.js';
 
 /**
- * The orchestrator's built-in tools: none for the repo. Its plan is its agents (list_agents),
- * which the person sees in the agent pane; everything it can do is the kelpie MCP server, plus
- * SCRATCH_TOOLS inside its scratch folder when it has one.
+ * The orchestrator's built-in tools: read-only ones, for its repo checkout, its feature branch's
+ * worktree and its scratch folder. No Bash: Claude Code approves some commands itself (read-only
+ * ones; filesystem ones like rm in accept-edits) before Kelpie is asked, so it can't be held to
+ * read-only git. Its plan is its agents (list_agents); everything else is the kelpie MCP server.
  */
-export const ORCHESTRATOR_TOOLS: string[] = [];
-/** File tools the orchestrator gets for its scratch folder only (uploads to look at, files to pass on). */
-export const SCRATCH_TOOLS = ['Read', 'Write'];
+export const ORCHESTRATOR_TOOLS = ['Read', 'Grep', 'Glob'];
+/** Tools the orchestrator gets to write in its scratch folder only (a spec to pass on), never in the repo. */
+export const SCRATCH_TOOLS = ['Edit', 'Write'];
 const FILE_TOOLS = ['Read', 'Edit', 'Write'];
 /** A permission rule's pattern for everything under an absolute path (Claude Code writes those with a leading `//`). */
 const under = (dir: string) => `/${dir}/**`;
-const real = (path: string) => {
+const exists = (path: string) => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+/**
+ * A path with links resolved, as far up as it exists (a file still to be written sits in a real
+ * directory). Undefined if something on the way is there but won't resolve, like a link to a
+ * missing file: writing through it would create its target, wherever that is.
+ */
+const real = (path: string): string | undefined => {
   try {
     return realpathSync(path);
   } catch {
-    return path;
+    if (exists(path)) return undefined;
+    const parent = dirname(path);
+    if (parent === path) return path;
+    const up = real(parent);
+    return up === undefined ? undefined : join(up, basename(path));
   }
 };
+const within = (path: string, dir: string) => path === dir || path.startsWith(dir + sep);
+/** A `..` segment: refused, not folded, since the OS follows a link before it goes up while `resolve` folds first. */
+const goesUp = (path: string) => path.split(/[\\/]/).includes('..');
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 export const READ_ONLY_TOOLS = DEFAULT_TOOLS.filter((t) => !EDIT_TOOLS.has(t));
 
@@ -58,6 +79,9 @@ export interface OrchestratorOptions {
 const agentMode = (mode: Mode) => (mode === 'acceptEdits' ? 'acceptEdits' : 'auto');
 const PLANNING =
   'The person has this round-up in plan mode: no agent may change files. Investigate with read-only agents, then write your plan to your plan file and put it to the person with ExitPlanMode; once they approve it, writers can start.';
+/** Agents run in auto mode: one in the person's browser could change things on the sites they are signed in to. */
+const PLANNING_BROWSER =
+  'The person has this round-up in plan mode: no agent may drive their browser, where it could change things on sites they are signed in to. Investigate with read-only agents without browser (WebFetch reads public pages), then put your plan to the person with ExitPlanMode; once they approve it, browser agents can start.';
 
 const NO_BASE =
   'No base branch is set for this round-up. Ask the person which branch to start from (list_branches shows the options), call set_base_branch with their answer, then spawn the writer.';
@@ -68,6 +92,8 @@ export interface AgentInfo {
   title: string;
   harness: string;
   writes: boolean;
+  /** Given the Claude in Chrome tools. */
+  browser?: boolean;
   /** Muster, or ordinary work. */
   kind: 'worker' | 'muster';
   /** A writer's own branch, and whether its work is still to be mustered, mustered, or standalone. */
@@ -93,12 +119,16 @@ export interface SpawnInput {
   in?: string | undefined;
   /** Files from the scratch folder to list in the brief. */
   files?: string[] | undefined;
+  /** Give it the Claude in Chrome tools: it drives the person's own, logged-in browser. */
+  browser?: boolean | undefined;
 }
 
 export interface AgentList {
   /** The branch the round-up started from, and its feature branch (home), once they exist. */
   baseBranch: string | undefined;
   featureBranch: string | undefined;
+  /** Where the feature branch is checked out, while it is on disk: the orchestrator may read it. */
+  featureCheckout: string | undefined;
   /** The mode the person has the round-up in. */
   mode: Mode;
   agents: AgentInfo[];
@@ -134,6 +164,8 @@ export class Orchestrator implements SessionHooks {
    * a moment, and the cap must count them meanwhile.
    */
   private readonly starting = new Map<string, number>();
+  /** Orchestrators with a browser writer cleared but not made yet: it has the browser meanwhile. */
+  private readonly startingBrowser = new Set<string>();
   private readonly worktrees: Worktrees | undefined;
   private readonly connections: Pick<Connections, 'env'> | undefined;
   /** Each session's connection env, read by `prepare` (it can wait) for the `specFor` right after it. */
@@ -162,7 +194,7 @@ export class Orchestrator implements SessionHooks {
 
   // ── hooks ────────────────────────────────────────────────────────────
 
-  specFor(session: Session, run: RunContext): Partial<RunSpec> {
+  specFor(session: Session, run: RunContext): Partial<SessionDefaults> {
     const preface = run.fresh && run.hadHistory ? freshPreface(session.role, this.store.firstSent(session.id)?.text) : '';
     const scratch = session.scratch;
     const env = this.envs.get(session.id);
@@ -179,7 +211,11 @@ export class Orchestrator implements SessionHooks {
         allowedTools: scratchRules,
         ...(scratch ? { addDirs: [scratch] } : {}),
         ...connected,
-        appendSystemPrompt: (session.kind === 'muster' && place ? musterPrompt(place) : agentPrompt(session.writes, place, scratch)) + preface,
+        // The person's one browser, shared by every agent given it: only when the orchestrator asked.
+        // Its tools are asked about like any other (auto mode's checks, or the person); none is allowed by rule.
+        browser: session.browser,
+        appendSystemPrompt:
+          (session.kind === 'muster' && place ? musterPrompt(place) : agentPrompt(session.writes, place, scratch, session.browser)) + preface,
       };
     }
     const token = randomBytes(32).toString('base64url');
@@ -187,24 +223,30 @@ export class Orchestrator implements SessionHooks {
     this.tokenOfRun.set(run.runId, token);
     const mcp = { mcpServers: { kelpie: { type: 'http', url: this.mcpUrl, headers: { Authorization: `Bearer ${token}` } } } };
     // Deny beats allow, so a scratch folder inside the repo (KELPIE_HOME under it) would be denied
-    // along with it: then only the prompt keeps the orchestrator out of the repo.
-    const cwd = real(session.cwd);
-    const fenced = !!scratch && !scratch.startsWith(cwd + sep);
+    // along with it: then `decide` alone keeps the orchestrator from editing the repo.
+    const cwd = real(session.cwd) ?? session.cwd;
+    const fenced = !!scratch && !within(scratch, cwd);
     if (scratch && !fenced && !this.warnedUnfenced) {
       this.warnedUnfenced = true;
-      console.warn(`kelpie: the scratch folder ${scratch} is inside ${cwd}; orchestrators can't be kept out of that directory. Set KELPIE_HOME outside it.`);
+      console.warn(`kelpie: the scratch folder ${scratch} is inside ${cwd}; only Kelpie's own checks keep orchestrators from editing that directory. Set KELPIE_HOME outside it.`);
     }
+    // Every worktree, the feature branch's included (it may not exist yet), is under Kelpie's root.
+    const root = this.worktrees && (real(this.worktrees.root) ?? this.worktrees.root);
+    const denied = [...(fenced ? [cwd] : []), ...(root && !(scratch && within(scratch, root)) ? [root] : [])];
     const planning = session.mode === 'plan';
     return {
       // In plan mode it puts its plan to the person with ExitPlanMode, which only works in the harness's own plan mode.
-      tools: [...(scratch ? SCRATCH_TOOLS : ORCHESTRATOR_TOOLS), ...(planning ? ['ExitPlanMode'] : [])],
-      // Otherwise its own tools are all settled by rule (or by `decide`); the mode is for its agents (and its prompt).
-      permissionMode: planning ? 'plan' : 'acceptEdits',
-      // Its file tools reach the scratch folder and nothing else: the repo it runs in is denied
-      // outright, and anything outside both is refused for want of a permission.
-      allowedTools: ['mcp__kelpie', ...(scratch ? FILE_TOOLS.map((t) => `${t}(${under(scratch)})`) : [])],
+      tools: [...ORCHESTRATOR_TOOLS, ...(scratch ? SCRATCH_TOOLS : []), ...(planning ? ['ExitPlanMode'] : [])],
+      // Default mode, never accept-edits: then every edit asks, and `decide` lets through only those
+      // in the scratch folder. The round-up's mode is for its agents (and its prompt).
+      permissionMode: planning ? 'plan' : 'default',
+      // It reads its repo checkout (its cwd) and scratch folder without asking. Reads anywhere else,
+      // the feature branch's worktree included, and all edits go to `decide`.
+      allowedTools: ['mcp__kelpie', ...(scratch ? [`Read(${under(scratch)})`] : [])],
       ...(scratch ? { addDirs: [scratch] } : {}),
-      ...(fenced ? { disallowedTools: FILE_TOOLS.map((t) => `${t}(${under(cwd)})`) } : {}),
+      // A backstop for edit rules in the project's or the person's own settings, which would settle
+      // a request before `decide` sees it: never in the repo or in a worktree.
+      ...(denied.length && scratch ? { disallowedTools: denied.flatMap((dir) => SCRATCH_TOOLS.map((t) => `${t}(${under(dir)})`)) } : {}),
       mcpConfig: [JSON.stringify(mcp)],
       ...connected,
       appendSystemPrompt: orchestratorPrompt(scratch, session.mode) + preface,
@@ -251,7 +293,7 @@ export class Orchestrator implements SessionHooks {
     // then Kelpie's own refusals keep writers out).
     session.restartWhenIdle();
     if (session.mode !== 'plan') {
-      void session.switchMode('acceptEdits').catch((err) => console.error(`orchestrator ${session.id}: could not switch mode`, err));
+      void session.switchMode('default').catch((err) => console.error(`orchestrator ${session.id}: could not switch mode`, err));
     }
     const mode = agentMode(session.mode);
     // Not awaited: a wedged harness must not hold up the person's change. One that misses it keeps
@@ -265,9 +307,10 @@ export class Orchestrator implements SessionHooks {
   }
 
   /**
-   * Answers what the orchestrator's harness asks by policy: its kelpie tools, and its file tools in
-   * its scratch folder, are always fine; anything else is refused. Its plan goes to the person. An
-   * agent's requests all go to the person.
+   * Answers what the orchestrator's harness asks by policy: its kelpie tools, its read tools in its
+   * repo checkout, feature branch worktree and scratch folder, and its edit tools in its scratch
+   * folder, are always fine; anything else is refused. Its plan goes to the person. An agent's
+   * requests all go to the person.
    */
   decide(session: Session, req: EventData<'permission.requested'>): PermissionAnswer | undefined {
     if (session.role !== 'orchestrator') return undefined;
@@ -275,18 +318,32 @@ export class Orchestrator implements SessionHooks {
       return session.mode === 'plan' ? undefined : { allow: false, by: 'kelpie', message: 'This round-up is not in plan mode any more: carry on with the work.' };
     }
     if (req.tool.startsWith('mcp__kelpie__')) return { allow: true, by: 'kelpie' };
-    const input = (req.input ?? {}) as { file_path?: unknown };
+    const input = (req.input ?? {}) as { file_path?: unknown; path?: unknown; pattern?: unknown };
     const scratch = session.scratch;
-    if (scratch && SCRATCH_TOOLS.includes(req.tool) && typeof input.file_path === 'string') {
-      const path = resolve(scratch, input.file_path);
-      if (path.startsWith(scratch + sep)) return { allow: true, by: 'kelpie' };
+    const cwd = real(session.cwd) ?? session.cwd;
+    // Where a path really leads: relative ones from its cwd, as the harness takes them.
+    const place = (path: unknown) => (typeof path === 'string' && !goesUp(path) ? real(resolve(cwd, path)) : undefined);
+    if (ORCHESTRATOR_TOOLS.includes(req.tool)) {
+      // Read names a file; Grep and Glob a directory to search, their cwd when they name none.
+      const target = place(req.tool === 'Read' ? input.file_path : (input.path ?? cwd));
+      // A Glob pattern names files under that directory, so it may not lead anywhere of its own.
+      const pattern = input.pattern;
+      const contained = req.tool !== 'Glob' || (typeof pattern === 'string' && !isAbsolute(pattern) && !pattern.startsWith('~') && !goesUp(pattern));
+      const home = this.store.worktreeOf(session.id)?.path;
+      const readable = [cwd, home && real(home), scratch].filter((dir): dir is string => !!dir);
+      // Resolved through links, so none can lead out of those directories.
+      if (target && contained && readable.some((dir) => within(target, dir))) return { allow: true, by: 'kelpie' };
+    }
+    if (scratch && SCRATCH_TOOLS.includes(req.tool)) {
+      const path = place(input.file_path);
+      if (path?.startsWith(scratch + sep)) return { allow: true, by: 'kelpie' };
     }
     return {
       allow: false,
       by: 'kelpie',
       message: scratch
-        ? `You may only use your kelpie tools, and Read/Write inside your scratch folder (${scratch}). Give repo work to an agent.`
-        : 'You may only use your kelpie tools. Give this work to an agent.',
+        ? `You may only use your kelpie tools, read the repo and your feature branch, and write inside your scratch folder (${scratch}). Give changes, commands, and anything else to an agent.`
+        : 'You may only use your kelpie tools and read the repo and your feature branch. Give changes, commands, and anything else to an agent.',
     };
   }
 
@@ -313,14 +370,23 @@ export class Orchestrator implements SessionHooks {
     if (!harness.success) throw new ToolError(`unknown harness "${input.harness}"; available: ${Harness.options.join(', ')}`);
     if (!input.task.trim()) throw new ToolError('task is empty: give the agent a complete brief');
     if (input.writes && parent.mode === 'plan') throw new ToolError(PLANNING);
+    if (input.browser && parent.mode === 'plan') throw new ToolError(PLANNING_BROWSER);
     const files = this.filesFrom(parent, input.files);
     const send = (child: Session) => child.send(input.task, 'orchestrator', files.length ? { attachments: files } : {});
     // One line: it heads notifications and the UI.
     const title = input.title.replace(/\s+/g, ' ').trim().slice(0, 120) || 'Agent';
-    const opts = { parentId: parent.id, role: 'agent' as const, writes: input.writes, title, ...(input.model ? { model: input.model } : {}) };
+    const opts = {
+      parentId: parent.id,
+      role: 'agent' as const,
+      writes: input.writes,
+      title,
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.browser ? { browser: true } : {}),
+    };
     const repo = this.worktrees ? await this.worktrees.repoOf(parent.cwd) : undefined;
     // After the only await before an agent exists or is counted as starting: no second call slips past.
     this.checkCap(parent);
+    if (input.browser) this.checkBrowser(parent);
 
     // Outside git (or without worktrees), writers share the round-up's directory, one at a time.
     if (!repo || !this.worktrees) {
@@ -344,6 +410,7 @@ export class Orchestrator implements SessionHooks {
     const id = randomUUID();
     // Counted from here: creating the worktree takes a moment, and the cap must count this agent meanwhile.
     this.starting.set(parent.id, (this.starting.get(parent.id) ?? 0) + 1);
+    if (input.browser) this.startingBrowser.add(parent.id);
     try {
       // Room for the writer's worktree, and for the feature branch's if this is the first writer;
       // never by sweeping the feature branch it is about to be cut from.
@@ -367,13 +434,16 @@ export class Orchestrator implements SessionHooks {
       const n = (this.starting.get(parent.id) ?? 1) - 1;
       if (n > 0) this.starting.set(parent.id, n);
       else this.starting.delete(parent.id);
+      if (input.browser) this.startingBrowser.delete(parent.id);
     }
   }
 
-  list(parent: Session): AgentList {
+  async list(parent: Session): Promise<AgentList> {
+    const home = this.store.worktreeOf(parent.id);
     return {
       baseBranch: parent.baseBranch,
-      featureBranch: this.store.worktreeOf(parent.id)?.branch,
+      featureBranch: home?.branch,
+      featureCheckout: home && (await this.checkout(home)),
       mode: parent.mode,
       agents: this.manager.children(parent.id).map((c) => this.agentInfo(c)),
     };
@@ -506,9 +576,12 @@ export class Orchestrator implements SessionHooks {
     const files = this.filesFrom(parent, paths);
     // A writer picked up again would carry on changing files.
     if (child.writes && parent.mode === 'plan') throw new ToolError(PLANNING);
+    // So would one in the person's browser.
+    if (child.browser && parent.mode === 'plan') throw new ToolError(PLANNING_BROWSER);
     if (!this.isWorking(child)) {
       this.checkCap(parent);
       if (child.writes) this.checkWriter(child.cwd, child.id);
+      if (child.browser) this.checkBrowser(parent, child.id);
     }
     // A message picks up an agent still waiting to resume after a restart: no restart turn later.
     this.waiting.delete(child.id);
@@ -571,6 +644,7 @@ export class Orchestrator implements SessionHooks {
       }
       if (this.working(parent) >= this.maxAgents) continue;
       if (agent.writes && this.busyWriter(agent.cwd, agent.id)) continue;
+      if (agent.browser && this.browserInUse(parent, agent.id)) continue;
       this.waiting.delete(id);
       try {
         await agent.resumeAfterRestart(AGENT_RESTARTED);
@@ -688,6 +762,20 @@ export class Orchestrator implements SessionHooks {
     await Promise.all(this.manager.all().filter((s) => s.cwd === row.path && !this.isWorking(s)).map((s) => s.stop()));
   }
 
+  /**
+   * The feature branch's worktree for the orchestrator to read, brought back if the sweep took it
+   * (its reads don't count as use). Undefined if it can't be: it has no other way to make one.
+   */
+  private async checkout(home: WorktreeRow): Promise<string | undefined> {
+    if (!this.worktrees) return existsSync(home.path) ? home.path : undefined;
+    try {
+      return (await this.worktrees.ensure(home)).path;
+    } catch (err) {
+      console.error(`could not bring back the feature branch's worktree ${home.path}`, err);
+      return undefined;
+    }
+  }
+
   /** Someone is working in this worktree right now, or about to (its writer, Muster, or a reader). */
   private inUse(row: WorktreeRow): boolean {
     return this.manager.all().some((s) => s.cwd === row.path && (this.isWorking(s) || s.launching));
@@ -746,6 +834,22 @@ export class Orchestrator implements SessionHooks {
     }
   }
 
+  /** What has the person's browser in this round-up, besides `except`: one agent drives it at a time. */
+  private browserInUse(parent: Session, except?: string): string | undefined {
+    if (this.startingBrowser.has(parent.id)) return 'another browser agent is starting';
+    const agent = this.manager.children(parent.id).find((c) => c.browser && c.id !== except && this.isWorking(c));
+    return agent && `browser agent "${agent.title}" is still working`;
+  }
+
+  private checkBrowser(parent: Session, except?: string): void {
+    const busy = this.browserInUse(parent, except);
+    if (busy) {
+      throw new ToolError(
+        `${busy}, and only one agent may drive the person's browser at a time. Agents without browser can still run. End your turn; you will be notified when it finishes.`,
+      );
+    }
+  }
+
   private child(parent: Session, agentId: string): Session {
     const child = this.manager.get(agentId);
     if (!child || child.parentId !== parent.id) throw new ToolError(`no such agent: ${agentId}`);
@@ -760,6 +864,7 @@ export class Orchestrator implements SessionHooks {
       title: c.title,
       harness: info.harness,
       writes: c.writes,
+      ...(c.browser ? { browser: true } : {}),
       kind: c.kind,
       ...(row ? { branch: row.branch, worktree: row.state, ...(row.deliver ? { deliver: row.deliver } : {}) } : {}),
       status: this.isWorking(c) ? (c.approvals().length ? 'needs approval' : 'working') : this.waiting.has(c.id) ? 'waiting' : 'idle',

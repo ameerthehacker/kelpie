@@ -82,7 +82,7 @@ describe('approvals', () => {
       ['Agent 2', 'Bash', 'pnpm install', 'Bash(pnpm install)'],
     ]);
     expect(agents[0]!.summary().status).toBe('needs-approval');
-    expect(ctx.orch.list(parent).agents.map((a) => a.status)).toEqual(['needs approval', 'needs approval']);
+    expect((await ctx.orch.list(parent)).agents.map((a) => a.status)).toEqual(['needs approval', 'needs approval']);
 
     const res = await ctx.app.request('/api/approvals?roundUp=' + parent.id, { headers: { host: '127.0.0.1:7317' } });
     expect(((await res.json()) as { approvals: unknown[]; rules: unknown[] })).toMatchObject({ approvals: [{ rule: 'Bash(pnpm install)' }, { rule: 'Bash(pnpm install)' }], rules: [] });
@@ -119,6 +119,30 @@ describe('approvals', () => {
     const [rule] = ctx.sessions.rules(parent.id);
     expect(ctx.sessions.deleteRule(parent.id, rule!.id)).toBe(true);
     expect(ctx.sessions.rules(parent.id)).toEqual([]);
+  });
+
+  it('never saves or applies a rule for the Claude in Chrome tools, even one saved before', async () => {
+    const ctx = setup(openStore(':memory:'), { FAKE_ASK: 'https://claude.ai/', FAKE_ASK_TOOL: 'mcp__claude-in-chrome__navigate' });
+    const parent = ctx.sessions.create();
+    await parent.send('Go');
+    await waitFor(() => jsonLines(ctx.answers).length === 1);
+    // As if saved by an earlier Kelpie, which offered "Allow for round-up" for them.
+    ctx.store.addRule(parent.id, 'mcp__claude-in-chrome__navigate');
+    ctx.store.addRule(parent.id, 'Bash(pnpm install)');
+    const { agentId } = await ctx.orch.spawn(parent, { title: 'Browse', task: 'open the artifact', writes: false, browser: true });
+    const [pending] = await waitFor(() => ctx.sessions.approvals(parent.id).length === 1 && ctx.sessions.approvals(parent.id));
+    expect(pending).toMatchObject({ sessionId: agentId, tool: 'mcp__claude-in-chrome__navigate', title: 'Chrome: navigate https://claude.ai/' });
+    expect(pending!.rule).toBeUndefined();
+    const argv = jsonLines<string[]>(ctx.argsFile).at(-1)!;
+    const allowed = argv.slice(argv.indexOf('--allowedTools') + 1, argv.findIndex((a, i) => i > argv.indexOf('--allowedTools') && a.startsWith('--')));
+    expect(allowed).toEqual(['Bash(pnpm install)']);
+
+    // "Remember" can't save one either: the person allowed this request only.
+    await ctx.sessions.answerApprovals({ items: [{ sessionId: agentId, requestId: pending!.requestId }], allow: true, remember: true });
+    const answer = await waitFor(() => jsonLines<{ behavior: string; updatedPermissions?: unknown[] }>(ctx.answers)[1]);
+    expect(answer.behavior).toBe('allow');
+    expect(answer.updatedPermissions).toBeUndefined();
+    expect(ctx.sessions.rules(parent.id).map((r) => r.rule)).toEqual(['mcp__claude-in-chrome__navigate', 'Bash(pnpm install)']);
   });
 
   it('denies with the person’s note, or a default one, and reports items no longer waiting', async () => {

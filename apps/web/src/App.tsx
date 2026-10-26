@@ -6,15 +6,16 @@ import { useMatch, useNavigate } from 'react-router';
 import { AgentPaneSlot, AgentsButton } from '@/components/agents/agent-pane';
 import { AgentPaneProvider } from '@/components/agents/pane-state';
 import { PlanDock, TodoDock } from '@/components/agents/plan-dock';
-import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation';
-import { Shimmer } from '@/components/ai-elements/shimmer';
+import { ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation';
 import { AssistantParts } from '@/components/chat/assistant-part';
 import { ApprovalTray } from '@/components/approvals/approval-tray';
 import { ApprovalsPage } from '@/components/approvals/approvals-page';
 import { AttachmentChips } from '@/components/chat/attachments';
+import { ChatLog } from '@/components/chat/chat-log';
 import { Composer } from '@/components/chat/composer';
 import { HarnessSetupDialog } from '@/components/settings/setup-dialog';
 import { SettingsPage } from '@/components/settings/settings-page';
+import { WorkingStatus } from '@/components/chat/working-status';
 import { KelpieLogo } from '@/components/shell/brand';
 import { Search } from '@/components/shell/search';
 import { AppSidebar } from '@/components/shell/sidebar';
@@ -22,6 +23,7 @@ import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useAgents } from '@/hooks/use-agents';
 import { useApprovals } from '@/hooks/use-approvals';
+import { useAttention } from '@/hooks/use-attention';
 import { useBranches } from '@/hooks/use-branches';
 import { useHarnesses } from '@/hooks/use-harnesses';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -102,7 +104,7 @@ export function App() {
   const [modelError, setModelError] = useState<string | undefined>();
   const { roundUps, error: listError, defaultCwd, rename, remove, actionError, clearActionError } = useRoundUps();
   const onCreated = useCallback((id: string) => navigate(roundUpPath(id), { replace: true }), [navigate]);
-  const { items, todos, status, busy, error, send, interrupt } = useSession(roundUpId, onCreated, {
+  const { events, items, todos, status, busy, error, send, interrupt } = useSession(roundUpId, onCreated, {
     model: draftModel || undefined,
     baseBranch: draftBase || undefined,
     mode: draftMode,
@@ -124,8 +126,6 @@ export function App() {
   // opened directly is not known to be one until its own fetch answers.
   const agents = useAgents(current?.role === 'orchestrator' ? roundUpId : undefined);
   const last = items.at(-1);
-  // Show a working indicator unless the agent is visibly streaming text right now.
-  const working = busy && (last?.role !== 'assistant' || last.parts.at(-1)?.type !== 'text');
   // Steps on a sub-agent's own page are its own; everywhere else they are Kelpie's.
   const actor = current?.role === 'agent' ? titleOf(current) : 'Kelpie';
   const model = roundUpId ? (current?.model ?? '') : draftModel;
@@ -134,10 +134,16 @@ export function App() {
   const mode = roundUpId ? (current?.mode ?? 'auto') : draftMode;
   // Once a writer has a branch of its own, it started from the base: that can't change any more.
   const baseLocked = !!agents?.some((a) => a.branch);
+  // The tab's title counts what is waiting on the person: every open approval, and what they were
+  // notified of while away (cleared as they come back).
+  const unseen = useAttention();
+  const allApprovals = useApprovals();
+  const waiting = allApprovals.length + unseen.filter((i) => i.kind !== 'approval' && i.kind !== 'plan').length;
 
   useEffect(() => {
-    document.title = roundUpId ? `${titleOf(current)} · kelpie` : 'kelpie';
-  }, [roundUpId, current]);
+    const title = roundUpId ? `${titleOf(current)} · kelpie` : 'kelpie';
+    document.title = waiting ? `(${waiting}) ${title}` : title;
+  }, [roundUpId, current, waiting]);
   useEffect(() => setModelError(undefined), [roundUpId]);
 
   const changeModel = (next: string) => {
@@ -227,7 +233,7 @@ export function App() {
               <SettingsPage />
             ) : (
               <>
-                <Conversation key={roundUpId ?? 'new'} className="min-h-0 flex-1">
+                <ChatLog key={roundUpId ?? 'new'} id={roundUpId} content={items} className="min-h-0 flex-1">
                   <ConversationContent className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
                     {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} />}
                     {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
@@ -243,10 +249,11 @@ export function App() {
                         </div>
                       ),
                     )}
-                    {working && <Shimmer className="text-sm">Working…</Shimmer>}
+                    {/* Whenever the composer offers stop: the same busy state, whoever started the turn. */}
+                    {busy && <WorkingStatus events={events} agents={agents ?? NO_AGENTS} />}
                   </ConversationContent>
                   <ConversationScrollButton />
-                </Conversation>
+                </ChatLog>
 
                 <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
                   {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}

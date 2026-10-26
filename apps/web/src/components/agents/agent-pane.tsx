@@ -284,6 +284,12 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
               {[harnessOf(a.harness).name, a.model && modelLabel(a.model)].filter(Boolean).join(' ')}
               <span className="text-fa">·</span>
               {a.writes ? 'can edit' : 'read-only'}
+              {a.browser && (
+                <>
+                  <span className="text-fa">·</span>
+                  drives Chrome
+                </>
+              )}
               <span className="text-fa">·</span>
               {elapsed(a, now)}
             </div>

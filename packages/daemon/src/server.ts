@@ -105,10 +105,12 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   const harnessStatus = shared(opts.checkHarnesses ?? (() => checkHarnesses()));
   app.get('/api/harnesses/status', async (c) => c.json(await harnessStatus(), 200, { 'cache-control': 'no-store' }));
 
-  // Round-up list and harness usage: snapshots, then every change.
+  // Round-up list (and sub-agents), harness usage and approvals: snapshots, then every change.
   app.get('/api/events', (c) =>
     sse(c, (send) => {
       send({ event: 'sessions', data: JSON.stringify(sessions.list()) });
+      // Sub-agents as they are now (their changes come as `session` too): who is still working.
+      send({ event: 'sub-agents', data: JSON.stringify(sessions.all().filter((s) => s.parentId).map((s) => s.info())) });
       send({ event: 'usage', data: JSON.stringify(sessions.usage()) });
       send({ event: 'approvals-snapshot', data: JSON.stringify(sessions.approvals()) });
       return sessions.watch((u) => {

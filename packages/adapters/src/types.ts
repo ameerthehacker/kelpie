@@ -1,4 +1,4 @@
-import type { Harness, KelpieEvent, Mode } from '@kelpie/protocol';
+import type { Harness, KelpieEvent, Mode, TodoItem } from '@kelpie/protocol';
 
 export interface RunSpec {
   cwd: string;
@@ -9,6 +9,8 @@ export interface RunSpec {
   model?: string;
   /** Harness session id to continue. */
   resume?: string;
+  /** With `resume` only: the session's todo list as last seen, so the harness's updates to it are not lost. The adapter seeds from it as given. */
+  todos?: TodoItem[];
   /** Defaults to 'acceptEdits'. */
   permissionMode?: string;
   /** Exact tool set; defaults to the adapter's standard set. */
@@ -21,6 +23,11 @@ export interface RunSpec {
   appendSystemPrompt?: string;
   /** MCP config files or JSON strings. Only these servers load (the user's global ones do not). */
   mcpConfig?: string[];
+  /**
+   * Drive the person's own browser (Claude Code's Claude in Chrome tools). Off unless asked for,
+   * even if the person has it on by default for their own sessions.
+   */
+  browser?: boolean;
   /** Where raw.jsonl and run.json go. Defaults to ~/.kelpie/runs/<runId>. */
   runDir?: string;
   /** Harness binary; defaults to the CLI on PATH. */

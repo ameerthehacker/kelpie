@@ -1,9 +1,9 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { openStore, type Store } from '@kelpie/store';
 import { createApp, Orchestrator, ORCHESTRATOR_TOOLS, READ_ONLY_TOOLS, SessionManager, type Session } from '../src/index.js';
@@ -82,28 +82,36 @@ function flag(args: string[], name: string): string[] {
 const sentTexts = (s: Session) => s.events().flatMap((e: KelpieEvent) => (e.kind === 'message' && e.data.sent ? [e.data.text] : []));
 
 describe('orchestrator round-ups', () => {
-  it('runs the orchestrator with no built-in tools, only the kelpie MCP server', async () => {
+  it('runs the orchestrator with read-only built-in tools and the kelpie MCP server, and no Bash', async () => {
     const ctx = setup();
     const { argv } = await orchestrator(ctx);
-    expect(argv[argv.indexOf('--tools') + 1]).toBe(''); // no built-in tools at all
-    expect(ORCHESTRATOR_TOOLS).toEqual([]);
-    expect(argv.slice(argv.indexOf('--allowedTools'), argv.indexOf('--allowedTools') + 2)).toEqual(['--allowedTools', 'mcp__kelpie']);
-    expect(argv[argv.indexOf('--append-system-prompt') + 1]).toContain("You are Kelpie's orchestrator");
+    expect(flag(argv, '--tools')).toEqual(['Read,Grep,Glob']); // no Bash, Edit or Write without a scratch folder
+    expect(ORCHESTRATOR_TOOLS).toEqual(['Read', 'Grep', 'Glob']);
+    expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie']);
+    // Default mode, so any edit asks and `decide` answers it; never accept-edits.
+    expect(flag(argv, '--permission-mode')).toEqual(['default']);
+    expect(argv).not.toContain('--disallowedTools'); // nothing to write with, so nothing to deny
+    const prompt = argv[argv.indexOf('--append-system-prompt') + 1]!;
+    expect(prompt).toContain("You are Kelpie's orchestrator");
+    expect(prompt).toContain('You may read the repo yourself with Read, Grep and Glob');
+    expect(prompt).toContain('You cannot write files at all.');
   });
 
-  it('gives the orchestrator file tools for its scratch folder only, and passes files from it to agents', async () => {
+  it('gives the orchestrator write tools for its scratch folder only, and passes files from it to agents', async () => {
     const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
     const repo = tmp('kelpie-cwd-');
     const ctx = setup({ FAKE_EVERY_TURN: '1', FAKE_STDIN_FILE: stdin }, { scratch: true, cwd: repo });
     const { parent, argv, call } = await orchestrator(ctx);
     const scratch = parent.scratch!;
-    expect(flag(argv, '--tools')).toEqual(['Read,Write']);
+    expect(flag(argv, '--tools')).toEqual(['Read,Grep,Glob,Edit,Write']);
     expect(flag(argv, '--add-dir')).toEqual([scratch]);
-    expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie', `Read(/${scratch}/**)`, `Edit(/${scratch}/**)`, `Write(/${scratch}/**)`]);
-    // Its repo is denied outright: the scratch folder is all it can touch.
+    // No rule allows its edits, not even in the scratch folder: they ask, and `decide` answers.
+    expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie', `Read(/${scratch}/**)`]);
+    expect(flag(argv, '--permission-mode')).toEqual(['default']);
+    // Its repo may be read, but edits to it are denied outright, in case its settings allow them.
     const cwd = realpathSync(repo);
-    expect(flag(argv, '--disallowedTools')).toEqual([`Read(/${cwd}/**)`, `Edit(/${cwd}/**)`, `Write(/${cwd}/**)`]);
-    expect(argv[argv.indexOf('--append-system-prompt') + 1]).toContain(`only inside your scratch folder, \`${scratch}\``);
+    expect(flag(argv, '--disallowedTools')).toEqual([`Edit(/${cwd}/**)`, `Write(/${cwd}/**)`]);
+    expect(argv[argv.indexOf('--append-system-prompt') + 1]).toContain(`Write and Edit work only inside your scratch folder, \`${scratch}\``);
 
     writeFileSync(join(scratch, 'spec.md'), 'hello');
     expect((await call('spawn_agent', { title: 'A', task: 'x', writes: false, files: ['../escape.md'] })).error).toMatch(/no such file|outside your scratch folder/);
@@ -127,6 +135,67 @@ describe('orchestrator round-ups', () => {
     await call('message_agent', { agentId: child.id, text: 'And this one', files: [join(scratch, 'spec.md')] });
     const followUp = await waitFor(() => jsonLines<{ text: string }>(stdin).find((l) => l.text.startsWith('And this one')));
     expect(followUp.text).toContain('<attachments>');
+  });
+
+  it("lets the orchestrator read its repo and scratch folder, write only in the scratch folder, and run nothing", async () => {
+    const repo = tmp('kelpie-cwd-');
+    const outside = tmp('kelpie-outside-');
+    writeFileSync(join(repo, 'app.ts'), 'x');
+    const ctx = setup({ FAKE_HANG: '1' }, { scratch: true, cwd: repo });
+    const { parent } = await orchestrator(ctx);
+    const scratch = parent.scratch!;
+    const cwd = realpathSync(repo);
+    const ask = (tool: string, input: Record<string, unknown>) => ctx.orch.decide(parent, { requestId: 'q', tool, title: tool, input });
+    const allowed = (tool: string, input: Record<string, unknown>) => ask(tool, input)?.allow;
+
+    expect(allowed('Read', { file_path: join(cwd, 'app.ts') })).toBe(true);
+    expect(allowed('Read', { file_path: join(scratch, 'spec.md') })).toBe(true);
+    expect(allowed('Grep', { pattern: 'x' })).toBe(true); // no path: its cwd
+    expect(allowed('Grep', { pattern: 'x', path: scratch })).toBe(true);
+    expect(allowed('Glob', { pattern: '**/*.ts', path: join(cwd, 'src') })).toBe(true);
+    expect(allowed('Write', { file_path: join(scratch, 'spec.md'), content: 'x' })).toBe(true);
+    expect(allowed('Edit', { file_path: join(scratch, 'spec.md') })).toBe(true);
+    expect(allowed('Write', { file_path: join(scratch, 'notes', 'new.md'), content: 'x' })).toBe(true); // a file still to be made
+    expect(allowed('mcp__kelpie__list_agents', {})).toBe(true);
+    // A relative path is taken from its cwd, as the harness takes it, not from the scratch folder.
+    expect(allowed('Read', { file_path: 'app.ts' })).toBe(true);
+    expect(allowed('Glob', { pattern: '*.ts', path: 'src' })).toBe(true);
+    expect(allowed('Write', { file_path: 'spec.md', content: 'x' })).toBe(false);
+
+    expect(allowed('Write', { file_path: join(cwd, 'app.ts'), content: 'x' })).toBe(false);
+    expect(allowed('Edit', { file_path: join(cwd, 'app.ts') })).toBe(false);
+    expect(allowed('Read', { file_path: join(outside, 'secret') })).toBe(false);
+    expect(allowed('Read', { file_path: join(cwd, '..', 'elsewhere') })).toBe(false);
+    expect(allowed('Glob', { pattern: '*', path: '/' })).toBe(false);
+    expect(allowed('Read', {})).toBe(false);
+    expect(ask('Bash', { command: 'git status' })).toMatchObject({ allow: false, message: expect.stringMatching(/Give changes, commands/) });
+    // A link in the repo can't lead its reads out of it.
+    writeFileSync(join(outside, 'secret'), 'x');
+    symlinkSync(outside, join(repo, 'link'));
+    expect(allowed('Read', { file_path: join(cwd, 'link', 'secret') })).toBe(false);
+    expect(allowed('Grep', { pattern: 'x', path: join(cwd, 'link', 'missing') })).toBe(false);
+    symlinkSync(join(repo, 'app.ts'), join(scratch, 'into-repo'));
+    expect(allowed('Write', { file_path: join(scratch, 'into-repo'), content: 'x' })).toBe(false);
+    // A dangling link would have Write create its target, wherever that is.
+    symlinkSync(join(repo, 'new.ts'), join(scratch, 'dangling'));
+    expect(allowed('Write', { file_path: join(scratch, 'dangling'), content: 'x' })).toBe(false);
+    symlinkSync(join(repo, 'missing-dir'), join(scratch, 'dangling-dir'));
+    expect(allowed('Write', { file_path: join(scratch, 'dangling-dir', 'new.ts'), content: 'x' })).toBe(false);
+    // `..` is refused rather than folded: the OS would follow the link first, then go up from its target.
+    expect(allowed('Read', { file_path: `${cwd}/link/../app.ts` })).toBe(false);
+    expect(allowed('Write', { file_path: `${scratch}/sub/../spec.md`, content: 'x' })).toBe(false);
+    // A Glob pattern can't lead out of the directory it searches.
+    expect(allowed('Glob', { pattern: '/etc/*', path: cwd })).toBe(false);
+    expect(allowed('Glob', { pattern: '../**/*', path: cwd })).toBe(false);
+    expect(allowed('Glob', { pattern: 'src/../../*' })).toBe(false);
+    expect(allowed('Glob', { pattern: '~/.ssh/*' })).toBe(false);
+    expect(allowed('Glob', { path: cwd })).toBe(false);
+    // A sibling whose name starts with the same text is not inside.
+    mkdirSync(`${cwd}c`);
+    writeFileSync(`${cwd}c/f.ts`, 'x');
+    expect(allowed('Read', { file_path: `${cwd}c/f.ts` })).toBe(false);
+    expect(allowed('Grep', { pattern: 'x', path: `${cwd}c` })).toBe(false);
+    expect(allowed('Write', { file_path: `${scratch}x/f.md`, content: 'x' })).toBe(false);
   });
 
   it('leaves out the repo deny rules when the scratch folder is inside the repo, rather than deny the scratch folder too', async () => {
@@ -217,6 +286,43 @@ describe('orchestrator round-ups', () => {
     unwatch();
   });
 
+  it('gives the Claude in Chrome tools only to agents spawned with browser, and keeps them across resumes', async () => {
+    const ctx = setup({ FAKE_EVERY_TURN: '1' });
+    const { argv, call } = await orchestrator(ctx);
+    expect(argv).toContain('--no-chrome');
+    expect(argv).not.toContain('--chrome');
+
+    // One after the other: two processes starting side by side log their arguments in either order.
+    const plain = await call('spawn_agent', { title: 'Plain', task: 'Read the docs', writes: false });
+    const plainArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
+    const browsing = await call('spawn_agent', { title: 'Artifact', task: 'Read the artifact', writes: false, browser: true });
+    const browserArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[2]);
+    expect(plainArgv).toContain('--no-chrome');
+    expect(flag(plainArgv!, '--append-system-prompt')[0]).not.toContain('Claude in Chrome');
+    expect(browserArgv).toContain('--chrome');
+    expect(browserArgv).not.toContain('--no-chrome');
+    expect(flag(browserArgv!, '--append-system-prompt')[0]).toContain('Claude in Chrome tools');
+    // Asked about like any other tool: nothing allows them by rule.
+    expect(flag(browserArgv!, '--allowedTools').join(' ')).not.toContain('claude-in-chrome');
+
+    const listed = await call('list_agents');
+    expect(listed.data.agents.map((a: { title: string; browser?: boolean }) => [a.title, a.browser])).toEqual([
+      ['Plain', undefined],
+      ['Artifact', true],
+    ]);
+    const agent = ctx.sessions.get(browsing.data.agentId)!;
+    expect(agent.summary().browser).toBe(true);
+    expect(ctx.sessions.get(plain.data.agentId)!.summary().browser).toBe(false);
+
+    // A new process for the same agent (a follow-up after it ended) still has them.
+    await waitFor(() => !agent.working);
+    await agent.stop();
+    await call('message_agent', { agentId: agent.id, text: 'Now the second page' });
+    const resumed = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[3]);
+    expect(flag(resumed, '--resume')).toHaveLength(1);
+    expect(resumed).toContain('--chrome');
+  });
+
   it('refuses empty briefs and messages', async () => {
     const ctx = setup({ FAKE_HANG: '1' });
     const { call } = await orchestrator(ctx);
@@ -229,8 +335,8 @@ describe('orchestrator round-ups', () => {
   it('follows the round-up mode: plan refuses writers, and agents run in the harness mode it maps to', async () => {
     const ctx = setup({ FAKE_HANG: '1' });
     const { parent, argv, call } = await orchestrator(ctx);
-    // The orchestrator's own tools are settled by rule; the mode is for its agents.
-    expect(flag(argv, '--permission-mode')).toEqual(['acceptEdits']);
+    // The orchestrator asks for what its rules don't settle, and `decide` answers; the mode is for its agents.
+    expect(flag(argv, '--permission-mode')).toEqual(['default']);
 
     await ctx.sessions.setMode(parent, 'plan');
     expect((await call('spawn_agent', { title: 'W', task: 'edit', writes: true })).error).toMatch(/plan mode/);
@@ -262,6 +368,63 @@ describe('orchestrator round-ups', () => {
     const next = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
     expect(next[next.indexOf('--append-system-prompt') + 1]).toContain('The person has this round-up in plan mode');
     expect(flag(next, '--resume')).toHaveLength(1);
+    // In plan mode it runs in the harness's own plan mode, with ExitPlanMode and still no edit allow rules.
+    expect(flag(next, '--permission-mode')).toEqual(['plan']);
+    expect(flag(next, '--tools')).toEqual(['Read,Grep,Glob,ExitPlanMode']);
+    expect(flag(next, '--allowedTools')).toEqual(['mcp__kelpie']);
+    // Leaving plan mode takes its live harness to default mode, never accept-edits.
+    const switched = vi.spyOn(parent, 'switchMode');
+    await ctx.sessions.setMode(parent, 'acceptEdits');
+    expect(switched).toHaveBeenCalledWith('default');
+  });
+
+  it('settles the orchestrator\'s scratch edits and kelpie tools itself in plan mode, and leaves its plan to the person', async () => {
+    const ctx = setup({ FAKE_HANG: '1' }, { scratch: true });
+    const parent = ctx.sessions.create(undefined, { mode: 'plan' });
+    const ask = (tool: string, input: Record<string, unknown>) => ctx.orch.decide(parent, { requestId: 'q', tool, title: tool, input });
+    expect(ask('Write', { file_path: join(parent.scratch!, 'plan.md'), content: 'x' })).toMatchObject({ allow: true });
+    expect(ask('mcp__kelpie__spawn_agent', {})).toMatchObject({ allow: true });
+    expect(ask('ExitPlanMode', { plan: 'x' })).toBeUndefined();
+    await ctx.sessions.setMode(parent, 'auto');
+    expect(ask('ExitPlanMode', { plan: 'x' })).toMatchObject({ allow: false });
+  });
+
+  it('refuses browser agents in plan mode, new or picked up again', async () => {
+    const ctx = setup({ FAKE_EVERY_TURN: '1' });
+    const { parent, call } = await orchestrator(ctx);
+    const browsing = await call('spawn_agent', { title: 'Artifact', task: 'Read the artifact', writes: false, browser: true });
+    const agent = ctx.sessions.get(browsing.data.agentId)!;
+    await waitFor(() => agent.lastTurn && !agent.working);
+
+    // Agents run in auto: in the person's browser, one could change things on their sites.
+    await ctx.sessions.setMode(parent, 'plan');
+    expect((await call('spawn_agent', { title: 'B', task: 'look', writes: false, browser: true })).error).toMatch(/plan mode: no agent may drive their browser/);
+    expect((await call('message_agent', { agentId: agent.id, text: 'Now the second page' })).error).toMatch(/plan mode: no agent may drive their browser/);
+    expect((await call('spawn_agent', { title: 'R', task: 'read', writes: false })).error).toBeUndefined();
+    expect(ctx.sessions.children(parent.id).filter((c) => c.browser)).toHaveLength(1);
+
+    await ctx.sessions.setMode(parent, 'auto');
+    expect((await call('message_agent', { agentId: agent.id, text: 'Now the second page' })).error).toBeUndefined();
+  });
+
+  it('lets one browser agent work at a time, spawned or messaged', async () => {
+    const ctx = setup({ FAKE_HANG: '1' });
+    const { call } = await orchestrator(ctx);
+    const first = await call('spawn_agent', { title: 'B1', task: 'look', writes: false, browser: true });
+    expect(first.error).toBeUndefined();
+    expect((await call('spawn_agent', { title: 'B2', task: 'look', writes: false, browser: true })).error).toMatch(/browser agent "B1" is still working.*one agent may drive/);
+    // Agents without the browser are not held up.
+    expect((await call('spawn_agent', { title: 'R', task: 'read', writes: false })).error).toBeUndefined();
+    const b1 = ctx.sessions.get(first.data.agentId)!;
+    await b1.stop();
+
+    const second = await call('spawn_agent', { title: 'B2', task: 'look', writes: false, browser: true });
+    expect(second.error).toBeUndefined();
+    expect((await call('message_agent', { agentId: b1.id, text: 'again' })).error).toMatch(/browser agent "B2" is still working/);
+    // A message to the one working is no second agent in the browser.
+    expect((await call('message_agent', { agentId: second.data.agentId, text: 'and this' })).error).toBeUndefined();
+    await ctx.sessions.get(second.data.agentId)!.stop();
+    expect((await call('message_agent', { agentId: b1.id, text: 'again' })).error).toBeUndefined();
   });
 
   it('caps working agents and allows one writer per repo', async () => {
@@ -272,8 +435,9 @@ describe('orchestrator round-ups', () => {
     expect((await call('spawn_agent', { title: 'R1', task: 'read', writes: false })).error).toBeUndefined();
     expect((await call('spawn_agent', { title: 'R2', task: 'read', writes: false })).error).toBeUndefined();
     expect((await call('spawn_agent', { title: 'R3', task: 'read', writes: false })).error).toMatch(/3 agents are already working/);
-    const writerArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
-    expect(writerArgv[writerArgv.indexOf('--tools') + 1]).toContain('Edit');
+    // The three started side by side, so their arguments are logged in any order: only the writer may edit.
+    const agentArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile).length === 4 && jsonLines<string[]>(ctx.argsFile).slice(1));
+    expect(agentArgv.filter((a) => a[a.indexOf('--tools') + 1]!.includes('Edit'))).toHaveLength(1);
   });
 
   it("keeps one orchestrator out of another's agents", async () => {

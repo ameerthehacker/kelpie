@@ -3,7 +3,7 @@ import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { attachmentsBlock, mergeUsage, type Attachment, type EventOf, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
-import { claudeCode, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
+import { claudeCode, isChromeTool, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary } from './agent-summary.js';
 
@@ -28,6 +28,8 @@ export interface SessionInfo {
   role: 'orchestrator' | 'agent';
   /** A sub-agent allowed to change files. */
   writes: boolean;
+  /** A sub-agent given the Claude in Chrome tools (the person's own browser). */
+  browser: boolean;
   /** The model asked for, if not the harness's default. */
   model: string | undefined;
   /** A sub-agent's job: ordinary work, or Muster. */
@@ -82,7 +84,8 @@ export type ManagerUpdate =
   /** What a round-up (its orchestrator and agents) is waiting on the person for, now. */
   | { type: 'approvals'; roundUpId: string; approvals: PendingApproval[] };
 
-export type SessionDefaults = Omit<RunSpec, 'cwd' | 'prompt' | 'resume' | 'runId' | 'runDir'>;
+/** Run settings a round-up does not decide per process: everything but what `start` fills in. */
+export type SessionDefaults = Omit<RunSpec, 'cwd' | 'prompt' | 'resume' | 'todos' | 'runId' | 'runDir'>;
 
 export interface RunContext {
   runId: string;
@@ -95,7 +98,7 @@ export interface RunContext {
 /** How round-ups are specialised (the orchestrator's tools and prompts) and watched. */
 export interface SessionHooks {
   /** Extra run settings for each harness process; called on every start. */
-  specFor?(session: Session, run: RunContext): Partial<RunSpec>;
+  specFor?(session: Session, run: RunContext): Partial<SessionDefaults>;
   /** Every event, once it is logged and subscribers have seen it. Must not throw. */
   observe?(session: Session, index: number, event: KelpieEvent): void;
   /** Before each harness process starts: make sure what it runs in exists (e.g. recreate a swept worktree). */
@@ -134,6 +137,8 @@ export interface CreateOptions {
   baseCommit?: string;
   role?: 'orchestrator' | 'agent';
   writes?: boolean;
+  /** Give it the Claude in Chrome tools, for every process it runs. */
+  browser?: boolean;
   title?: string;
   model?: string;
   mode?: Mode;
@@ -237,9 +242,7 @@ export class Session {
     this.row = row;
     this.lastTurnState = ctx.store.lastEvent(row.id, 'turn.ended')?.data.status;
     if (row.parentId) {
-      // Its own list, as track() keeps it: not one a sub-agent of its own wrote.
-      const own = ctx.store.recentEvents(row.id, ['todos'], 200).find((e) => !e.parentCallId);
-      this.todosState = own?.kind === 'todos' ? own.data.items : [];
+      this.todosState = this.ownTodos();
       this.modelState = ctx.store.lastEvent(row.id, 'session.started')?.data.model;
       // Sub-agent chatter is skipped, so look back a little further than one event.
       for (const e of ctx.store.recentEvents(row.id, ['tool.started', 'message', 'turn.ended'], 20)) {
@@ -362,6 +365,10 @@ export class Session {
     return this.row.writes;
   }
 
+  get browser(): boolean {
+    return this.row.browser;
+  }
+
   get resumePending(): boolean {
     return this.row.resumePending;
   }
@@ -375,7 +382,7 @@ export class Session {
   }
 
   info(): SessionInfo {
-    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes, model, kind, baseBranch, baseCommit } = this.row;
+    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes, browser, model, kind, baseBranch, baseCommit } = this.row;
     return {
       id,
       title,
@@ -389,6 +396,7 @@ export class Session {
       parentId: parentId ?? undefined,
       role,
       writes,
+      browser,
       model: model ?? undefined,
       kind,
       baseBranch: baseBranch ?? undefined,
@@ -399,7 +407,7 @@ export class Session {
 
   /** A sub-agent at a glance (see AgentSummary). */
   summary(): AgentSummary {
-    const { id, title, harness, writes, createdAt, updatedAt } = this.row;
+    const { id, title, harness, writes, browser, createdAt, updatedAt } = this.row;
     const t = this.lastTurnState;
     return {
       id,
@@ -408,6 +416,7 @@ export class Session {
       harness,
       model: this.modelState ?? this.row.model ?? undefined,
       writes,
+      browser,
       status: this.working ? (this.asking.size ? 'needs-approval' : 'working') : t === 'completed' ? 'done' : t === 'failed' ? 'failed' : t === 'interrupted' ? 'stopped' : 'idle',
       now: this.nowState,
       todos: this.todosState,
@@ -424,6 +433,18 @@ export class Session {
   }
 
   /**
+   * What the person allowed for a sub-agent's whole round-up. Never the Claude in Chrome tools, even
+   * by a rule saved before Kelpie stopped offering them: every use of the person's browser is asked about.
+   */
+  private savedRules(): string[] {
+    if (!this.row.parentId) return [];
+    return this.ctx.store
+      .rulesOf(this.row.parentId)
+      .map((r) => r.rule)
+      .filter((r) => !isChromeTool(r));
+  }
+
+  /**
    * Keeps track of what the harness is asking, and answers what the round-up's saved rules or the
    * hooks' policy settle; the rest waits for the person.
    */
@@ -433,7 +454,7 @@ export class Session {
       let auto: PermissionAnswer | undefined;
       try {
         const rule = event.data.rule;
-        const saved = !!rule && !!this.row.parentId && this.ctx.store.rulesOf(this.roundUpId).some((r) => r.rule === rule);
+        const saved = !!rule && this.savedRules().includes(rule);
         auto = saved ? { allow: true, by: 'kelpie' } : this.ctx.hooks.decide?.(this, event.data);
       } catch (err) {
         console.error(`session ${this.id}: permission policy failed`, err);
@@ -447,6 +468,20 @@ export class Session {
       this.asking.clear();
       this.ctx.approvalsChanged(this);
     }
+  }
+
+  /** Its latest todo list, as track() keeps it: not one a sub-agent of its own wrote. */
+  private ownTodos(): TodoItem[] {
+    const own = this.ctx.store.recentEvents(this.id, ['todos'], 200).find((e) => !e.parentCallId);
+    return own?.kind === 'todos' ? own.data.items : [];
+  }
+
+  /**
+   * The harness's latest todo list, whoever changed it last (it keeps one per session, its
+   * sub-agents' tasks included): what its last process ended with, so a resumed one starts from it.
+   */
+  private sessionTodos(): TodoItem[] {
+    return this.ctx.store.lastEvent(this.id, 'todos')?.data.items ?? [];
   }
 
   /** Folds an event into a sub-agent's summary; true if the pane should hear about it. */
@@ -508,6 +543,8 @@ export class Session {
    */
   async send(text: string, source: OutboxSource = 'user', opts: SendOptions = {}): Promise<void> {
     while (this.stopping) await this.stopping;
+    // A process can exit before its last events are logged; logging its exit clears the outbox, so this turn waits.
+    if (this.run?.exited) await this.pumping;
     if (this.deleted) throw new Error('this round-up was deleted');
     if (this.ctx.closing) throw new Error('Kelpie is shutting down');
     const files = opts.attachments ?? [];
@@ -533,6 +570,7 @@ export class Session {
    */
   async resumeAfterRestart(note: string): Promise<void> {
     while (this.stopping) await this.stopping;
+    if (this.run?.exited) await this.pumping;
     if (this.deleted || this.ctx.closing) return;
     if (!this.run || this.run.exited) {
       if (this.ctx.store.undelivered(this.id).length) await this.launch();
@@ -568,6 +606,8 @@ export class Session {
     this.starting ??= (async () => {
       try {
         await this.ctx.hooks.prepare?.(this);
+        // The last process may have exited with events still buffered: `start` reads what they leave (its todo list).
+        await this.pumping;
       } finally {
         this.starting = undefined;
       }
@@ -597,7 +637,7 @@ export class Session {
       ...(hooked?.env ? { env: { ...this.ctx.defaults.env, ...hooked.env } } : {}),
     };
     // What the person allowed for the whole round-up, its agents may do without asking.
-    const saved = this.row.parentId ? store.rulesOf(this.row.parentId).map((r) => r.rule) : [];
+    const saved = this.savedRules();
     if (saved.length) spec.allowedTools = [...(spec.allowedTools ?? []), ...saved];
     const run = this.ctx.adapter.start({
       ...spec,
@@ -605,7 +645,8 @@ export class Session {
       prompt: texts[0]!,
       runId,
       ...(this.ctx.runsDir ? { runDir: join(this.ctx.runsDir, runId) } : {}),
-      ...(resume ? { resume } : {}),
+      // The harness keeps its todo list across a resume, but this new process has not seen it.
+      ...(resume ? { resume, todos: this.sessionTodos() } : {}),
     });
     for (const text of texts.slice(1)) run.send(text);
     this.run = run;
@@ -687,13 +728,26 @@ export class Session {
     this.idleTimer.unref();
   }
 
+  /**
+   * A run's events, then, if it could not resume (`failed`), an empty todo list: the old list
+   * went with the session, and the fresh one starts without any. The pane shows that, and a
+   * later resume of the fresh session is not handed the old tasks.
+   */
+  private async *withReset(run: Run, failed: () => boolean): AsyncGenerator<KelpieEvent> {
+    for await (const event of run.events) {
+      yield event;
+      if (event.kind !== 'process.exited' || !failed() || (!this.sessionTodos().length && !this.ownTodos().length)) continue;
+      yield { id: randomUUID(), runId: event.runId, seq: event.seq + 1, ts: event.ts, harness: event.harness, kind: 'todos', data: { items: [] } } as KelpieEvent;
+    }
+  }
+
   private async pump(run: Run, resumed: string | undefined): Promise<void> {
     const log = this.load();
     let started = false;
     let retryFresh = false;
     this.pumpActive = true;
     try {
-      for await (let event of run.events) {
+      for await (let event of this.withReset(run, () => retryFresh)) {
         if (this.deleted) continue; // drain the process, log nothing
         let changed = false;
         if (event.kind === 'session.started') {
@@ -732,7 +786,8 @@ export class Session {
 
         const index = log.push(event) - 1;
         // A process ending (idle timeout, daemon shutdown) is housekeeping: it must not reorder the list.
-        const now = event.kind === 'process.exited' ? this.row.updatedAt : Date.now();
+        // So is anything logged after a failed resume.
+        const now = event.kind === 'process.exited' || retryFresh ? this.row.updatedAt : Date.now();
         try {
           this.ctx.store.appendEvent(this.id, index, event, now, deliveredId);
           this.row = { ...this.row, updatedAt: now };
@@ -842,6 +897,7 @@ export class SessionManager {
       ...(opts.baseBranch ? { baseBranch: opts.baseBranch, baseCommit: opts.baseCommit ?? null } : {}),
       ...(opts.role ? { role: opts.role } : {}),
       ...(opts.writes ? { writes: true } : {}),
+      ...(opts.browser ? { browser: true } : {}),
       ...(opts.title ? { title: opts.title } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
     });
@@ -957,7 +1013,7 @@ export class SessionManager {
         const roundUp = this.sessions.get(session.roundUpId);
         if (roundUp) await this.setMode(roundUp, opts.mode);
       }
-      const rule = opts.allow && opts.remember && session.parentId ? pending.rule : undefined;
+      const rule = opts.allow && opts.remember && session.parentId && pending.rule && !isChromeTool(pending.rule) ? pending.rule : undefined;
       const ok = session.answer(
         requestId,
         opts.allow ? { allow: true, by: 'person', ...(rule ? { rules: [rule] } : {}) } : { allow: false, by: 'person', message: opts.message?.trim() || DENIED },

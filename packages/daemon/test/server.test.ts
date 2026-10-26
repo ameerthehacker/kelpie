@@ -173,6 +173,21 @@ describe('round-up API', () => {
     const usage = (await (await app.request('/api/usage', { headers: { host: local.host } })).json()) as { harness: string }[];
     expect(usage.map((u) => u.harness)).toEqual(['claude-code']);
   });
+
+  it('snapshots sub-agents apart from the round-up list', async () => {
+    const { app, sessions } = setup();
+    const parent = sessions.create();
+    const child = sessions.create(undefined, { parentId: parent.id, role: 'agent', title: 'Checkout API' });
+    const res = await app.request('/api/events', { headers: { host: local.host } });
+    const reader = res.body!.getReader();
+    let text = '';
+    while (!text.includes('event: approvals-snapshot')) text += new TextDecoder().decode((await reader.read()).value);
+    await reader.cancel();
+
+    const data = (event: string) => JSON.parse(new RegExp(`^event: ${event}\ndata: (.*)$`, 'm').exec(text)![1]!) as { id: string; parentId?: string; busy: boolean }[];
+    expect(data('sessions').map((s) => s.id)).toEqual([parent.id]);
+    expect(data('sub-agents')).toEqual([expect.objectContaining({ id: child.id, parentId: parent.id, busy: false })]);
+  });
 });
 
 describe('Session', () => {
@@ -324,8 +339,10 @@ describe('uploads', () => {
     const { sessions } = withScratch();
     const session = sessions.create();
     const saving = sessions.saveUpload(session, { name: 'a.txt', mime: 'text/plain', bytes: new Uint8Array([1]) });
+    // Watched from the start: it may fail before the deletion finishes, and must not go unhandled meanwhile.
+    const refused = expect(saving).rejects.toThrow(/deleted/);
     await sessions.delete(session.id);
-    await expect(saving).rejects.toThrow(/deleted/);
+    await refused;
     expect(existsSync(session.scratch!)).toBe(false);
   });
 
