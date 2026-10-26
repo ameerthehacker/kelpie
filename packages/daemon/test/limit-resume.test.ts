@@ -213,5 +213,51 @@ describe('resuming after the usage limit', () => {
   });
 });
 
+describe('cancelling a paused round-up', () => {
+  it("stops its agents resuming too, and holds the orchestrator's notices until its own pause is over", async () => {
+    const { sessions, hit, lift, app } = start();
+    const orch = sessions.create(tmpdir(), { title: 'Round-up' });
+    const a = agent(sessions, orch, 'Checkout API');
+    const b = agent(sessions, orch, 'Payments UI');
+    hit(60 * 60_000);
+    await Promise.all([a, b, orch].map((s) => s.send('Go', s === orch ? 'user' : 'orchestrator')));
+    await waitFor(() => [a, b, orch].every((s) => s.limited && idle(s)));
+    const before = sent(orch).length;
+
+    // Don't auto-resume, on the round-up: its agents wait for the person too.
+    const res = await app.request(`/api/sessions/${orch.id}/limit/cancel`, { method: 'POST', headers: { ...LOCAL, 'content-type': 'application/json' }, body: '{}' });
+    expect(res.status).toBe(200);
+    for (const s of [orch, a, b]) expect(s.limited!.retryAt).toBeUndefined();
+    // They won't resume on their own now: news for the orchestrator, but held while it is paused itself.
+    await sleep(300);
+    expect(sent(orch)).toHaveLength(before);
+
+    // The person picks the orchestrator up once the limit lifts: what was held goes to it.
+    lift();
+    expect(sessions.limits.resumeNow(orch.id)).toBe(true);
+    await waitFor(() => !orch.limited);
+    const note = await waitFor(() => sent(orch).find((m) => m.data.agents?.length));
+    expect(note.data.agents!.map((x) => x.title).sort()).toEqual(['Checkout API', 'Payments UI']);
+    expect(resumes(a)).toHaveLength(0);
+  });
+
+  it('an interrupt of a paused round-up cancels its agents too; an agent\'s own, only its own', async () => {
+    const { sessions, hit } = start();
+    const orch = sessions.create(tmpdir(), { title: 'Round-up' });
+    const a = agent(sessions, orch, 'A');
+    const b = agent(sessions, orch, 'B');
+    hit(60 * 60_000);
+    await Promise.all([a, b, orch].map((s) => s.send('Go', s === orch ? 'user' : 'orchestrator')));
+    await waitFor(() => [a, b, orch].every((s) => s.limited && idle(s)));
+    await a.interrupt();
+    expect(a.limited!.retryAt).toBeUndefined();
+    expect(b.limited!.retryAt).toBeDefined();
+    expect(orch.limited!.retryAt).toBeDefined();
+    await orch.interrupt();
+    expect(b.limited!.retryAt).toBeUndefined();
+    expect(orch.limited!.retryAt).toBeUndefined();
+  });
+});
+
 // Keeps the KelpieEvent import used for readers of these helpers' types.
 export type { KelpieEvent };

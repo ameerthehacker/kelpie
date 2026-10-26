@@ -331,9 +331,13 @@ export class Orchestrator implements SessionHooks {
     this.schedule(session.id);
   }
 
-  /** An agent paused at the usage limit isn't news for its orchestrator; one that won't resume on its own is. */
+  /**
+   * An agent paused at the usage limit isn't news for its orchestrator; one that won't resume on its
+   * own is. An orchestrator whose own pause is over gets what was held for it meanwhile.
+   */
   limitChanged(session: Session): void {
     if (session.role === 'agent' && session.parentId && !session.working) this.schedule(session.parentId);
+    else if (session.role === 'orchestrator' && !session.limited) this.schedule(session.id);
   }
 
   /**
@@ -873,8 +877,8 @@ export class Orchestrator implements SessionHooks {
   /** Tells the orchestrator about every sub-agent that went idle since it was last told. */
   private async flush(parentId: string): Promise<void> {
     const parent = this.manager.get(parentId);
-    // Paused at the usage limit itself: what it is owed goes once it is resumed.
-    if (!parent || this.manager.limits.willResume(parentId)) return;
+    // Paused at the usage limit itself: what it is owed goes once its pause is over (limitChanged).
+    if (!parent || parent.limited) return;
     const owed = this.manager.children(parentId).flatMap((c) => {
       // Paused at the usage limit, it will pick up on its own: news once it is done (or won't resume).
       if (this.isWorking(c) || this.waiting.has(c.id) || this.manager.limits.willResume(c.id)) return [];

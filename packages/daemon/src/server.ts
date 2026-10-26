@@ -377,7 +377,7 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   app.post('/api/sessions/:id/limit/cancel', (c) => {
     const s = sessions.get(c.req.param('id'));
     if (!s) return c.json({ error: 'no such session' }, 404);
-    if (!sessions.limits.cancel(s.id)) return c.json({ error: 'not paused at the usage limit' }, 409);
+    if (!sessions.cancelLimits(s.id)) return c.json({ error: 'not paused at the usage limit' }, 409);
     return c.json(s.info());
   });
 

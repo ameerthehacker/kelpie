@@ -246,6 +246,8 @@ interface SessionContext {
   approvalsChanged: (s: Session) => void;
   /** Sessions paused at the usage limit. */
   limits: UsageLimits;
+  /** Stops a session's pause resuming on its own; a round-up's agents' too (see SessionManager.cancelLimits). */
+  cancelLimits: (s: Session) => boolean;
 }
 
 const ticketOf = (r: TicketRow): LinkedTicket => ({
@@ -839,7 +841,7 @@ export class Session {
 
   /** Stops the current turn; one paused at the usage limit is no longer resumed on its own either. */
   async interrupt(): Promise<void> {
-    this.ctx.limits.cancel(this.id);
+    this.ctx.cancelLimits(this);
     await this.run?.interrupt();
   }
 
@@ -1070,6 +1072,7 @@ export class SessionManager {
         this.publish({ type: 'usage', usage: this.usage() });
       },
       limits: undefined as unknown as UsageLimits,
+      cancelLimits: (s) => this.cancelLimits(s.id),
     };
     const hooks = this.ctx.hooks;
     this.limits = this.ctx.limits = new UsageLimits({
@@ -1316,6 +1319,18 @@ export class SessionManager {
   watch(listener: (u: ManagerUpdate) => void): () => void {
     this.watchers.add(listener);
     return () => this.watchers.delete(listener);
+  }
+
+  /**
+   * The person's "Don't auto-resume", or an interrupt: the session stays paused until someone sends
+   * it a turn. For a paused round-up, its paused agents too: otherwise they would pick up, and their
+   * notices wake the orchestrator. False if the session itself was not paused.
+   */
+  cancelLimits(id: string): boolean {
+    const own = this.limits.cancel(id);
+    const s = this.sessions.get(id);
+    if (own && s && !s.parentId) for (const c of this.children(id)) this.limits.cancel(c.id);
+    return own;
   }
 
   /**
