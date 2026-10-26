@@ -1,9 +1,9 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { openStore, type Store } from '@kelpie/store';
 import { createApp, Orchestrator, ORCHESTRATOR_TOOLS, READ_ONLY_TOOLS, SessionManager, type Session } from '../src/index.js';
@@ -222,8 +222,13 @@ describe('orchestrator round-ups', () => {
   });
 
   it('spawns sub-agents as child round-ups and reports back when they go idle', async () => {
-    const ctx = setup({ FAKE_EVERY_TURN: '1' });
+    const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
+    const hold = join(tmp('kelpie-hold-'), 'hold');
+    onTestFinished(() => rmSync(hold, { force: true })); // a failure must not leave the harnesses held
+    const ctx = setup({ FAKE_EVERY_TURN: '1', FAKE_STDIN_FILE: stdin, FAKE_HOLD_FILE: hold });
     const { parent, call } = await orchestrator(ctx);
+    // Both agents' answers wait until both have their briefs, so they go idle together, well inside the notification delay.
+    writeFileSync(hold, '');
     const a = await call('spawn_agent', { title: 'Count A', task: 'Count the TODOs in src/a', writes: false });
     const b = await call('spawn_agent', { title: 'Count B', task: 'Count the TODOs in src/b', writes: false });
     const ids = [a.data.agentId, b.data.agentId];
@@ -238,6 +243,8 @@ describe('orchestrator round-ups', () => {
       const token = JSON.parse(flag(argv, '--mcp-config')[0]!).mcpServers.kelpie.headers.Authorization.slice('Bearer '.length);
       expect(ids).toContain(ctx.orch.authorize(token)!.id);
     }
+    await waitFor(() => jsonLines<{ text: string }>(stdin).filter((l) => l.text.includes('Count the TODOs')).length === 2);
+    rmSync(hold);
 
     // One notification covering both, once both are idle.
     const notes = await waitFor(() => {

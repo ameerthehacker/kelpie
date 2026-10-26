@@ -15,8 +15,9 @@
 // asks to use that tool on the url FAKE_ASK. Interrupted while asking, it ends the turn the way the real
 // CLI does (ask-interrupt.jsonl): it cancels the request, unless FAKE_NO_CANCEL=1, then reports the turn aborted.
 // FAKE_ENV_FILE gets a line of JSON per start with the GitHub env it was given (GH_TOKEN, GITHUB_TOKEN).
-// FAKE_HOLD_FILE holds each user turn, unanswered, for as long as that file exists; stdin is read in order,
-// so whatever comes after a held turn (control requests, interrupts, further turns) waits with it.
+// FAKE_HOLD_FILE takes each user turn in (FAKE_STDIN_FILE gets it) but holds its answer for as long as that
+// file exists; stdin is read in order, so whatever comes after a held turn (control requests, interrupts,
+// further turns) waits with it.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -42,7 +43,6 @@ const ASK_ID = 'fake-ask-1';
 let asking = false;
 for await (const line of createInterface({ input: process.stdin })) {
   const msg = JSON.parse(line);
-  while (msg.type === 'user' && process.env.FAKE_HOLD_FILE && existsSync(process.env.FAKE_HOLD_FILE)) await new Promise((r) => setTimeout(r, 10));
   if (msg.type === 'control_response' && msg.response?.request_id === ASK_ID && asking) {
     asking = false;
     if (process.env.FAKE_ANSWER_FILE) appendFileSync(process.env.FAKE_ANSWER_FILE, JSON.stringify(msg.response.response) + '\n');
@@ -63,6 +63,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   } else if (msg.type === 'user' && process.env.FAKE_STDIN_FILE) {
     appendFileSync(process.env.FAKE_STDIN_FILE, JSON.stringify({ resume: args.includes('--resume') ? resume : null, text: msg.message.content[0].text }) + '\n');
   }
+  while (msg.type === 'user' && process.env.FAKE_HOLD_FILE && existsSync(process.env.FAKE_HOLD_FILE)) await new Promise((r) => setTimeout(r, 10));
   if (msg.type === 'user' && printed && process.env.FAKE_EVERY_TURN === '1' && !hang) {
     const session_id = JSON.parse(lines[0]).session_id;
     out({ type: 'user', message: msg.message, session_id, parent_tool_use_id: null, isReplay: true });
