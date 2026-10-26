@@ -6,6 +6,7 @@ import { createBrowserRouter, Navigate } from 'react-router';
 import { RouterProvider } from 'react-router/dom';
 import './index.css';
 import { App } from './App';
+import { Toaster } from './components/ui/sonner';
 import { initTheme } from './lib/theme';
 
 initTheme();
@@ -37,6 +38,7 @@ createRoot(document.getElementById('root')!).render(
       {/* Motion follows the person's reduced-motion setting: no movement, fades only. */}
       <MotionConfig reducedMotion="user">
         <RouterProvider router={router} />
+        <Toaster position="bottom-center" />
       </MotionConfig>
     </QueryClientProvider>
   </StrictMode>,

@@ -241,6 +241,29 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     return sessions.deleteRule(s.roundUpId, Number(c.req.param('rule'))) ? c.body(null, 204) : c.json({ error: 'no such rule' }, 404);
   });
 
+  // A linked ticket, by its `ref` (URI-encoded): the person names it ({ title }; empty or null clears
+  // their name, so a found or given one may take its place) or unlinks it. Their title always wins.
+  const ticketsOf = (c: Context) => {
+    const s = sessions.get(c.req.param('id') ?? '');
+    return s && sessions.get(s.roundUpId);
+  };
+  app.patch('/api/sessions/:id/tickets/:ref', async (c) => {
+    const roundUp = ticketsOf(c);
+    if (!roundUp) return c.json({ error: 'no such session' }, 404);
+    const body = await jsonBody<{ title?: unknown }>(c);
+    if (body.title !== null && typeof body.title !== 'string') return c.json({ error: 'send a title (empty or null clears it)' }, 400);
+    const title = (body.title ?? '').trim().replace(/\s+/g, ' ');
+    if (title.length > 200) return c.json({ error: 'title must be at most 200 characters' }, 400);
+    const ref = c.req.param('ref') ?? '';
+    if (roundUp.titleTicket(ref, title || undefined, 'person') === undefined) return c.json({ error: 'no such ticket' }, 404);
+    return c.json(roundUp.tickets().find((t) => t.ref === ref));
+  });
+  app.delete('/api/sessions/:id/tickets/:ref', (c) => {
+    const roundUp = ticketsOf(c);
+    if (!roundUp) return c.json({ error: 'no such session' }, 404);
+    return roundUp.unlinkTicket(c.req.param('ref') ?? '') ? c.body(null, 204) : c.json({ error: 'no such ticket' }, 404);
+  });
+
   // The branches a round-up may start from (remote first), for the composer's base-branch picker.
   app.get('/api/repo/branches', async (c) => {
     const cwd = resolve(sessions.defaultCwd, c.req.query('cwd') ?? '.');

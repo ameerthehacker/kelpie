@@ -1,4 +1,4 @@
-import { questionsOf, stripAttachments, type AgentUpdate, type Answers, type Attachment, type EventOf, type KelpieEvent, type Question, type TodoItem, type ToolCategory } from '@kelpie/protocol';
+import { questionsOf, stripAttachments, stripTicketsNote, type AgentUpdate, type Answers, type Attachment, type EventOf, type KelpieEvent, type Question, type TodoItem, type ToolCategory } from '@kelpie/protocol';
 
 export interface ToolView {
   type: 'tool';
@@ -190,7 +190,8 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
           items.push({
             role: 'user',
             id: ev.id,
-            text: ev.data.attachments?.length ? stripAttachments(ev.data.text) : ev.data.text,
+            // Kelpie's note to the orchestrator about tickets it linked is not the person's.
+            text: stripTicketsNote(ev.data.attachments?.length ? stripAttachments(ev.data.text) : ev.data.text),
             ts: ev.ts,
             ...(ev.data.source ? { source: ev.data.source } : {}),
             ...(ev.data.attachments?.length ? { attachments: ev.data.attachments } : {}),

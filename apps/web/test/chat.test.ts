@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { KelpieEvent } from '@kelpie/protocol';
+import { ticketsNote, type KelpieEvent } from '@kelpie/protocol';
 import { ClaudeCodeParser } from '@kelpie/adapters';
 import { agentsFromText, buildChat, latestTodos, reviewNotice, type AssistantPart, type ToolView } from '../src/lib/chat.js';
 
@@ -51,6 +51,17 @@ describe('buildChat', () => {
     const attachments = [{ id: 'u1', name: 'shot.png', mime: 'image/png', size: 2048 }];
     const [item] = buildChat([{ ...base, kind: 'message', data: { role: 'user', text, sent: true, source: 'user', attachments } }]);
     expect(item).toMatchObject({ role: 'user', text: 'Why is this red?', attachments });
+  });
+
+  it('leaves out the note about untitled tickets Kelpie adds for the orchestrator, before any files', () => {
+    const base = { id: 'e1', runId: 'r', seq: 0, ts: '2026-01-01T00:00:00.000Z', harness: 'claude-code' as const };
+    const note = ticketsNote(['https://app.asana.com/0/1/2']);
+    const [plain] = buildChat([{ ...base, kind: 'message', data: { role: 'user', text: `Fix https://app.asana.com/0/1/2\n\n${note}`, sent: true, source: 'user' } }]);
+    expect(plain).toMatchObject({ text: 'Fix https://app.asana.com/0/1/2' });
+    const attachments = [{ id: 'u1', name: 'shot.png', mime: 'image/png', size: 2048 }];
+    const text = `Fix it\n\n${note}\n\n<attachments>\n- /s/uploads/ab-shot.png (image/png, 2 KB)\n</attachments>`;
+    const [withFiles] = buildChat([{ ...base, kind: 'message', data: { role: 'user', text, sent: true, source: 'user', attachments } }]);
+    expect(withFiles).toMatchObject({ text: 'Fix it', attachments });
   });
 
   it('alternates user turns and assistant replies', () => {
