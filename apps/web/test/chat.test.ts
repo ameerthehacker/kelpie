@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { KelpieEvent } from '@kelpie/protocol';
+import { ticketsNote, type KelpieEvent } from '@kelpie/protocol';
 import { ClaudeCodeParser } from '@kelpie/adapters';
 import { agentsFromText, buildChat, latestTodos, reviewNotice, type AssistantPart, type ToolView } from '../src/lib/chat.js';
 
@@ -55,7 +55,7 @@ describe('buildChat', () => {
 
   it('leaves out the note about untitled tickets Kelpie adds for the orchestrator, before any files', () => {
     const base = { id: 'e1', runId: 'r', seq: 0, ts: '2026-01-01T00:00:00.000Z', harness: 'claude-code' as const };
-    const note = '<tickets>\nLinked to this round-up without a title: https://app.asana.com/0/1/2\nOnce you know a ticket’s name, set it with link_ticket.\n</tickets>';
+    const note = ticketsNote(['https://app.asana.com/0/1/2']);
     const [plain] = buildChat([{ ...base, kind: 'message', data: { role: 'user', text: `Fix https://app.asana.com/0/1/2\n\n${note}`, sent: true, source: 'user' } }]);
     expect(plain).toMatchObject({ text: 'Fix https://app.asana.com/0/1/2' });
     const attachments = [{ id: 'u1', name: 'shot.png', mime: 'image/png', size: 2048 }];

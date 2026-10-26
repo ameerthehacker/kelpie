@@ -131,15 +131,19 @@ export function parseTicketUrl(text: string): TicketLink | undefined {
 }
 
 const URLS = /https?:\/\/[^\s<>"'`()[\]{}|\\^]+/gi;
-/** `[text](url)`, the way markdown (and Kelpie's composer, for pasted rich text) links a ticket by name. */
-const MD_LINKS = /\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]+)\)/gi;
+/** `[text](url)`, the way markdown (and Kelpie's composer, for pasted rich text) links a ticket by name; not an image's `![alt](url)`. */
+const MD_LINKS = /(?<!!)\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]+)\)/gi;
 const TITLE_MAX = 200;
+/** Longer lines are only searched for links, never for names: the name heuristics are not linear in a line's length. */
+const NAMED_LINE_MAX = 500;
+/** A list item's marker, after any quote markers: `- `, `* `, `+ `, `• `, `1. `, `1) `. */
+const LIST_ITEM = /^\s*(?:>\s*)*(?:[-*+•]|\d+[.)])\s+/;
 /** Words that say where a link is, not what it is: "see here", "this ticket", "Asana task". */
 const VAGUE = /^(?:(?:see|link|here|this|that|the|a|an|it|ticket|task|issue|project|card|story|bug|epic|jira|asana|board|related|ref|re|cc|fyi|url|page|details?|more)\b[\s:.\-]*)+$/i;
 /** How a sentence about a link starts, as opposed to a name for it ("Can you look at this: …"). */
 const SENTENCE = /^(?:please|pls|can|could|would|will|should|let'?s|see|check|look|here|there|i|i'm|im|we|you|this|that|these|those|it|for|from|in|on|at|per|related|ref|re|also|and|or|but|so|then|via|with)\b/i;
-/** How a sentence pointing at a link ends ("Fix this: …"). */
-const POINTING = /\b(?:this|that|these|those|it|here|below|one|ones)$/i;
+/** How a sentence pointing at a link ends ("Fix this: …", "Blocked by: …", "Not urgent, but: …"). */
+const POINTING = /(?:\b(?:this|that|these|those|it|here|below|one|ones|by|in|to|of|for|from|with|at|on|see|via|and|or|but|so|as|is|are|was|were)|,)$/i;
 /** Between a name and its link on one line: `Name: url`, `Name - url`, `url — Name`, `Name | url`. */
 const SEPARATOR = /^\s*(?::|-|–|—|\|)\s+|\s+(?:-|–|—|\|)\s*$|:\s*$/;
 
@@ -149,56 +153,67 @@ const tidy = (text: string) => text.replace(/\s+/g, ' ').trim();
 function nameFrom(text: string, t: TicketLink): string | undefined {
   let name = tidy(text.replace(/[*_`~]+/g, ' '));
   // A Jira key at the front is shown already: "SHOP-412: Guest checkout" names it "Guest checkout".
-  if (t.key && name.toUpperCase().startsWith(t.key)) name = name.slice(t.key.length).replace(/^[\s:\-–—|]+/, '');
+  // Only the key itself: "SHOP-4120 Rounding" is not SHOP-412's.
+  if (t.key && new RegExp(`^${t.key}(?![A-Z0-9_])`, 'i').test(name)) name = name.slice(t.key.length).replace(/^[\s:\-–—|]+/, '');
   if (!name || name.length > TITLE_MAX || VAGUE.test(name) || parseTicketUrl(name) || /^https?:/i.test(name)) return undefined;
   return name;
 }
 
 /**
- * A name for the one ticket on a line, from text set off from its link: "Guest checkout flake: <url>",
- * "- <url> — Guest checkout flake". Kept conservative: two words or more, set off by a separator,
- * not a question or a sentence about the link.
+ * A name for the one ticket on a list item, from text set off from its link: "- Guest checkout flake: <url>",
+ * "- <url> — Guest checkout flake". Kept conservative: a list item, two words or more starting with a
+ * capital or a digit, set off by a separator, not a question or a sentence about the link.
  */
 function nameOnLine(line: string, url: string, t: TicketLink): string | undefined {
+  const item = line.match(LIST_ITEM);
+  if (!item) return undefined;
   const at = line.indexOf(url);
-  const before = line.slice(0, at).replace(/^\s*(?:[-*+•]|\d+[.)])\s+/, '').replace(/[<(*_]+$/, '');
+  const before = line.slice(item[0].length, at).replace(/[<(*_]+$/, '');
   const after = line.slice(at + url.length).replace(/^[>)*_.,;!?]+/, '');
   // The link at one end of its line, its name at the other.
   const [side, other] = before.trim() ? [before, after] : [after, before];
   if (other.trim() || !SEPARATOR.test(side)) return undefined;
   const text = tidy(side.replace(/^\s*(?::|-|–|—|\|)\s+/, '').replace(/\s*(?::|-|–|—|\|)\s*$/, ''));
-  if (text.includes('?') || SENTENCE.test(text) || POINTING.test(text) || text.split(' ').length < 2) return undefined;
+  if (text.includes('?') || !/^[\p{Lu}\d]/u.test(text) || SENTENCE.test(text) || POINTING.test(text) || text.split(' ').length < 2) return undefined;
   return nameFrom(text, t);
 }
 
 /**
  * Every Jira or Asana ticket linked in a piece of text, first mention first, each once, with a title
- * when the text names it: a markdown link's text (`[Guest checkout](url)`), or a name set off from
- * the link on its own line (`Guest checkout flake: url`). Bare keys ("SHOP-412") are left alone:
- * without a link there is no telling where they live. Pure.
+ * when the text names it: a markdown link's text (`[Guest checkout](url)`), else a name set off from
+ * the link in a list item (`- Guest checkout flake: url`). Names never come from code or overlong
+ * lines. Bare keys ("SHOP-412") are left alone: without a link there is no telling where they live. Pure.
  */
 export function findTickets(text: string): TicketLink[] {
   const found = new Map<string, TicketLink>();
-  const named = new Map<string, string>();
-  for (const [, label, url] of text.matchAll(MD_LINKS)) {
-    const t = parseTicketUrl(url!);
-    const name = t && nameFrom(label!, t);
-    if (t && name && !named.has(t.ref)) named.set(t.ref, name);
-  }
+  const linked = new Map<string, string>();
+  const listed = new Map<string, string>();
+  let fenced = false;
   for (const line of text.split('\n')) {
+    const fence = /^\s*(?:`{3,}|~{3,})/.test(line);
+    if (fence) fenced = !fenced;
     const links = [...line.matchAll(URLS)].map(([m]) => m.replace(/[.,;:!?*_~]+$/, ''));
     for (const url of links) {
       // Sentence punctuation and markdown emphasis after a link are not part of it.
       const t = parseTicketUrl(url);
-      if (!t) continue;
-      if (!found.has(t.ref)) found.set(t.ref, t);
-      if (!named.has(t.ref) && links.length === 1 && !line.includes('](')) {
-        const name = nameOnLine(line, url, t);
-        if (name) named.set(t.ref, name);
-      }
+      if (t && !found.has(t.ref)) found.set(t.ref, t);
     }
+    if (fenced || fence || line.length > NAMED_LINE_MAX || !links.length) continue;
+    const prose = line.replace(/`[^`]*`/g, (code) => ' '.repeat(code.length));
+    for (const [, label, url] of prose.matchAll(MD_LINKS)) {
+      const t = parseTicketUrl(url!);
+      const name = t && nameFrom(label!, t);
+      if (t && name && !linked.has(t.ref)) linked.set(t.ref, name);
+    }
+    const urls = [...prose.matchAll(URLS)].map(([m]) => m.replace(/[.,;:!?*_~]+$/, ''));
+    const t = urls.length === 1 && !prose.includes('](') ? parseTicketUrl(urls[0]!) : undefined;
+    const name = t && !listed.has(t.ref) && nameOnLine(prose, urls[0]!, t);
+    if (t && name) listed.set(t.ref, name);
   }
-  return [...found.values()].map((t) => (named.has(t.ref) ? { ...t, title: named.get(t.ref)! } : t));
+  return [...found.values()].map((t) => {
+    const title = linked.get(t.ref) ?? listed.get(t.ref);
+    return title ? { ...t, title } : t;
+  });
 }
 
 /**
@@ -218,12 +233,15 @@ export function ticketLabel(t: Pick<LinkedTicket, 'provider' | 'kind' | 'key' | 
  * their links, for link_ticket to title once it knows them. The UI leaves it out (stripTicketsNote).
  */
 export function ticketsNote(urls: string[]): string {
-  return `<tickets>\nLinked to this round-up without a title: ${urls.join(' ')}\nOnce you know a ticket's name, set it with link_ticket.\n</tickets>`;
+  return `<tickets>\n${NOTE_LEAD}${urls.join(' ')}\n${NOTE_ASK}\n</tickets>`;
 }
 
-const TICKETS_NOTE = /\n*<tickets>\n[^]*?\n<\/tickets>\s*$/;
+const NOTE_LEAD = 'Linked to this round-up without a title: ';
+const NOTE_ASK = "Once you know a ticket's name, set it with link_ticket.";
+/** Only the note exactly as ticketsNote writes it: a message of the person's own that ends in a `<tickets>` block stays. */
+const TICKETS_NOTE = new RegExp(`\\n*<tickets>\\n${NOTE_LEAD}[^\\n]*\\n${NOTE_ASK.replace(/[.]/g, '\\.')}\\n</tickets>$`);
 
-/** A turn's text without its `<tickets>` note. */
+/** A turn's text without Kelpie's `<tickets>` note. */
 export const stripTicketsNote = (text: string): string => text.replace(TICKETS_NOTE, '');
 
 export const TICKET_PROVIDER_NAME: Record<TicketProvider, string> = { jira: 'Jira', asana: 'Asana' };

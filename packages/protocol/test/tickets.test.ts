@@ -121,13 +121,17 @@ Also [SHOP-420](https://acme.atlassian.net/browse/SHOP-420), [here](https://app.
     ]);
   });
 
-  it('takes a name set off from the only link on its line', () => {
+  it("strips only the Jira key itself from a link's text", () => {
+    expect(titles('[SHOP-4120 Rounding](https://acme.atlassian.net/browse/SHOP-412)')).toEqual([['SHOP-412', 'SHOP-4120 Rounding']]);
+  });
+
+  it('takes a name set off from the only link in a list item', () => {
     expect(
       titles(`Fix these:
 - Checkout flake on Safari: https://app.asana.com/0/1201/11
 - https://app.asana.com/0/1201/12 — Login loop after SSO
 2. Search results empty | <https://app.asana.com/0/1201/13>
-SHOP-9 - Refund rounding - https://acme.atlassian.net/browse/SHOP-9`),
+- SHOP-9 - Refund rounding - https://acme.atlassian.net/browse/SHOP-9`),
     ).toEqual([
       ['asana:task:11', 'Checkout flake on Safari'],
       ['asana:task:12', 'Login loop after SSO'],
@@ -147,6 +151,39 @@ Checkout: https://app.asana.com/0/1201/26
 Both - https://app.asana.com/0/1201/27 https://app.asana.com/0/1201/28
 https://app.asana.com/0/1201/29`),
     ).toEqual(['21', '22', '23', '24', '25', '26', '27', '28', '29'].map((id) => [`asana:task:${id}`, undefined]));
+  });
+
+  it('takes names from list items only, never from prose, quotes, headings, code or images', () => {
+    expect(
+      titles(`Hey team: https://app.asana.com/0/1201/41
+Steps to reproduce: https://app.asana.com/0/1201/42
+> Quoted text: https://app.asana.com/0/1201/43
+## Background: https://app.asana.com/0/1201/44
+- Blocked by: https://app.asana.com/0/1201/45
+- Not urgent, but: https://app.asana.com/0/1201/46
+- fixed in PR #12 - https://app.asana.com/0/1201/47
+- \`Some code: https://app.asana.com/0/1201/48\`
+\`\`\`
+- Checkout flake: https://app.asana.com/0/1201/49
+[In a fence](https://app.asana.com/0/1201/50)
+\`\`\`
+![Screenshot of it](https://app.asana.com/0/1201/51)
+> - Quoted list item: https://app.asana.com/0/1201/52`),
+    ).toEqual([
+      ...['41', '42', '43', '44', '45', '46', '47', '48', '49', '50', '51'].map((id) => [`asana:task:${id}`, undefined]),
+      ['asana:task:52', 'Quoted list item'],
+    ]);
+  });
+
+  it('only finds the links on overlong lines, quickly', () => {
+    const started = performance.now();
+    const found = findTickets(`- ${' '.repeat(40_000)}*${'*'.repeat(40_000)}x Name: https://app.asana.com/0/1201/61`);
+    expect(performance.now() - started).toBeLessThan(200);
+    expect(found.map((t) => [t.ref, t.title])).toEqual([['asana:task:61', undefined]]);
+  });
+
+  it('prefers a markdown link\'s text to a list item\'s name', () => {
+    expect(titles('- Flaky: https://app.asana.com/0/1201/71 — Checkout flake\n[Checkout flake on Safari](https://app.asana.com/0/1201/71)')).toEqual([['asana:task:71', 'Checkout flake on Safari']]);
   });
 
   it('names a ticket by its first named mention', () => {
@@ -170,5 +207,10 @@ describe('ticketsNote', () => {
     const turn = `Look at these\n\n${ticketsNote(['https://app.asana.com/0/1/2'])}`;
     expect(turn).toContain('without a title: https://app.asana.com/0/1/2');
     expect(stripTicketsNote(turn)).toBe('Look at these');
+  });
+
+  it("leaves a <tickets> block of the person's own alone", () => {
+    const own = 'Here is my list\n\n<tickets>\nSHOP-1, SHOP-2\n</tickets>';
+    expect(stripTicketsNote(own)).toBe(own);
   });
 });
