@@ -71,6 +71,13 @@
       "when": 1792903530993,
       "tag": "0009_permission-rules",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1792983362380,
+      "tag": "0010_tickets",
+      "breakpoints": true
     }
   ]
 }

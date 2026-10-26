@@ -17,6 +17,7 @@ import { WorkingStatus } from '@/components/chat/working-status';
 import { AgentCrumb } from '@/components/shell/agent-crumb';
 import { KelpieLogo } from '@/components/shell/brand';
 import { Search } from '@/components/shell/search';
+import { TicketChips } from '@/components/shell/tickets';
 import { AppSidebar } from '@/components/shell/sidebar';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -55,7 +56,7 @@ function useNavOpen(): [boolean, (open: boolean) => void] {
   return [open, set];
 }
 
-/** The round-up's name in the display face, with its repo and what it is up to. */
+/** The round-up's name in the display face, with its repo, what it is up to, and its tickets. */
 function TitleBlock({ roundUp, agents }: { roundUp: RoundUp; agents: AgentSummary[] }) {
   const now = useNow();
   return (
@@ -72,6 +73,14 @@ function TitleBlock({ roundUp, agents }: { roundUp: RoundUp; agents: AgentSummar
           ·
         </span>
         <span>{roundUpSummary(roundUp, agents, now)}</span>
+        {!!roundUp.tickets?.length && (
+          <>
+            <span aria-hidden="true" className="text-fa">
+              ·
+            </span>
+            <TicketChips tickets={roundUp.tickets} />
+          </>
+        )}
       </div>
     </div>
   );

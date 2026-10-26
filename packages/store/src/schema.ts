@@ -159,3 +159,29 @@ export const permissionRules = sqliteTable(
   },
   (t) => [unique('permission_rules_round_up_rule').on(t.roundUpId, t.rule)],
 );
+
+/**
+ * Jira and Asana tickets linked to a round-up: found in the person's messages, or linked by its
+ * orchestrator. Known only by their links (Kelpie never calls Jira or Asana). `ref` is what makes
+ * two links the same ticket (see `parseTicketUrl`), so each is listed once.
+ */
+export const tickets = sqliteTable(
+  'tickets',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    roundUpId: text('round_up_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    ref: text('ref').notNull(),
+    provider: text('provider', { enum: ['jira', 'asana'] }).notNull(),
+    kind: text('kind', { enum: ['issue', 'task', 'project'] }).notNull(),
+    url: text('url').notNull(),
+    /** A Jira issue's key; Asana links carry none. */
+    key: text('key'),
+    /** A readable name, once the orchestrator gives one. */
+    title: text('title'),
+    source: text('source', { enum: ['auto', 'orchestrator'] }).notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [unique('tickets_round_up_ref').on(t.roundUpId, t.ref)],
+);

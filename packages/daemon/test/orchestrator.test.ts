@@ -380,6 +380,48 @@ describe('orchestrator round-ups', () => {
     expect(() => ctx.orch.read(intruder, data.agentId)).toThrow(/no such agent/);
   });
 
+  it("links the tickets in the person's messages to the round-up, and tells watchers", async () => {
+    const ctx = setup({ FAKE_HANG: '1' });
+    const seen: unknown[][] = [];
+    const unwatch = ctx.sessions.watch((u) => u.type === 'session' && !u.session.parentId && seen.push(u.session.tickets));
+    const parent = ctx.sessions.create();
+    await parent.send('Ship guest checkout: https://acme.atlassian.net/browse/SHOP-412 and https://app.asana.com/0/1201/list. Also SHOP-999.');
+    expect(parent.info().tickets).toMatchObject([
+      { provider: 'jira', kind: 'issue', key: 'SHOP-412', url: 'https://acme.atlassian.net/browse/SHOP-412', source: 'auto' },
+      { provider: 'asana', kind: 'project', url: 'https://app.asana.com/0/1201/list', source: 'auto' },
+    ]);
+    expect(seen.at(-1)).toHaveLength(2);
+    // A link to one the round-up has changes nothing; one sent to an agent is the round-up's too.
+    const agent = ctx.sessions.create(undefined, { parentId: parent.id, role: 'agent', title: 'A' });
+    const before = seen.length;
+    await parent.send('again https://acme.atlassian.net/jira/software/projects/SHOP/boards/3?selectedIssue=SHOP-412');
+    expect(seen.slice(before).every((t) => t.length === 2)).toBe(true);
+    await agent.send('see https://acme.atlassian.net/browse/SHOP-420');
+    expect(parent.info().tickets.map((t) => t.key ?? t.kind)).toEqual(['SHOP-412', 'project', 'SHOP-420']);
+    expect(agent.info().tickets).toEqual([]);
+    unwatch();
+  });
+
+  it('lets the orchestrator link, title and unlink tickets', async () => {
+    const ctx = setup({ FAKE_HANG: '1' });
+    const { parent, call } = await orchestrator(ctx);
+    const linked = await call('link_ticket', { url: 'https://app.asana.com/0/1201/list', title: 'Q4 checkout launch' });
+    expect(linked.data.tickets).toMatchObject([{ provider: 'asana', kind: 'project', title: 'Q4 checkout launch', source: 'orchestrator' }]);
+    await call('link_ticket', { url: 'https://acme.atlassian.net/browse/SHOP-412' });
+    // Linking again, by another link to it, titles it.
+    await call('link_ticket', { url: 'https://acme.atlassian.net/jira/software/c/projects/SHOP/issues/SHOP-412', title: 'Guest checkout API' });
+    expect(parent.info().tickets.map((t) => [t.key, t.title])).toEqual([
+      [undefined, 'Q4 checkout launch'],
+      ['SHOP-412', 'Guest checkout API'],
+    ]);
+    expect((await call('link_ticket', { url: 'https://github.com/acme/web/issues/3' })).error).toMatch(/not a Jira issue or Asana/);
+    expect((await call('link_ticket', { url: 'SHOP-412' })).error).toMatch(/not a Jira issue or Asana/);
+    const { data } = await call('unlink_ticket', { url: 'https://app.asana.com/0/1201' });
+    expect(data.tickets.map((t: { key?: string }) => t.key)).toEqual(['SHOP-412']);
+    expect((await call('unlink_ticket', { url: 'https://app.asana.com/0/1201' })).error).toMatch(/no such ticket/);
+    expect(ctx.store.ticketsOf(parent.id)).toHaveLength(1);
+  });
+
   it('deletes sub-agents with their orchestrator', async () => {
     const ctx = setup({ FAKE_HANG: '1' });
     const { parent, call } = await orchestrator(ctx);

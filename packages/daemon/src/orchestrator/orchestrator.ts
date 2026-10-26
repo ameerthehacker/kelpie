@@ -3,7 +3,7 @@ import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
 import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
-import { Harness, type AgentUpdate, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
+import { Harness, parseTicketUrl, type AgentUpdate, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
 import { logLines, report, type AgentReport, type LogPage } from './digest.js';
@@ -568,6 +568,21 @@ export class Orchestrator implements SessionHooks {
       const mime = getMimeType(path);
       return { name: basename(path), size: stat.size, path, ...(mime ? { mime } : {}) };
     });
+  }
+
+  /** Links a Jira or Asana ticket to the round-up, or titles one already linked. */
+  linkTicket(parent: Session, url: string, title?: string): { tickets: LinkedTicket[] } {
+    const t = parseTicketUrl(url);
+    if (!t) throw new ToolError(`not a Jira issue or Asana task or project link: ${url}. Pass the ticket's own page, e.g. https://<org>.atlassian.net/browse/KEY-123 or https://app.asana.com/0/<project>/<task>.`);
+    parent.linkTickets([t], 'orchestrator', title);
+    return { tickets: parent.tickets() };
+  }
+
+  /** Unlinks a ticket from the round-up, by any link to it. */
+  unlinkTicket(parent: Session, url: string): { tickets: LinkedTicket[] } {
+    const t = parseTicketUrl(url);
+    if (!t || !parent.unlinkTicket(t.ref)) throw new ToolError(`no such ticket is linked to this round-up: ${url}`);
+    return { tickets: parent.tickets() };
   }
 
   async interrupt(parent: Session, agentId: string): Promise<{ status: string }> {

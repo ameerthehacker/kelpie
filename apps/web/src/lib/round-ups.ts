@@ -1,4 +1,4 @@
-import type { Mode } from '@kelpie/protocol';
+import type { LinkedTicket, Mode } from '@kelpie/protocol';
 import { formatDistanceStrict } from 'date-fns';
 import { generatePath } from 'react-router';
 import type { AgentStatus } from './agents.js';
@@ -34,6 +34,8 @@ export interface RoundUp {
   baseCommit?: string;
   /** How freely its agents work; a sub-agent reports its round-up's. */
   mode: Mode;
+  /** Jira and Asana tickets linked to a top-level round-up, in the order they were linked. */
+  tickets?: LinkedTicket[];
 }
 
 export const NEW_TITLE = 'New round-up';
