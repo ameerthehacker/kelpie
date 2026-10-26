@@ -1,6 +1,7 @@
 import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { parseTicketUrl, type KelpieEvent, type TicketLink } from '@kelpie/protocol';
 import { openStore } from '../src/index.js';
@@ -91,7 +92,7 @@ describe('store', () => {
     cpSync(join(import.meta.dirname, '../drizzle'), before, { recursive: true });
     const journal = join(before, 'meta/_journal.json');
     const j = JSON.parse(readFileSync(journal, 'utf8')) as { entries: { tag: string }[] };
-    expect(j.entries.at(-1)!.tag).toBe('0014_settings');
+    expect(j.entries.map((e) => e.tag)).toContain('0014_settings');
     j.entries = j.entries.filter((e) => e.tag < '0014');
     writeFileSync(journal, JSON.stringify(j));
     const path = join(dir, 'kelpie.db');
@@ -104,6 +105,31 @@ describe('store', () => {
     expect(store.settings()).toEqual({});
     store.setSettings({ maxAgents: 3 });
     expect(store.settings()).toEqual({ maxAgents: 3 });
+    store.close();
+  });
+
+  it("marks titles a store had before title sources as the orchestrator's (only it could title one)", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
+    const before = join(dir, 'drizzle');
+    cpSync(join(import.meta.dirname, '../drizzle'), before, { recursive: true });
+    const journal = join(before, 'meta/_journal.json');
+    const j = JSON.parse(readFileSync(journal, 'utf8')) as { entries: { tag: string }[] };
+    j.entries = j.entries.filter((e) => e.tag < '0015');
+    writeFileSync(journal, JSON.stringify(j));
+    const path = join(dir, 'kelpie.db');
+    const raw = openStore(path, { migrationsFolder: before });
+    raw.createSession({ id: 'r', cwd: '/r' });
+    raw.close();
+    const db = new Database(path);
+    const insert = db.prepare("insert into tickets (round_up_id, ref, provider, kind, url, title, source, created_at) values ('r', ?, 'asana', 'task', ?, ?, 'auto', 1)");
+    insert.run('asana:task:1', 'https://app.asana.com/0/0/1', 'Checkout flake');
+    insert.run('asana:task:2', 'https://app.asana.com/0/0/2', null);
+    db.close();
+    const store = openStore(path);
+    expect(store.ticketsOf('r').map((t) => [t.ref, t.title, t.titleSource])).toEqual([
+      ['asana:task:1', 'Checkout flake', 'orchestrator'],
+      ['asana:task:2', null, null],
+    ]);
     store.close();
   });
 
