@@ -173,7 +173,14 @@ describe('worktrees for writing agents', () => {
     writeFileSync(join(copy!.cwd, 'app.txt'), 'one\nTWO (copy)\nthree\n');
 
     expect((await call('muster_agents', { agentIds: [solo!.id] })).error).toMatch(/standalone/);
+    // A sub-agent's session says whether its branch still waits to be mustered (the round-up's dot reads it), and says so again once it is.
+    expect(api!.info()).toMatchObject({ branch: ctx.store.worktreeOf(api!.id)!.branch, worktree: 'active' });
+    expect(solo!.info()).toMatchObject({ deliver: 'standalone' });
+    const heard: string[] = [];
+    const unwatch = ctx.sessions.watch((u) => u.type === 'session' && u.session.id === api!.id && heard.push(u.session.worktree ?? ''));
     const { data, error } = await call('muster_agents', { agentIds: [api!.id, docs!.id, copy!.id], notes: 'API wins on line two' });
+    unwatch();
+    expect(heard).toContain('mustered');
     expect(error).toBeUndefined();
     expect(data.merged).toEqual(['API', 'Docs']);
     expect(data.muster.branches).toEqual([ctx.store.worktreeOf(copy!.id)!.branch]);

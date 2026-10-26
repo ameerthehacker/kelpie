@@ -12,7 +12,8 @@ import { useNow } from '@/hooks/use-now';
 import { useRoundUpStatus } from '@/hooks/use-round-up-status';
 import { useUsage } from '@/hooks/use-usage';
 import { harnessOf } from '@/lib/harnesses';
-import { relativeTime, ROUND_UP_STATUS_LABEL, roundUpPath, statusLine, titleOf, type RoundUp, type RoundUpStatus } from '@/lib/round-ups';
+import { relativeTime, roundUpPath, statusLine, titleOf, type RoundUp } from '@/lib/round-ups';
+import { GROUP_LABEL, type PlanGroup } from '@/lib/status';
 import { setTheme, useTheme, type Theme } from '@/lib/theme';
 import { metersOf } from '@/lib/usage';
 import { cn } from '@/lib/utils';
@@ -29,24 +30,25 @@ interface RowProps {
   /** How many things it is waiting on the person for. */
   waiting: number;
   /** The whole round-up's state, its sub-agents included (see `roundUpStatus`). */
-  status: RoundUpStatus | undefined;
+  status: PlanGroup | undefined;
 }
 
 /**
  * A round-up in the list: its title, and a dot for the whole round-up — how many things wait on the
- * person, red if a turn failed, pulsing while anything works, green once done. Rename and delete on its menu.
+ * person, red if a turn failed, pulsing while anything works, a green ring while branches wait to be
+ * merged, a grey one if stopped, green once done. Rename and delete on its menu.
  */
 function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, waiting, status }: RowProps) {
   const [editing, setEditing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   // Read out with the link, and its tooltip: the dot is hidden under the menu button on hover.
   const label =
-    status === 'needs-approval'
-      ? `${ROUND_UP_STATUS_LABEL[status]} · ${waiting} waiting on you`
+    status === 'needs-you'
+      ? `${GROUP_LABEL[status]} · ${waiting} waiting`
       : status === 'working'
-        ? ROUND_UP_STATUS_LABEL[status]
+        ? GROUP_LABEL[status]
         : status
-          ? `${ROUND_UP_STATUS_LABEL[status]} · ${relativeTime(roundUp.updatedAt, now)}`
+          ? `${GROUP_LABEL[status]} · ${relativeTime(roundUp.updatedAt, now)}`
           : statusLine(roundUp, now).text;
 
   useEffect(() => {
@@ -85,15 +87,15 @@ function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, wait
         onClick={onNavigate}
         className={cn('hover:bg-hov flex h-[38px] items-center gap-2.5 rounded-[10px] pr-9 pl-3 text-sm', active && 'bg-sel font-medium')}
       >
-        <span className={cn('min-w-0 flex-1 truncate', active || status === 'working' || status === 'needs-approval' ? 'text-fg' : 'text-mu', status === 'failed' && 'text-fail')}>
+        <span className={cn('min-w-0 flex-1 truncate', active || status === 'working' || status === 'needs-you' ? 'text-fg' : 'text-mu', status === 'failed' && 'text-fail')}>
           {titleOf(roundUp)}
         </span>
         <span className="sr-only">{label}</span>
       </Link>
-      {status === 'needs-approval' && waiting > 0 ? (
+      {status === 'needs-you' && waiting > 0 ? (
         <span
           aria-hidden="true"
-          className="bg-wait absolute top-1/2 right-2 min-w-5 -translate-y-1/2 rounded-full px-1.5 text-center text-[11px] leading-5 font-semibold text-white group-hover/row:opacity-0"
+          className="bg-wait text-onwait absolute top-1/2 right-2 min-w-5 -translate-y-1/2 rounded-full px-1.5 text-center text-[11px] leading-5 font-semibold group-hover/row:opacity-0"
         >
           {waiting}
         </span>

@@ -249,7 +249,7 @@ export function App() {
                       ),
                     )}
                     {/* Whenever the composer offers stop: the same busy state, whoever started the turn. */}
-                    {busy && <WorkingStatus events={events} agents={agents ?? NO_AGENTS} />}
+                    <WorkingStatus busy={busy} events={events} agents={agents ?? NO_AGENTS} />
                   </ConversationContent>
                   <ConversationScrollButton />
                 </ChatLog>
@@ -258,7 +258,7 @@ export function App() {
                   {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
                   {/* The plan sits outside the chat flow, always in view while agents work. */}
                   {roundUpId && <ApprovalTray approvals={approvals} roundUpId={current?.role === 'agent' ? (current.parentId ?? roundUpId) : roundUpId} inChat={roundUpId} />}
-                  {agents?.length ? <PlanDock /> : <TodoDock todos={todos} />}
+                  {agents?.length ? <PlanDock settledAt={current?.updatedAt} /> : <TodoDock todos={todos} />}
                   <Composer
                     status={status}
                     busy={busy}

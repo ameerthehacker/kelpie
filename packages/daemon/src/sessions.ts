@@ -5,7 +5,7 @@ import { basename, extname, join } from 'node:path';
 import { attachmentsBlock, mergeUsage, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
 import { claudeCode, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
-import { nowOf, SUMMARY_KINDS, type AgentSummary } from './agent-summary.js';
+import { nowOf, SUMMARY_KINDS, type AgentSummary, type Now } from './agent-summary.js';
 
 export type TurnStatus = EventData<'turn.ended'>['status'];
 
@@ -37,6 +37,10 @@ export interface SessionInfo {
   baseCommit: string | undefined;
   /** The round-up's mode; a sub-agent reports its round-up's. */
   mode: Mode;
+  /** A sub-agent's own branch and its worktree's state, as in its AgentSummary: whether its work still waits to be mustered. */
+  branch?: string;
+  deliver?: 'muster' | 'standalone';
+  worktree?: 'creating' | 'active' | 'mustered' | 'removed';
 }
 
 /** What subscribers receive. `index` is the event's position in the session log (stable across runs and restarts). */
@@ -253,7 +257,7 @@ export class Session {
   private lastTurnState: TurnStatus | undefined;
   /** For a sub-agent's summary: kept current from its events. */
   private todosState: TodoItem[] = [];
-  private nowState = '';
+  private nowState: Now = { now: '' };
   private modelState: string | undefined;
 
   constructor(
@@ -418,6 +422,7 @@ export class Session {
       baseBranch: baseBranch ?? undefined,
       baseCommit: baseCommit ?? undefined,
       mode: this.mode,
+      ...(parentId ? this.worktreeSummary() : {}),
     };
   }
 
@@ -433,7 +438,7 @@ export class Session {
       model: this.modelState ?? this.row.model ?? undefined,
       writes,
       status: this.working ? (this.asking.size ? 'needs-approval' : 'working') : t === 'completed' ? 'done' : t === 'failed' ? 'failed' : t === 'interrupted' ? 'stopped' : 'idle',
-      now: this.nowState,
+      ...this.nowState,
       todos: this.todosState,
       kind: this.row.kind,
       ...this.worktreeSummary(),
@@ -591,9 +596,11 @@ export class Session {
     if (this.row.resumePending) this.update({ resumePending: false });
   }
 
-  /** Something about a sub-agent outside its log changed (e.g. its branch was mustered): the pane hears. */
+  /** Something about a sub-agent outside its log changed (e.g. its branch was mustered): the pane and the round-up's dot hear. */
   summaryChanged(): void {
-    if (this.row.parentId) this.ctx.agentChanged(this);
+    if (!this.row.parentId) return;
+    this.ctx.agentChanged(this);
+    this.ctx.changed(this);
   }
 
   /** Records that the orchestrator has been told about this sub-agent up to log index `index`. */
