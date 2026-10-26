@@ -66,6 +66,16 @@ describe('classifying', () => {
     const plan = ask({ tool: 'ExitPlanMode', sessionId: 'r1', agentTitle: 'Kelpie' });
     expect(newApprovals(new Set([`a1:${a.requestId}`]), [a, plan]).map((i) => i.kind)).toEqual(['plan']);
   });
+
+  it('tells questions from approvals, the orchestrator asking as Kelpie', () => {
+    const questions = [{ question: 'Which color?', options: [{ label: 'Red' }, { label: 'Blue' }] }];
+    const q = ask({ tool: 'AskUserQuestion', questions });
+    const mine = ask({ tool: 'AskUserQuestion', questions, sessionId: 'r1', agentTitle: 'Fix login' });
+    expect(newApprovals(new Set(), [q, mine]).map((i) => [i.kind, i.who])).toEqual([
+      ['question', 'Checkout API'],
+      ['question', 'Kelpie'],
+    ]);
+  });
 });
 
 describe('summarizing', () => {
@@ -76,6 +86,13 @@ describe('summarizing', () => {
   it('names one round-up, counts the agents asking, and opens the round-up', () => {
     const s = summarize([item('approval'), item('approval', { sessionId: 'a2' }), item('approval', { sessionId: 'a3' }), item('reply', { sessionId: 'r1', who: 'Kelpie' })], titleOf);
     expect(s).toEqual({ title: 'Fix login', body: '3 agents need approval · Kelpie replied', path: '/r/r1' });
+  });
+
+  it('says who has questions, after approvals and before plans', () => {
+    expect(summarize([item('question')], titleOf)).toEqual({ title: 'Fix login', body: 'Checkout API has a question', path: '/r/r1' });
+    expect(summarize([item('plan'), item('question', { sessionId: 'r1', who: 'Kelpie' }), item('question', { sessionId: 'r1', who: 'Kelpie' })], titleOf)?.body).toBe('Kelpie has questions · A plan is ready for review');
+    expect(summarize([item('question'), item('question', { sessionId: 'a2' }), item('approval')], titleOf)?.body).toBe('Checkout API needs approval · 2 agents have questions');
+    expect(summarize([item('question'), item('question', { roundUpId: 'r2', sessionId: 'b1' })], titleOf)?.path).toBe('/approvals');
   });
 
   it('counts one agent asking twice once', () => {
@@ -165,6 +182,22 @@ describe('the tracker', () => {
     t.approvals('r1', [a]);
     vi.advanceTimersByTime(BUNDLE_MS);
     expect(delivered).toHaveLength(1);
+  });
+
+  it('notifies for a question, and drops it once answered', () => {
+    const questions = [{ question: 'Which color?', options: [{ label: 'Red' }, { label: 'Blue' }] }];
+    const t = seeded();
+    const q = ask({ tool: 'AskUserQuestion', questions });
+    t.approvals('r1', [q]);
+    vi.advanceTimersByTime(BUNDLE_MS);
+    expect(bodies()).toEqual(['Checkout API has a question']);
+    expect(t.unseen().map((i) => i.kind)).toEqual(['question']);
+    // Answered (anywhere): no longer news the next time the notification is updated.
+    t.approvals('r1', []);
+    t.session(top({ busy: true }));
+    t.session(top({ lastTurn: 'completed' }));
+    vi.advanceTimersByTime(BUNDLE_MS);
+    expect(bodies().at(-1)).toBe('Kelpie replied');
   });
 
   it('drops what was answered before the bundle went out', () => {

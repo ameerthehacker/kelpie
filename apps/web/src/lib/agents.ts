@@ -1,4 +1,4 @@
-import type { TodoItem } from '@kelpie/protocol';
+import type { TodoItem, ToolCategory } from '@kelpie/protocol';
 
 /** A sub-agent at a glance (mirrors the daemon's `AgentSummary`). */
 export interface AgentSummary {
@@ -12,6 +12,8 @@ export interface AgentSummary {
   browser: boolean;
   status: AgentStatus;
   now: string;
+  /** When `now` is a tool call: which tool (absent from older daemons). */
+  nowTool?: { name: string; category: ToolCategory };
   todos: TodoItem[];
   /** Ordinary work, or Muster. */
   kind?: 'worker' | 'muster';
@@ -28,7 +30,7 @@ export type AgentStatus = 'working' | 'needs-approval' | 'done' | 'failed' | 'st
 
 export const STATUS_LABEL: Record<AgentStatus, string> = {
   working: 'Working',
-  'needs-approval': 'Needs approval',
+  'needs-approval': 'Needs you',
   done: 'Done',
   failed: 'Failed',
   stopped: 'Stopped',

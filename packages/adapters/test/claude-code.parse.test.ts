@@ -210,6 +210,42 @@ describe('claude-code mapping', () => {
     expect(req?.data.plan).toMatch(/sub/);
   });
 
+  it('puts structured questions to the person as a permission request carrying them, and reads back the answers', () => {
+    const events = replay('ask');
+    const [req] = of(events, 'permission.requested');
+    expect(req?.data).toMatchObject({
+      tool: 'AskUserQuestion',
+      title: 'Which color should the button be?',
+      questions: [{ question: 'Which color should the button be?', header: 'Color', options: [{ label: 'Red' }, { label: 'Blue' }] }],
+    });
+    expect(req?.data.rule).toBeUndefined();
+    // Allowing it with the answers (in updatedInput) is how they reach the model.
+    const [done] = of(events, 'tool.finished');
+    expect(done?.data).toMatchObject({ name: 'AskUserQuestion', ok: true, output: expect.stringContaining('"Which color should the button be?"="Blue"') });
+    // Skipped (a deny), the tool fails and the model carries on without an answer.
+    expect(of(replay('ask-skip'), 'tool.finished')[0]?.data.ok).toBe(false);
+    // Auto mode, as agents run, still asks us rather than settling it itself.
+    expect(of(replay('ask-auto'), 'permission.requested')[0]?.data.tool).toBe('AskUserQuestion');
+  });
+
+  it('keeps only well-formed questions, and titles several by their count', () => {
+    const parser = newParser();
+    const [req] = of(
+      parser.parse({
+        type: 'control_request',
+        request_id: 'q',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'AskUserQuestion',
+          input: { questions: [{ question: 'A?', header: '', options: [{ label: 'x', description: '' }, { nope: 1 }], multiSelect: true }, { question: 'B?', options: [] }, 'junk'] },
+        },
+      }),
+      'permission.requested',
+    );
+    expect(req?.data.title).toBe('Answer 2 questions');
+    expect(req?.data.questions).toEqual([{ question: 'A?', options: [{ label: 'x' }], multiSelect: true }, { question: 'B?', options: [] }]);
+  });
+
   it('gives a compound command no rule, so allowing one part can never let the rest through', () => {
     const parser = newParser();
     const [req] = of(
@@ -268,6 +304,57 @@ describe('claude-code mapping', () => {
     expect(of(parser.parse({ type: 'control_cancel_request', request_id: 'b' }), 'permission.resolved').map((e) => e.data.by)).toEqual(['cancelled']);
     expect(of(parser.noteExited(), 'permission.resolved').map((e) => [e.data.requestId, e.data.by])).toEqual([['c', 'expired']]);
     expect(parser.permissionInput('c')).toBeUndefined();
+  });
+
+  it('closes a question the person was asked when the turn is interrupted', () => {
+    // The real CLI cancels it itself.
+    const events = replay('ask-interrupt');
+    const [req] = of(events, 'permission.requested');
+    expect(of(events, 'permission.resolved').map((e) => [e.data.requestId, e.data.by])).toEqual([[req!.data.requestId, 'cancelled']]);
+    expect(of(events, 'turn.ended')[0]?.data.status).toBe('interrupted');
+
+    // Were it not to, the turn's end closes it; a sub-agent's request outlives the turn.
+    const parser = newParser();
+    parser.parse({ type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 'mine', name: 'AskUserQuestion', input: {} }] } });
+    parser.parse({ type: 'assistant', parent_tool_use_id: 'agent', message: { content: [{ type: 'tool_use', id: 'theirs', name: 'Bash', input: { command: 'ls' } }] } });
+    const ask = (id: string, callId: string, tool: string) => parser.parse({ type: 'control_request', request_id: id, request: { subtype: 'can_use_tool', tool_name: tool, tool_use_id: callId, input: {} } });
+    ask('q', 'mine', 'AskUserQuestion');
+    ask('b', 'theirs', 'Bash');
+    // A turn that simply ends leaves them be.
+    expect(of(parser.parse({ type: 'result', subtype: 'success', usage: {} }), 'permission.resolved')).toEqual([]);
+    const ended = parser.parse({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_streaming', usage: {} });
+    expect(of(ended, 'permission.resolved').map((e) => [e.data.requestId, e.data.by])).toEqual([['q', 'expired']]);
+    expect(parser.permissionInput('q')).toBeUndefined();
+    expect(parser.permissionInput('b')).toEqual({});
+  });
+
+  it('carries text and number questions, with their range, and option previews', () => {
+    const parser = newParser();
+    const [req] = of(
+      parser.parse({
+        type: 'control_request',
+        request_id: 'k',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'AskUserQuestion',
+          input: {
+            questions: [
+              { question: 'Name?', kind: 'text', placeholder: 'kelp', description: 'One word', options: [{ label: 'stray' }], multiSelect: true },
+              { question: 'Slides?', kind: 'number', min: 3, max: 20, step: 1, defaultValue: 8, unit: 'slides', placeholder: 'no' },
+              { question: 'Layout?', kind: 'choice', options: [{ label: 'Grid', preview: '[][]' }, { label: 'List' }], min: 1 },
+            ],
+          },
+        },
+      }),
+      'permission.requested',
+    );
+    expect(req?.data.questions).toEqual([
+      { question: 'Name?', kind: 'text', placeholder: 'kelp', description: 'One word', options: [] },
+      { question: 'Slides?', kind: 'number', min: 3, max: 20, step: 1, defaultValue: 8, unit: 'slides', options: [] },
+      { question: 'Layout?', options: [{ label: 'Grid', preview: '[][]' }, { label: 'List' }] },
+    ]);
+    // Asked for them in Kelpie's mode (stdio permission prompts), the CLI offers no kinds: the model asks a choice.
+    expect(of(replay('ask-kinds'), 'permission.requested')[0]?.data.questions?.every((q) => !q.kind && q.options.length >= 2)).toBe(true);
   });
 
   it('keeps unknown events as `other`', () => {

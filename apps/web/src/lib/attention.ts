@@ -1,4 +1,4 @@
-import { isPlan, type PendingApproval } from './approvals.js';
+import { isPlan, isQuestion, type PendingApproval } from './approvals.js';
 import { roundUpPath, titleOf as roundUpTitle, type RoundUp } from './round-ups.js';
 
 /**
@@ -14,7 +14,7 @@ export interface AttentionSettings {
   enabled: boolean;
   sound: boolean;
   /**
-   * `needed`: approvals, plans and failures straight away, and Kelpie's (the orchestrator's) replies
+   * `needed`: approvals, questions, plans and failures straight away, and Kelpie's (the orchestrator's) replies
    * once its round-up has gone fully idle. `all`: also every sub-agent finishing.
    */
   level: AttentionLevel;
@@ -38,7 +38,7 @@ export function parseSettings(raw: string | null): AttentionSettings {
 }
 
 /** In priority order: what a mixed bundle leads with and where clicking it goes. */
-export const ATTENTION_KINDS = ['approval', 'plan', 'failed', 'reply', 'finished'] as const;
+export const ATTENTION_KINDS = ['approval', 'question', 'plan', 'failed', 'reply', 'finished'] as const;
 export type AttentionKind = (typeof ATTENTION_KINDS)[number];
 
 export interface Attention {
@@ -96,16 +96,23 @@ export function classifySession(prev: SessionLike | undefined, next: SessionLike
 
 export const approvalKey = (a: Pick<PendingApproval, 'sessionId' | 'requestId'>) => `${a.sessionId}:${a.requestId}`;
 
-/** Approvals and plans not seen before. */
+/** What kind of thing an open request asks of the person. */
+export const requestKind = (a: PendingApproval): 'approval' | 'question' | 'plan' => (isPlan(a) ? 'plan' : isQuestion(a) ? 'question' : 'approval');
+
+/** The kinds that are open requests: news only while still open. */
+export const isRequestKind = (k: AttentionKind) => k === 'approval' || k === 'question' || k === 'plan';
+
+/** Approvals, questions and plans not seen before. */
 export function newApprovals(known: ReadonlySet<string>, list: readonly PendingApproval[]): Attention[] {
   return list
     .filter((a) => !known.has(approvalKey(a)))
     .map((a) => ({
-      kind: isPlan(a) ? 'plan' : 'approval',
+      kind: requestKind(a),
       roundUpId: a.roundUpId,
       sessionId: a.sessionId,
-      who: a.agentTitle,
-      key: `${isPlan(a) ? 'plan' : 'approval'}:${approvalKey(a)}`,
+      // The orchestrator asks as Kelpie.
+      who: a.sessionId === a.roundUpId ? 'Kelpie' : a.agentTitle,
+      key: `${requestKind(a)}:${approvalKey(a)}`,
     }));
 }
 
@@ -132,6 +139,11 @@ export function summarize(items: readonly Attention[], titleOf: (roundUpId: stri
     const agents = distinct(asks, (i) => i.sessionId);
     lines.push(agents === 1 ? `${asks[0]!.who} needs approval` : `${agents} agents need approval`);
   }
+  const questions = of('question');
+  if (questions.length) {
+    const askers = distinct(questions, (i) => i.sessionId);
+    lines.push(askers === 1 ? `${questions[0]!.who} has ${plural(questions.length, 'a question', 'questions')}` : `${askers} agents have questions`);
+  }
   const plans = of('plan');
   if (plans.length) lines.push(plural(plans.length, 'A plan is ready for review', `${plans.length} plans are ready for review`));
   const failed = of('failed');
@@ -148,7 +160,8 @@ export function summarize(items: readonly Attention[], titleOf: (roundUpId: stri
   if (finished.length) lines.push(finished.length === 1 ? `${finished[0]!.who} finished` : `${finished.length} agents finished`);
 
   const lead = ATTENTION_KINDS.map(of).find((list) => list.length)!;
-  const path = lead[0]!.kind === 'approval' && distinct(lead, (i) => i.roundUpId) > 1 ? '/approvals' : roundUpPath(lead[0]!.roundUpId);
+  const queued = lead[0]!.kind === 'approval' || lead[0]!.kind === 'question';
+  const path = queued && distinct(lead, (i) => i.roundUpId) > 1 ? '/approvals' : roundUpPath(lead[0]!.roundUpId);
   return {
     title: one ? titleOf(roundUps[0]!) : `${roundUps.length} round-ups need you`,
     body: lines.join(' · '),
@@ -215,7 +228,7 @@ export function createAttention(opts: AttentionOptions): AttentionTracker {
   };
   const titleOf = (id: string) => roundUpTitle(known.get(id));
   // Answered meanwhile (here, on another device, by a saved rule): no longer news.
-  const live = (i: Attention) => (i.kind !== 'approval' && i.kind !== 'plan') || pending.has(i.key.slice(i.kind.length + 1));
+  const live = (i: Attention) => !isRequestKind(i.kind) || pending.has(i.key.slice(i.kind.length + 1));
   // Kelpie (or an agent) started again within the bundle window: the reply was one in between.
   const settled = (i: Attention) => i.kind !== 'reply' || fullyIdle(i.roundUpId, known.values());
 

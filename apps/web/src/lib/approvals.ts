@@ -1,3 +1,5 @@
+import type { Question } from '@kelpie/protocol';
+
 /** A harness waiting on the person (mirrors the daemon's `PendingApproval`). */
 export interface PendingApproval {
   roundUpId: string;
@@ -9,6 +11,8 @@ export interface PendingApproval {
   input: unknown;
   rule?: string;
   plan?: string;
+  /** Questions it puts to the person (AskUserQuestion): answered, not allowed. */
+  questions?: Question[];
   ts: string;
 }
 
@@ -34,6 +38,15 @@ export interface SavedRule {
 /** Plans are put to the person in the chat, one at a time; everything else queues. */
 export const isPlan = (a: PendingApproval) => a.tool === 'ExitPlanMode';
 
+/** Questions are answered one by one (each has its own answers), in the chat or from the queue. */
+export const isQuestion = (a: PendingApproval) => !!a.questions?.length;
+
+/** Requests one allow or deny settles: not plans or questions. */
+export const isAsk = (a: PendingApproval) => !isPlan(a) && !isQuestion(a);
+
+/** The questions waiting, oldest first. */
+export const pendingQuestions = (items: readonly PendingApproval[]) => items.filter(isQuestion).sort((x, y) => x.ts.localeCompare(y.ts));
+
 /**
  * Groups identical requests, so ten agents wanting `pnpm install` are one row: the same rule and
  * the same exact ask. Never by rule alone, since a broad rule (`Bash(npm run:*)`) covers different
@@ -41,7 +54,7 @@ export const isPlan = (a: PendingApproval) => a.tool === 'ExitPlanMode';
  */
 export function groupApprovals(items: readonly PendingApproval[]): ApprovalGroup[] {
   const groups = new Map<string, ApprovalGroup>();
-  for (const a of [...items].filter((x) => !isPlan(x)).sort((x, y) => x.ts.localeCompare(y.ts))) {
+  for (const a of [...items].filter(isAsk).sort((x, y) => x.ts.localeCompare(y.ts))) {
     const key = [a.roundUpId, a.tool, a.rule ?? '', a.title].join('\u0000');
     let g = groups.get(key);
     if (!g) groups.set(key, (g = { key, tool: a.tool, label: a.title || a.tool, rule: a.rule, items: [], agents: [] }));
@@ -56,9 +69,15 @@ export function broaderRule(g: Pick<ApprovalGroup, 'tool' | 'label' | 'rule'>): 
   return g.rule && g.rule !== `${g.tool}(${g.label})` ? g.rule : undefined;
 }
 
-/** "3 approvals from 2 agents". */
+/** "3 approvals from 2 agents", "1 question", "2 approvals and 1 question from 3 agents". */
 export function approvalsSummary(items: readonly PendingApproval[]): string {
-  const asks = items.filter((a) => !isPlan(a));
-  const agents = new Set(asks.map((a) => a.sessionId)).size;
-  return `${asks.length} approval${asks.length === 1 ? '' : 's'} from ${agents} agent${agents === 1 ? '' : 's'}`;
+  const asks = items.filter(isAsk);
+  const questions = items.filter(isQuestion);
+  const counted = [...asks, ...questions];
+  const agents = new Set(counted.map((a) => a.sessionId)).size;
+  const parts = [
+    asks.length && `${asks.length} approval${asks.length === 1 ? '' : 's'}`,
+    questions.length && `${questions.length} question${questions.length === 1 ? '' : 's'}`,
+  ].filter(Boolean);
+  return `${parts.join(' and ')} from ${agents} agent${agents === 1 ? '' : 's'}`;
 }

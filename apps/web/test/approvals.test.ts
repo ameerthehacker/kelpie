@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
-import { approvalsSummary, broaderRule, groupApprovals, type PendingApproval } from '../src/lib/approvals.js';
+import { approvalsSummary, broaderRule, groupApprovals, pendingQuestions, type PendingApproval } from '../src/lib/approvals.js';
 import { buildChat, type PlanView } from '../src/lib/chat.js';
 
 const ask = (over: Partial<PendingApproval>): PendingApproval => ({
@@ -41,6 +41,16 @@ describe('approvals', () => {
     expect(groups.map((g) => g.label)).toEqual(['npm run test', 'npm run publish']);
     expect(broaderRule(groups[0]!)).toBe('Bash(npm run:*)');
     expect(broaderRule(groupApprovals([ask({})])[0]!)).toBeUndefined();
+  });
+
+  it('queues questions on their own, oldest first, never grouped with the asks', () => {
+    const questions = [{ question: 'Which color?', options: [{ label: 'Red' }, { label: 'Blue' }] }];
+    const q = (over: Partial<PendingApproval>) => ask({ tool: 'AskUserQuestion', title: 'Which color?', rule: undefined, questions, ...over });
+    const items = [q({ sessionId: 'a2', ts: '2026-01-01T00:00:02.000Z' }), ask({}), q({ sessionId: 'a3', ts: '2026-01-01T00:00:01.000Z' })];
+    expect(groupApprovals(items).map((g) => g.tool)).toEqual(['Bash']);
+    expect(pendingQuestions(items).map((x) => x.sessionId)).toEqual(['a3', 'a2']);
+    expect(approvalsSummary(items)).toBe('1 approval and 2 questions from 3 agents');
+    expect(approvalsSummary([q({})])).toBe('1 question from 1 agent');
   });
 
   it('keeps different round-ups’ asks apart', () => {

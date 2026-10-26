@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo } from 'react';
-import type { Mode } from '@kelpie/protocol';
+import type { Answers, Mode } from '@kelpie/protocol';
 import { api } from '@/lib/api';
 import type { PendingApproval, SavedRule } from '@/lib/approvals';
 
@@ -34,6 +34,8 @@ export interface Answer {
   remember?: boolean;
   /** For a plan: the mode the round-up leaves plan mode for. */
   mode?: Mode;
+  /** For questions (one item, allowed): the person's answers, by question text. */
+  answers?: Answers;
 }
 
 /** Answers a batch; the stream then takes the answered ones off every view. */
@@ -44,7 +46,7 @@ export function useAnswerApprovals() {
     if (answer.remember) void queryClient.invalidateQueries({ queryKey: ['rules'] });
     const failed = results.filter((r) => !r.ok);
     // Already answered elsewhere, or the run ended: nothing to do, and the stream has it.
-    return { answered: results.length - failed.length, missed: failed.length };
+    return { answered: results.length - failed.length, missed: failed.length, errors: failed.flatMap((r) => (r.error ? [r.error] : [])) };
   };
 }
 

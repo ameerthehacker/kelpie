@@ -124,6 +124,12 @@ function toolsStatus(tools: readonly ToolCall[], nameOf: NameOf): string {
   return toolStatus(last, nameOf);
 }
 
+/** What an open request waits on the person for: a plan to review, a question to answer, or an approval. */
+function waitingFor(data: EventOf<'permission.requested'>['data']): string {
+  if (data.tool === 'ExitPlanMode') return 'Waiting for you to review the plan';
+  return data.questions?.length ? 'Waiting for your answer' : 'Waiting for your approval';
+}
+
 /** The agents a notification Kelpie sent covers, by their current titles. */
 function reported(data: EventOf<'message'>['data'], nameOf: NameOf): string[] {
   const updates = data.agents ?? agentsFromText(data.text);
@@ -168,7 +174,7 @@ export function orchestratorStatus(events: readonly KelpieEvent[], agents: reado
         resolved.add(e.data.requestId);
         break;
       case 'permission.requested':
-        if (!resolved.has(e.data.requestId)) return e.data.tool === 'ExitPlanMode' ? 'Waiting for you to review the plan' : 'Waiting for your approval';
+        if (!resolved.has(e.data.requestId)) return waitingFor(e.data);
         break;
       // The model's own steps: whatever tools came after them are the latest thing it did.
       case 'thinking':

@@ -1,7 +1,6 @@
 import { format } from 'date-fns';
 import { ArrowUpIcon, ChevronRightIcon, ExternalLinkIcon, GitBranchIcon, ListIcon, PauseIcon, SearchIcon, XIcon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { HarnessMark } from '@/components/harness-mark';
 import { MessageResponse } from '@/components/ai-elements/message';
@@ -9,18 +8,19 @@ import { ApprovalRow } from '@/components/approvals/approval-row';
 import { useGroupAnswers } from '@/components/approvals/approval-tray';
 import { AttachButton, AttachmentChips, FileChips, useAttachedFiles } from '@/components/chat/attachments';
 import { EventLine } from '@/components/chat/events';
+import { QuestionCard } from '@/components/chat/question-card';
 import { ShowCommandsToggle, StepRow } from '@/components/chat/steps';
 import { useEventLog } from '@/hooks/use-agents';
 import { useApprovals } from '@/hooks/use-approvals';
 import { groupApprovals } from '@/lib/approvals';
 import { useNow } from '@/hooks/use-now';
+import { useOpenSession } from '@/hooks/use-open-session';
 import { byAttention, elapsed, STATUS_LABEL, STATUS_ORDER, type AgentStatus, type AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
 import { buildChat } from '@/lib/chat';
 import { unechoed, type SentMessage } from '@/lib/session-state';
 import { uploadFile } from '@/lib/uploads';
 import { harnessOf, modelLabel } from '@/lib/harnesses';
-import { roundUpPath } from '@/lib/round-ups';
 import { cn } from '@/lib/utils';
 import { StatusDot, TodoList } from './agent-bits';
 import { useAgentPane } from './pane-state';
@@ -120,7 +120,7 @@ export function AgentPane({ agents }: { agents: AgentSummary[] }) {
   );
 }
 
-const GROUP_LABEL: Record<AgentStatus, string> = { 'needs-approval': 'Needs approval', failed: 'Failed', working: 'Working', stopped: 'Stopped', idle: 'Idle', done: 'Done' };
+const GROUP_LABEL: Record<AgentStatus, string> = { 'needs-approval': 'Needs you', failed: 'Failed', working: 'Working', stopped: 'Stopped', idle: 'Idle', done: 'Done' };
 const FLEET: Record<AgentStatus, string> = { 'needs-approval': 'bg-wait', failed: 'bg-fail', working: 'bg-run', stopped: 'bg-ln2', idle: 'bg-ln2', done: 'bg-done' };
 const PER_GROUP = 6;
 
@@ -188,7 +188,7 @@ function AgentList({ agents }: { agents: AgentSummary[] }) {
               onClick={() => pane.openAgent(a.id)}
               aria-label={`${a.title}: ${STATUS_LABEL[a.status]}`}
               title={`${a.title} — ${STATUS_LABEL[a.status]}`}
-              className={cn('size-[11px] rounded-[3px]', FLEET[a.status], (a.status === 'working' || a.status === 'needs-approval') && 'animate-k-pulse', !matches(a) && 'opacity-20')}
+              className={cn('size-[11px] rounded-[3px]', FLEET[a.status], a.status === 'working' && 'motion-safe:animate-k-halo [--k-halo:var(--run)]', a.status === 'needs-approval' && 'motion-safe:animate-k-halo [--k-halo:var(--wait)]', !matches(a) && 'opacity-20')}
             />
           ))}
         </div>
@@ -257,7 +257,7 @@ function AgentList({ agents }: { agents: AgentSummary[] }) {
 
 /** One agent: who and how it is, what it is doing right now, its todos, its timeline, and a line to it. */
 function AgentView({ agent: a }: { agent: AgentSummary }) {
-  const navigate = useNavigate();
+  const openSession = useOpenSession();
   const now = useNow(10_000);
   const [error, setError] = useState<string | undefined>();
   const log = useEventLog(a.id);
@@ -299,7 +299,7 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
             <button type="button" onClick={pause} disabled={a.status !== 'working' && a.status !== 'needs-approval'} aria-label="Pause agent" title="Pause" className={cn(iconButton, 'disabled:opacity-40')}>
               <PauseIcon className="size-3.5" strokeWidth={2.2} />
             </button>
-            <button type="button" onClick={() => navigate(roundUpPath(a.id))} aria-label="Open full session" title="Open full session" className={iconButton}>
+            <button type="button" onClick={() => openSession(a.id)} aria-label="Open full session" title="Open full session" className={iconButton}>
               <ExternalLinkIcon className="size-3.5" strokeWidth={2.2} />
             </button>
           </div>
@@ -343,7 +343,7 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
   );
 }
 
-/** What this agent is waiting on the person for, answered right here (the round-up's tray has it too). */
+/** What this agent is waiting on the person to allow, answered right here (the round-up's tray has it too; its questions are in its timeline). */
 function AgentApprovals({ agent: a }: { agent: AgentSummary }) {
   const all = useApprovals(a.parentId);
   const groups = useMemo(() => groupApprovals(all.filter((x) => x.sessionId === a.id)), [all, a.id]);
@@ -421,6 +421,8 @@ function AgentTimeline({ agent: a, events, error, pending }: { agent: AgentSumma
                       {p.text}
                     </p>
                   );
+                case 'question':
+                  return <QuestionCard key={key} questions={p.questions} state={p.state} answers={p.answers} sessionId={a.id} requestId={p.requestId} />;
                 default:
                   return null;
               }

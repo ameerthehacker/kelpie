@@ -64,13 +64,13 @@ Kelpie runs a long-lived `claude -p --input-format stream-json --output-format s
 - **Noise.** `system/thinking_tokens` and `system/commands_changed` are dropped (they remain in `raw.jsonl`).
 - **Rate limits.** `rate_limit_event` reports per-window utilization, which later phases will use to pace agents.
 
-Every run writes `~/.kelpie/runs/<runId>/run.json` (argv, cwd) and `raw.jsonl` (the untouched stream). A run directory holds exactly one run, since `rawLine` indexes `raw.jsonl` from line 1. To continue a session, start a new run with `resume`.
+Every run writes `run.json` (argv, cwd) and `raw.jsonl` (the untouched stream) to its run directory: `$KELPIE_HOME/runs/<runId>` (see below for the default), or `~/.kelpie/runs/<runId>` when a caller of the adapter gives none. A run directory holds exactly one run, since `rawLine` indexes `raw.jsonl` from line 1. To continue a session, start a new run with `resume`.
 
 ## Daemon and web UI
 
 `pnpm kelpie:serve --cwd <repo>` starts the daemon on `127.0.0.1:7317`. It also serves `apps/web/dist` when that has been built.
 
-- **Round-ups.** A round-up (API: session) is one conversation: a KEF log that spans harness processes, stored in `$KELPIE_HOME/kelpie.db` (default `~/.kelpie`). Each event is written before subscribers see it, and its log index is its SSE id. Run logs go to `$KELPIE_HOME/runs/<runId>/raw.jsonl`.
+- **Round-ups.** A round-up (API: session) is one conversation: a KEF log that spans harness processes, stored in `$KELPIE_HOME/kelpie.db` (default `~/.kelpie` for the installed `kelpie`, `~/.kelpie-dev` for the dev daemon). Each event is written before subscribers see it, and its log index is its SSE id. Run logs go to `$KELPIE_HOME/runs/<runId>/raw.jsonl`.
 - **Resume.** The harness session id is stored, so when the process has exited (idle for 10 minutes, daemon restarted) the next message starts a new one with `--resume`. If resuming fails (the transcript is gone), the id is dropped and the next message starts fresh.
 - **One daemon per data directory.** It holds `$KELPIE_HOME/daemon.lock` (proper-lockfile). A daemon that starts while its predecessor is still shutting down waits for the lock rather than repairing runs that are still being written. A lock left by a killed daemon goes stale after 5 seconds.
 - **Restarts.** On shutdown the daemon stops every process and logs its closing events. If it was killed instead, startup closes out any run left open (`turn.ended` interrupted, `activity` idle, `process.exited`), so nothing stays "working".
@@ -106,7 +106,9 @@ pnpm kelpie:run --cwd <repo> [--model m] [--resume id] [--json] [--verbose] "pro
 pnpm kelpie:serve --cwd <repo> [--model m]   # daemon only; serves apps/web/dist after `pnpm build`
 ```
 
-The dev daemon (`pnpm dev`, `pnpm kelpie:serve`) keeps its data in `~/.kelpie-dev` unless `KELPIE_HOME` says otherwise, so it runs beside an installed Kelpie, which uses `~/.kelpie` and port 3173.
+The dev daemon (`pnpm dev`, `pnpm kelpie:serve`) keeps its data in `~/.kelpie-dev` unless `KELPIE_HOME` says otherwise, so it runs beside an installed Kelpie, which uses `~/.kelpie` and port 3173. `pnpm kelpie:run` writes its run logs there too.
+
+The dev daemon used `~/.kelpie` before, and nothing was moved: round-ups from then are still in `~/.kelpie`. Open them with `KELPIE_HOME=~/.kelpie pnpm dev` while no installed Kelpie is running on it. Moving them isn't enough: their worktrees are git worktrees registered at their old paths.
 
 The daemon restarts whenever its own source or an adapter's source changes. Round-ups survive the restart, but a turn in progress is interrupted.
 

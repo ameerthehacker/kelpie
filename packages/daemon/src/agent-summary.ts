@@ -1,4 +1,4 @@
-import { firstLine, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
+import { firstLine, type KelpieEvent, type TodoItem, type ToolCategory } from '@kelpie/protocol';
 
 /**
  * A sub-agent at a glance, for the agent pane: kept current from its events, so listing
@@ -18,6 +18,8 @@ export interface AgentSummary {
   status: 'working' | 'needs-approval' | 'done' | 'failed' | 'stopped' | 'idle';
   /** One line on what it is doing, or what it last said. */
   now: string;
+  /** When `now` is a tool call ("Read src/a.ts"): which tool, so a client can put it in its own words without parsing `now`. */
+  nowTool?: { name: string; category: ToolCategory };
   /** Its own todo list, from its own session. */
   todos: TodoItem[];
   /** Ordinary work, or Muster. */
@@ -35,16 +37,22 @@ const NOW_CHARS = 160;
 
 const clip = (s: string) => (s.length > NOW_CHARS ? `${s.slice(0, NOW_CHARS - 1)}…` : s);
 
+export type Now = Pick<AgentSummary, 'now' | 'nowTool'>;
+
+const said = (now: string | undefined): Now | undefined => (now ? { now } : undefined);
+
 /** What an event says the agent is doing now, if anything. Sub-agent chatter is not its own. */
-export function nowOf(e: KelpieEvent): string | undefined {
+export function nowOf(e: KelpieEvent): Now | undefined {
   if (e.parentCallId) return undefined;
   switch (e.kind) {
-    case 'tool.started':
-      return e.data.category === 'todo' ? undefined : clip(`${e.data.name} ${e.data.title}`.trim());
+    case 'tool.started': {
+      const { name, category, title } = e.data;
+      return category === 'todo' ? undefined : { now: clip(`${name} ${title}`.trim()), nowTool: { name, category } };
+    }
     case 'message':
-      return e.data.role === 'assistant' ? firstLine(e.data.text, NOW_CHARS) || undefined : undefined;
+      return e.data.role === 'assistant' ? said(firstLine(e.data.text, NOW_CHARS)) : undefined;
     case 'turn.ended':
-      return e.data.status === 'failed' ? clip(`Failed: ${e.data.error ?? 'unknown error'}`) : e.data.status === 'interrupted' ? 'Stopped.' : undefined;
+      return said(e.data.status === 'failed' ? clip(`Failed: ${e.data.error ?? 'unknown error'}`) : e.data.status === 'interrupted' ? 'Stopped.' : undefined);
     default:
       return undefined;
   }
