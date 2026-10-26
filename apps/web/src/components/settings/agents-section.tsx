@@ -1,10 +1,11 @@
-import { CheckIcon, MinusIcon, PlusIcon } from 'lucide-react';
+import { CheckIcon, MinusIcon, MoonIcon, PlusIcon } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
+import { Switch } from '@/components/ui/switch';
 import { useSaveSettings, useSettings } from '@/hooks/use-settings';
 import { defaultAgents, MAX_AGENTS, PAGE_STEP, parseAgents, stepAgents, type SettingsPatch } from '@/lib/settings';
 
@@ -150,7 +151,65 @@ function ParallelAgents({ value, fallback }: { value: number; fallback: number }
   );
 }
 
-/** Settings › Agents: how many of a round-up's agents may work at once. */
+/**
+ * Auto-resume after usage limits: on, work that stops at the limit picks up once it resets (the
+ * person can sleep through it); off, it waits for them. Saved as it is flipped, like the stepper.
+ */
+function AutoResume({ value }: { value: boolean }) {
+  const save = useSaveSettings();
+  const labelId = useId();
+  const hintId = useId();
+  const statusId = useId();
+  const [saved, setSaved] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const set = (next: boolean) => {
+    setSaved(false);
+    clearTimeout(timer.current);
+    save.mutate(
+      { autoResume: next },
+      {
+        onSuccess: () => {
+          setSaved(true);
+          timer.current = setTimeout(() => setSaved(false), SAVED_FOR);
+        },
+      },
+    );
+  };
+  const status = save.isPending ? (
+    <span className="text-mu2 flex items-center gap-1.5">
+      <Spinner className="size-3" /> Saving…
+    </span>
+  ) : save.isError ? (
+    <span className="text-fail">Couldn’t save: {save.error.message}</span>
+  ) : saved ? (
+    <span className="text-done flex items-center gap-1">
+      <CheckIcon className="size-3.5" strokeWidth={2.4} /> Saved
+    </span>
+  ) : null;
+
+  return (
+    <div className="bg-surf border-ln flex items-start gap-6 rounded-[20px] border px-5 py-4 max-sm:flex-col max-sm:gap-3">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <span id={labelId} className="flex items-center gap-2 text-[15px] font-medium">
+          <MoonIcon aria-hidden="true" className="text-mu2 size-4" strokeWidth={1.8} />
+          Auto-resume after usage limits
+        </span>
+        <p id={hintId} className="text-mu text-[13px] leading-relaxed">
+          When agents stop because you hit your Claude usage limit, Kelpie picks their work up again once the limit resets, so it can carry on overnight. Off: they wait for you.
+        </p>
+      </div>
+      <div className="flex flex-col items-end gap-1.5 max-sm:items-start">
+        <Switch checked={value} onCheckedChange={set} aria-labelledby={labelId} aria-describedby={`${hintId} ${statusId}`} className="mt-1" />
+        <p id={statusId} aria-live="polite" className="h-4 text-xs">
+          {status}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** Settings › Agents: how many of a round-up's agents may work at once, and whether work resumes after a usage limit. */
 export function AgentsSection() {
   const { data, error } = useSettings();
   return (
@@ -164,6 +223,7 @@ export function AgentsSection() {
       {error && <p className="text-fail text-sm">Couldn’t load settings: {error.message}</p>}
       {!data && !error && <Skeleton className="h-[104px] w-full rounded-[20px]" />}
       {data && <ParallelAgents value={data.maxAgents} fallback={defaultAgents(data)} />}
+      {data && <AutoResume value={data.autoResume ?? true} />}
     </section>
   );
 }

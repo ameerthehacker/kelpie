@@ -15,6 +15,7 @@ import { FullScreen } from '@/components/changes/full-screen';
 import { TabStrip } from '@/components/changes/tab-strip';
 import { AttachmentChips } from '@/components/chat/attachments';
 import { ChatLog } from '@/components/chat/chat-log';
+import { PausedBanner } from '@/components/chat/limit-banner';
 import { Composer } from '@/components/chat/composer';
 import { HarnessSetupDialog } from '@/components/settings/setup-dialog';
 import { SettingsPage } from '@/components/settings/settings-page';
@@ -321,6 +322,8 @@ export function App() {
                   {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
                   {/* The plan sits outside the chat flow, always in view while agents work. */}
                   {roundUpId && <ApprovalTray approvals={approvals} roundUpId={current?.role === 'agent' ? (current.parentId ?? roundUpId) : roundUpId} inChat={roundUpId} />}
+                  {/* Paused at the usage limit: when it picks up again, and the person's say in it. */}
+                  {roundUpId && current?.limited && !busy && <PausedBanner sessionId={roundUpId} pause={current.limited} className="mb-2" />}
                   {agents?.length ? <PlanDock settledAt={current?.updatedAt} /> : <TodoDock todos={todos} />}
                   <Composer
                     status={status}

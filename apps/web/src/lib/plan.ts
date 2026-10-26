@@ -1,5 +1,6 @@
 import { toolStatus, type NameOf } from './activity.js';
 import type { AgentSummary } from './agents.js';
+import { clock, pausedShort, soonest } from './limits.js';
 import { groupCounts, groupRank, planGroup, type PlanGroup } from './status.js';
 
 /** What the plan knows beyond the agents: who waits on a plan or a question, and when the orchestrator last moved (see `planGroup`). */
@@ -8,10 +9,12 @@ export interface PlanOpts {
   questions?: ReadonlySet<string>;
   nameOf?: NameOf;
   settledAt?: number;
+  /** Epoch ms, for when a paused agent resumes. */
+  now?: number;
 }
 
-/** The groups the collapsed bar gives a dot each: what is moving, or stuck on someone. */
-const TRACKED: PlanGroup[] = ['needs-you', 'failed', 'working'];
+/** The groups the collapsed bar gives a dot each: what is moving, stuck on someone, or waiting for the usage limit to reset. */
+const TRACKED: PlanGroup[] = ['needs-you', 'failed', 'working', 'paused'];
 
 /** Most urgent first, then oldest first. */
 export const byUrgency =
@@ -65,6 +68,8 @@ export function planLabel(a: AgentSummary, opts: PlanOpts = {}): string {
       return 'Failed';
     case 'working':
       return currentTodo(a) ?? nowAsTool(a, opts.nameOf) ?? 'Working';
+    case 'paused':
+      return a.limited ? `Usage limit · ${pausedShort(a.limited, opts.now ?? Date.now())}` : 'Paused for usage limit';
     case 'to-merge':
       return 'Ready to merge';
     case 'stopped':
@@ -108,10 +113,16 @@ export function planBar(agents: readonly AgentSummary[], opts: PlanOpts & { maxD
 
   // The live line follows whoever needs the person, else whoever is working, before what has failed.
   const lead = tracked.find((a) => group(a) === 'needs-you') ?? tracked.find((a) => group(a) === 'working') ?? tracked[0]!;
+  // Everything moving waits on the usage limit: when it all picks up again.
+  const paused = tracked.every((a) => group(a) === 'paused');
+  const resumes = paused ? soonest(tracked.map((a) => a.limited)) : undefined;
+  const text = paused
+    ? `${tracked.length === 1 ? `${lead.title} is` : `${tracked.length} agents are`} paused for the usage limit${resumes ? ` · resumes ${clock(resumes, opts.now ?? Date.now())}` : ''}`
+    : `${lead.title}: ${planLabel(lead, opts)}`;
   return {
     dots: tracked.slice(0, max).map((agent) => ({ agent, group: group(agent) })),
     more: Math.max(0, tracked.length - max),
-    text: `${lead.title}: ${planLabel(lead, opts)}`,
+    text,
     counts: groupCounts(groups, ['to-merge', 'stopped', 'done']),
     label: groupCounts(groups, TRACKED).join(', '),
   };

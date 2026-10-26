@@ -8,6 +8,7 @@ import { ApprovalRow } from '@/components/approvals/approval-row';
 import { useGroupAnswers } from '@/components/approvals/approval-tray';
 import { AttachButton, AttachmentChips, FileChips, useAttachedFiles } from '@/components/chat/attachments';
 import { EventLine } from '@/components/chat/events';
+import { LimitLine, PausedBanner, ResumedLine } from '@/components/chat/limit-banner';
 import { QuestionCard } from '@/components/chat/question-card';
 import { ShowCommandsToggle, StepRow } from '@/components/chat/steps';
 import { useEventLog } from '@/hooks/use-agents';
@@ -25,6 +26,7 @@ import { buildChat } from '@/lib/chat';
 import { unechoed, type SentMessage } from '@/lib/session-state';
 import { uploadFile } from '@/lib/uploads';
 import { harnessOf, modelLabel } from '@/lib/harnesses';
+import { pausedShort } from '@/lib/limits';
 import { workingLabel } from '@/lib/settings';
 import { cn } from '@/lib/utils';
 import { StatusDot, TodoList } from './agent-bits';
@@ -125,8 +127,8 @@ export function AgentPane({ agents }: { agents: AgentSummary[] }) {
   );
 }
 
-const GROUP_LABEL: Record<AgentStatus, string> = { 'needs-approval': 'Needs you', failed: 'Failed', working: 'Working', stopped: 'Stopped', idle: 'Idle', done: 'Done' };
-const FLEET: Record<AgentStatus, string> = { 'needs-approval': 'bg-wait', failed: 'bg-fail', working: 'bg-run', stopped: 'bg-ln2', idle: 'bg-ln2', done: 'bg-done' };
+const GROUP_LABEL: Record<AgentStatus, string> = { 'needs-approval': 'Needs you', failed: 'Failed', working: 'Working', paused: 'Paused for usage limit', stopped: 'Stopped', idle: 'Idle', done: 'Done' };
+const FLEET: Record<AgentStatus, string> = { 'needs-approval': 'bg-wait', failed: 'bg-fail', working: 'bg-run', paused: 'bg-run/40', stopped: 'bg-ln2', idle: 'bg-ln2', done: 'bg-done' };
 const PER_GROUP = 6;
 
 /** Every agent: a filter, status chips, the fleet map (one square each), and the agents grouped by status. */
@@ -236,7 +238,7 @@ function AgentList({ agents }: { agents: AgentSummary[] }) {
                           {a.kind === 'muster' && <MusterChip className="mr-1.5" />}
                           {a.title}
                         </span>
-                        <span className="text-mu truncate text-xs">{a.now || STATUS_LABEL[a.status]}</span>
+                        <span className="text-mu truncate text-xs">{a.limited ? `Usage limit · ${pausedShort(a.limited, now)}` : a.now || STATUS_LABEL[a.status]}</span>
                       </span>
                       <span className="text-mu2 text-xs">{a.status === 'working' ? elapsed(a, now) : STATUS_LABEL[a.status].toLowerCase()}</span>
                     </button>
@@ -328,13 +330,17 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
           </div>
         </div>
 
-        <div className="bg-well flex items-start gap-2.5 rounded-[14px] px-3.5 py-3">
-          <StatusDot status={a.status} className="mt-[7px]" />
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <span className="text-mu2 text-xs">Right now</span>
-            <span className="text-[15px] leading-[1.45] break-words">{a.now || STATUS_LABEL[a.status]}</span>
+        {a.status === 'paused' && a.limited ? (
+          <PausedBanner sessionId={a.id} pause={a.limited} className="rounded-[14px]" />
+        ) : (
+          <div className="bg-well flex items-start gap-2.5 rounded-[14px] px-3.5 py-3">
+            <StatusDot status={a.status} className="mt-[7px]" />
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-mu2 text-xs">Right now</span>
+              <span className="text-[15px] leading-[1.45] break-words">{a.now || STATUS_LABEL[a.status]}</span>
+            </div>
           </div>
-        </div>
+        )}
 
         <div className="flex flex-col gap-2">
           <div className="text-mu2 flex items-center gap-2.5 text-xs">
@@ -471,6 +477,10 @@ function AgentTimeline({
                   );
                 case 'question':
                   return <QuestionCard key={key} questions={p.questions} state={p.state} answers={p.answers} sessionId={a.id} requestId={p.requestId} />;
+                case 'limit':
+                  return <LimitLine key={key} limit={p.limit} message={p.message} ts={p.ts} />;
+                case 'resumed':
+                  return <ResumedLine key={key} ts={p.ts} />;
                 default:
                   return null;
               }

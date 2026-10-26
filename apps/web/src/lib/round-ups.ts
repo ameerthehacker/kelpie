@@ -1,7 +1,8 @@
-import type { LinkedTicket, Mode } from '@kelpie/protocol';
+import type { LinkedTicket, Mode, UsageLimitPause } from '@kelpie/protocol';
 import { formatDistanceStrict } from 'date-fns';
 import { generatePath } from 'react-router';
 import type { AgentSummary } from './agents.js';
+import { pausedStatus } from './limits.js';
 import { groupCounts, planGroup, type Placed } from './status.js';
 
 export const ROUND_UP_ROUTE = '/r/:roundUpId';
@@ -52,6 +53,8 @@ export interface RoundUp {
   branch?: AgentSummary['branch'];
   deliver?: AgentSummary['deliver'];
   worktree?: AgentSummary['worktree'];
+  /** Paused because its harness hit the usage limit: Kelpie resumes it once the limit resets. */
+  limited?: UsageLimitPause;
 }
 
 export const NEW_TITLE = 'New round-up';
@@ -74,6 +77,7 @@ export type StatusTone = 'busy' | 'error' | 'muted';
 /** A round-up's own state, in words: what its row says when there is no dot (see `roundUpStatus`), and the line under its title without agents. */
 export function statusLine(r: RoundUp, now: number): { text: string; tone: StatusTone } {
   if (r.busy) return { text: 'Working…', tone: 'busy' };
+  if (r.limited) return { text: pausedStatus(r.limited, now), tone: 'muted' };
   const when = relativeTime(r.updatedAt, now);
   if (r.lastTurn === 'failed') return { text: `Failed · ${when}`, tone: 'error' };
   if (r.lastTurn === 'interrupted') return { text: `Stopped · ${when}`, tone: 'muted' };
@@ -92,7 +96,7 @@ export const byRecent = (a: RoundUp, b: RoundUp) => b.updatedAt - a.updatedAt ||
 export function roundUpSummary(r: RoundUp, agents: readonly Placed[], now: number): string {
   if (!agents.length) return r.busy ? 'Working' : statusLine(r, now).text;
   const groups = agents.map((a) => planGroup(a, r.updatedAt));
-  const moving = groupCounts(groups, ['needs-you', 'failed', 'working']);
+  const moving = groupCounts(groups, ['needs-you', 'failed', 'working', 'paused']);
   if (moving.length) return moving.join(' · ');
   if (groups.every((g) => g === 'done')) return `Done · ${relativeTime(r.updatedAt, now)}`;
   return groupCounts(groups).join(' · ');
