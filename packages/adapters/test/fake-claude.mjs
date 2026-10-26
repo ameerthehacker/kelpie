@@ -15,7 +15,8 @@
 // asks to use that tool on the url FAKE_ASK. Interrupted while asking, it ends the turn the way the real
 // CLI does (ask-interrupt.jsonl): it cancels the request, unless FAKE_NO_CANCEL=1, then reports the turn aborted.
 // FAKE_ENV_FILE gets a line of JSON per start with the GitHub env it was given (GH_TOKEN, GITHUB_TOKEN).
-import { appendFileSync, readFileSync } from 'node:fs';
+// FAKE_HOLD_FILE holds each user turn, unanswered, for as long as that file exists.
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
 const lines = readFileSync(process.env.FAKE_FIXTURE, 'utf8').split('\n').filter(Boolean);
@@ -40,6 +41,7 @@ const ASK_ID = 'fake-ask-1';
 let asking = false;
 for await (const line of createInterface({ input: process.stdin })) {
   const msg = JSON.parse(line);
+  while (msg.type === 'user' && process.env.FAKE_HOLD_FILE && existsSync(process.env.FAKE_HOLD_FILE)) await new Promise((r) => setTimeout(r, 10));
   if (msg.type === 'control_response' && msg.response?.request_id === ASK_ID && asking) {
     asking = false;
     if (process.env.FAKE_ANSWER_FILE) appendFileSync(process.env.FAKE_ANSWER_FILE, JSON.stringify(msg.response.response) + '\n');
