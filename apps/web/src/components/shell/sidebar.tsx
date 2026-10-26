@@ -13,7 +13,8 @@ import { useRoundUpStatus } from '@/hooks/use-round-up-status';
 import { useUsage } from '@/hooks/use-usage';
 import { useWorkbench } from '@/hooks/use-workbench';
 import { harnessOf } from '@/lib/harnesses';
-import { relativeTime, roundUpPath, statusLine, titleOf, type RoundUp } from '@/lib/round-ups';
+import { relativeTime, renameTo, roundUpPath, statusLine, titleOf, type RoundUp } from '@/lib/round-ups';
+import { FadeText } from '@/components/shell/round-up-title';
 import { GROUP_LABEL, type PlanGroup } from '@/lib/status';
 import { metersOf } from '@/lib/usage';
 import { pausedStatus } from '@/lib/limits';
@@ -62,9 +63,9 @@ function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, wait
   }, [editing]);
 
   const save = () => {
-    const title = input.current?.value.trim();
+    const title = renameTo(roundUp, input.current?.value ?? '');
     setEditing(false);
-    if (title && title !== roundUp.title) void onRename(roundUp.id, title);
+    if (title !== undefined) void onRename(roundUp.id, title);
   };
 
   if (editing) {
@@ -72,7 +73,8 @@ function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, wait
       <input
         ref={input}
         aria-label="Round-up title"
-        defaultValue={titleOf(roundUp)}
+        defaultValue={roundUp.title}
+        placeholder={roundUp.titleSource === 'person' ? 'Clear to let Claude name it' : titleOf(roundUp)}
         maxLength={200}
         onBlur={save}
         onKeyDown={(e) => {
@@ -97,7 +99,7 @@ function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, wait
         className={cn('hover:bg-hov flex h-[38px] items-center gap-2.5 rounded-[10px] pr-9 pl-3 text-sm', active && 'bg-sel font-medium')}
       >
         <span className={cn('min-w-0 flex-1 truncate', active || status === 'working' || status === 'needs-you' ? 'text-fg' : 'text-mu', status === 'failed' && 'text-fail')}>
-          {titleOf(roundUp)}
+          <FadeText text={titleOf(roundUp)} />
         </span>
         <span className="sr-only">{label}</span>
       </Link>
