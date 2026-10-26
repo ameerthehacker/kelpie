@@ -71,6 +71,7 @@ export function AgentChanges({ agent: a }: { agent: AgentSummary }) {
               </button>
             </p>
           )}
+          {files.length === 0 && <p className="text-mu text-sm">No changes yet.</p>}
           {files.map((f) => (
             <FileCard
               key={f.path}

@@ -1,10 +1,12 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 // Resolve workspace packages to their TypeScript sources (see the `kelpie-src` export condition).
 const conditions = ['kelpie-src', 'module', 'node'];
 
 export default defineConfig({
-  resolve: { conditions },
+  // The web app's `@/` imports (see apps/web/vite.config.ts), for tests of its components.
+  resolve: { conditions, alias: [{ find: /^@\//, replacement: fileURLToPath(new URL('./apps/web/src/', import.meta.url)) }] },
   ssr: { resolve: { conditions } },
   test: {
     include: ['packages/*/test/**/*.test.ts', 'apps/*/test/**/*.test.ts'],
