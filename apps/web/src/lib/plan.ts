@@ -1,38 +1,23 @@
-import type { ToolCategory } from '@kelpie/protocol';
 import { toolStatus, type NameOf } from './activity.js';
 import type { AgentSummary } from './agents.js';
+import { groupCounts, groupRank, planGroup, type PlanGroup } from './status.js';
 
-/**
- * Where an agent sits in the plan. `needs-you`: waiting on the person (an approval or a plan).
- * `to-merge`: finished, but its branch still waits to be mustered, so not done yet. `stopped`:
- * interrupted or never finished a turn. Mustered, standalone and read-only agents that finished are `done`.
- */
-export type PlanGroup = 'needs-you' | 'failed' | 'working' | 'to-merge' | 'stopped' | 'done';
-
-/** Most urgent first. */
-export const GROUP_ORDER: PlanGroup[] = ['needs-you', 'failed', 'working', 'to-merge', 'stopped', 'done'];
-const RANK = Object.fromEntries(GROUP_ORDER.map((g, i) => [g, i])) as Record<PlanGroup, number>;
-
-/** The groups the collapsed bar gives a dot each: what is moving, or stuck on someone. */
-const TRACKED = new Set<PlanGroup>(['needs-you', 'failed', 'working']);
-
-export function planGroup(a: AgentSummary): PlanGroup {
-  switch (a.status) {
-    case 'needs-approval':
-      return 'needs-you';
-    case 'failed':
-      return 'failed';
-    case 'working':
-      return 'working';
-    case 'stopped':
-    case 'idle':
-      return 'stopped';
-    case 'done':
-      return a.branch && a.kind !== 'muster' && a.deliver !== 'standalone' && a.worktree !== 'mustered' ? 'to-merge' : 'done';
-  }
+/** What the plan knows beyond the agents: who waits on a plan or a question, and when the orchestrator last moved (see `planGroup`). */
+export interface PlanOpts {
+  plans?: ReadonlySet<string>;
+  questions?: ReadonlySet<string>;
+  nameOf?: NameOf;
+  settledAt?: number;
 }
 
-export const byUrgency = (a: AgentSummary, b: AgentSummary) => RANK[planGroup(a)] - RANK[planGroup(b)] || a.createdAt - b.createdAt;
+/** The groups the collapsed bar gives a dot each: what is moving, or stuck on someone. */
+const TRACKED: PlanGroup[] = ['needs-you', 'failed', 'working'];
+
+/** Most urgent first, then oldest first. */
+export const byUrgency =
+  (settledAt?: number) =>
+  (a: AgentSummary, b: AgentSummary): number =>
+    groupRank(planGroup(a, settledAt)) - groupRank(planGroup(b, settledAt)) || a.createdAt - b.createdAt;
 
 export interface PlanSections {
   /** Everything not done, most urgent first: shown in full. */
@@ -41,47 +26,24 @@ export interface PlanSections {
   done: AgentSummary[];
 }
 
-export function planSections(agents: readonly AgentSummary[]): PlanSections {
-  const sorted = [...agents].sort(byUrgency);
-  return { active: sorted.filter((a) => planGroup(a) !== 'done'), done: sorted.filter((a) => planGroup(a) === 'done') };
+export function planSections(agents: readonly AgentSummary[], settledAt?: number): PlanSections {
+  const sorted = [...agents].sort(byUrgency(settledAt));
+  const done = (a: AgentSummary) => planGroup(a, settledAt) === 'done';
+  return { active: sorted.filter((a) => !done(a)), done: sorted.filter(done) };
 }
 
-/** Claude Code's tools, by the name the daemon's `now` line starts with (see the adapter's `toolCategory`). */
-const TOOLS: Record<string, ToolCategory> = {
-  Read: 'read',
-  Glob: 'search',
-  Grep: 'search',
-  Edit: 'edit',
-  MultiEdit: 'edit',
-  Write: 'edit',
-  NotebookEdit: 'edit',
-  Bash: 'bash',
-  WebFetch: 'web',
-  WebSearch: 'web',
-  TodoWrite: 'todo',
-  TaskCreate: 'todo',
-  TaskUpdate: 'todo',
-  TaskList: 'todo',
-  TaskGet: 'todo',
-  Agent: 'task',
-  Task: 'task',
-  ExitPlanMode: 'other',
-};
-
 /**
- * The daemon's `now` line, when it is a tool call ("Bash sed -n 820,890p …", "Read src/a.ts"), in
- * plain words: "Running a command", "Reading a.ts". Undefined for anything else (what the agent
- * last said, an error), so a raw command never shows.
+ * The tool the agent is using (the daemon's `nowTool`), in plain words: "Running a command",
+ * "Reading a.ts". Undefined when `now` is not a tool call (what the agent last said, an error) or
+ * the tool has no words of its own, so a raw command never shows.
  */
-export function nowAsTool(now: string, nameOf?: NameOf): string | undefined {
-  const m = /^(\S+)\s*(.*)$/.exec(now.trim());
-  if (!m) return undefined;
-  const name = m[1]!;
-  const rest = m[2]!;
-  const category = name.startsWith('mcp__') ? 'mcp' : TOOLS[name];
-  if (!category) return undefined;
-  const input = category === 'read' || category === 'edit' ? { file_path: rest } : name === 'WebFetch' ? { url: rest } : {};
-  return toolStatus({ name, category, input }, nameOf);
+export function nowAsTool(a: Pick<AgentSummary, 'now' | 'nowTool'>, nameOf?: NameOf): string | undefined {
+  const tool = a.nowTool;
+  if (!tool || (tool.category === 'other' && tool.name !== 'ExitPlanMode')) return undefined;
+  // `now` is the tool's name and what it works on: a path for files, a URL for a fetch.
+  const target = a.now.startsWith(`${tool.name} `) ? a.now.slice(tool.name.length + 1).trim() : '';
+  const input = tool.category === 'read' || tool.category === 'edit' ? { file_path: target } : tool.name === 'WebFetch' ? { url: target } : {};
+  return toolStatus({ name: tool.name, category: tool.category, input }, nameOf);
 }
 
 /** The agent's todo in progress, in its present-tense words. */
@@ -92,62 +54,65 @@ export function currentTodo(a: Pick<AgentSummary, 'todos'>): string | undefined 
 
 /**
  * One short line on an agent for the plan: what it needs from the person, or what it is working on
- * (its current todo, else its tool in plain words), or where its work stands. `plans` holds the
- * agents waiting on the person to review a plan.
+ * (its current todo, else its tool in plain words), or where its work stands. `plans` and
+ * `questions` hold the agents waiting on the person to review a plan or answer a question.
  */
-export function planLabel(a: AgentSummary, opts: { plans?: ReadonlySet<string>; nameOf?: NameOf } = {}): string {
-  switch (planGroup(a)) {
+export function planLabel(a: AgentSummary, opts: PlanOpts = {}): string {
+  switch (planGroup(a, opts.settledAt)) {
     case 'needs-you':
-      return opts.plans?.has(a.id) ? 'Plan to review' : 'Needs your approval';
+      return opts.plans?.has(a.id) ? 'Plan to review' : opts.questions?.has(a.id) ? 'Has a question' : 'Needs your approval';
     case 'failed':
       return 'Failed';
     case 'working':
-      return currentTodo(a) ?? nowAsTool(a.now, opts.nameOf) ?? 'Working';
+      return currentTodo(a) ?? nowAsTool(a, opts.nameOf) ?? 'Working';
     case 'to-merge':
       return 'Ready to merge';
     case 'stopped':
-      return a.status === 'idle' ? 'Idle' : 'Stopped';
+      // A failure the orchestrator has moved on from still says so, calmly.
+      return a.status === 'failed' ? 'Failed' : 'Stopped';
     case 'done':
       return a.worktree === 'mustered' ? 'Merged' : a.branch && a.deliver === 'standalone' ? 'Done · standalone branch' : 'Done';
   }
 }
 
 export interface PlanBar {
-  /** Agents with a dot of their own, most urgent first. */
-  dots: AgentSummary[];
+  /** Agents with a dot of their own, most urgent first, with the group their dot shows. */
+  dots: { agent: AgentSummary; group: PlanGroup }[];
   /** Tracked agents past the cap: "+N". */
   more: number;
   /** The most urgent agent and its line ("Fix: notifications: Needs your approval"), or a calm summary when nothing is moving. */
   text: string;
-  /** Counts that sit at the end of the bar: "3 to merge", "14 done". */
+  /** Counts that sit at the end of the bar: "3 ready to merge", "14 done". */
   counts: string[];
+  /** What the dots stand for, all of them: "1 needs you, 3 working". */
+  label: string;
 }
 
 export const MAX_DOTS = 5;
 
 /** The collapsed plan: a dot per agent that needs tracking, finished ones as one count. */
-export function planBar(agents: readonly AgentSummary[], opts: { plans?: ReadonlySet<string>; nameOf?: NameOf; maxDots?: number } = {}): PlanBar {
+export function planBar(agents: readonly AgentSummary[], opts: PlanOpts & { maxDots?: number } = {}): PlanBar {
   const max = opts.maxDots ?? MAX_DOTS;
-  const sorted = [...agents].sort(byUrgency);
-  const tracked = sorted.filter((a) => TRACKED.has(planGroup(a)));
-  const count = (g: PlanGroup) => sorted.filter((a) => planGroup(a) === g).length;
-  const done = count('done');
-  const toMerge = count('to-merge');
-  const stopped = count('stopped');
+  const group = (a: AgentSummary) => planGroup(a, opts.settledAt);
+  const sorted = [...agents].sort(byUrgency(opts.settledAt));
+  const groups = sorted.map(group);
+  const tracked = sorted.filter((a) => TRACKED.includes(group(a)));
 
   if (tracked.length === 0) {
-    const finished = done + toMerge;
+    const count = (g: PlanGroup) => groups.filter((x) => x === g).length;
+    const toMerge = count('to-merge');
+    const finished = count('done') + toMerge;
     const lead = finished === agents.length ? `All ${agents.length} agents ${toMerge ? 'finished' : 'done'}` : `${finished}/${agents.length} agents finished`;
-    const rest = [toMerge && `${toMerge} ready to merge`, stopped && `${stopped} stopped`].filter((s): s is string => !!s);
-    return { dots: [], more: 0, text: [lead, ...rest].join(' · '), counts: [] };
+    return { dots: [], more: 0, text: [lead, ...groupCounts(groups, ['to-merge', 'stopped'])].join(' · '), counts: [], label: '' };
   }
 
   // The live line follows whoever needs the person, else whoever is working, before what has failed.
-  const lead = tracked.find((a) => planGroup(a) === 'needs-you') ?? tracked.find((a) => planGroup(a) === 'working') ?? tracked[0]!;
+  const lead = tracked.find((a) => group(a) === 'needs-you') ?? tracked.find((a) => group(a) === 'working') ?? tracked[0]!;
   return {
-    dots: tracked.slice(0, max),
+    dots: tracked.slice(0, max).map((agent) => ({ agent, group: group(agent) })),
     more: Math.max(0, tracked.length - max),
     text: `${lead.title}: ${planLabel(lead, opts)}`,
-    counts: [toMerge && `${toMerge} to merge`, stopped && `${stopped} stopped`, done && `${done} done`].filter((s): s is string => !!s),
+    counts: groupCounts(groups, ['to-merge', 'stopped', 'done']),
+    label: groupCounts(groups, TRACKED).join(', '),
   };
 }

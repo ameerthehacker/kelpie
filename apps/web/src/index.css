@@ -32,6 +32,7 @@
     --color-strong: var(--strong);
     --color-run: var(--run);
     --color-wait: var(--wait);
+    --color-onwait: var(--onwait);
     --color-wbg: var(--wbg);
     --color-done: var(--done);
     --color-fail: var(--fail);
@@ -112,6 +113,7 @@
     --run: #2A66CC;
     --wait: #8F5D00;
     --wbg: rgba(190, 130, 0, 0.08);
+    --onwait: #FFFFFF;
     --done: #6E8F7E;
     --fail: #B4322E;
     --vio: #7347BE;
@@ -182,6 +184,7 @@
     --run: #6CA8FF;
     --wait: #F2B54A;
     --wbg: rgba(242, 181, 74, 0.07);
+    --onwait: #1A1405;
     --done: #7FA493;
     --fail: #F08A84;
     --vio: #C9A7FF;
@@ -211,11 +214,22 @@
     @apply font-sans;
     }
 }
-/* The design's slow pulse for things in progress. */
+/* The design's slow pulse for things in progress, on larger marks (a step's icon): it never fades below 3:1 contrast. */
 @utility animate-k-pulse {
   animation: k-pulse 1.8s ease-in-out infinite;
 }
 @keyframes k-pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  50% { opacity: 0.7; }
+}
+/*
+ * The same pulse on a status dot: the dot stays solid (its colour is what tells the status apart)
+ * and a halo of that colour breathes out around it. Set the colour with --k-halo.
+ */
+@utility animate-k-halo {
+  animation: k-halo 1.8s ease-out infinite;
+}
+@keyframes k-halo {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--k-halo, currentColor) 65%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 4px color-mix(in oklab, var(--k-halo, currentColor) 0%, transparent); }
 }

@@ -5,6 +5,7 @@ import type { KelpieEvent } from '@kelpie/protocol';
 import { ClaudeCodeParser } from '@kelpie/adapters';
 import { buildChat, type ToolView } from '../src/lib/chat.js';
 import { modelLabel } from '../src/lib/harnesses.js';
+import type { AgentStatus, AgentSummary } from '../src/lib/agents.js';
 import { roundUpSummary, type RoundUp } from '../src/lib/round-ups.js';
 import { stepOf } from '../src/lib/steps.js';
 
@@ -67,10 +68,15 @@ describe('modelLabel', () => {
 describe('roundUpSummary', () => {
   const r = { id: 'r', title: 'x', cwd: '/', createdAt: 0, updatedAt: 0, busy: false } as RoundUp;
   const now = 5 * 60_000;
-  it('says what the agents are up to, or that they are done', () => {
-    expect(roundUpSummary(r, [{ status: 'working' }, { status: 'working' }, { status: 'failed' }, { status: 'done' }], now)).toBe('2 working · 1 failed');
-    expect(roundUpSummary(r, [{ status: 'done' }, { status: 'done' }], now)).toBe('Done · 5 minutes ago');
-    expect(roundUpSummary(r, [{ status: 'done' }, { status: 'idle' }], now)).toBe('Idle · 5 minutes ago');
+  const a = (status: AgentStatus, extra: Partial<AgentSummary> = {}) => ({ status, updatedAt: 1, ...extra });
+  it('says what the agents are up to, most urgent first, or where they stand', () => {
+    expect(roundUpSummary(r, [a('working'), a('working'), a('failed'), a('needs-approval'), a('done')], now)).toBe('1 needs you · 1 failed · 2 working');
+    expect(roundUpSummary(r, [a('done'), a('done')], now)).toBe('Done · 5 minutes ago');
+    expect(roundUpSummary(r, [a('done'), a('idle'), a('done', { branch: 'b', worktree: 'active' })], now)).toBe('1 ready to merge · 1 stopped · 1 done');
+  });
+
+  it('calms a failure Kelpie has had a turn since, as the Plan bar does', () => {
+    expect(roundUpSummary({ ...r, updatedAt: 2 }, [a('failed'), a('done')], now)).toBe('1 stopped · 1 done');
   });
 
   it('falls back to the round-up’s own state without agents', () => {

@@ -120,7 +120,7 @@ export function AgentPane({ agents }: { agents: AgentSummary[] }) {
   );
 }
 
-const GROUP_LABEL: Record<AgentStatus, string> = { 'needs-approval': 'Needs approval', failed: 'Failed', working: 'Working', stopped: 'Stopped', idle: 'Idle', done: 'Done' };
+const GROUP_LABEL: Record<AgentStatus, string> = { 'needs-approval': 'Needs you', failed: 'Failed', working: 'Working', stopped: 'Stopped', idle: 'Idle', done: 'Done' };
 const FLEET: Record<AgentStatus, string> = { 'needs-approval': 'bg-wait', failed: 'bg-fail', working: 'bg-run', stopped: 'bg-ln2', idle: 'bg-ln2', done: 'bg-done' };
 const PER_GROUP = 6;
 
@@ -188,7 +188,7 @@ function AgentList({ agents }: { agents: AgentSummary[] }) {
               onClick={() => pane.openAgent(a.id)}
               aria-label={`${a.title}: ${STATUS_LABEL[a.status]}`}
               title={`${a.title} — ${STATUS_LABEL[a.status]}`}
-              className={cn('size-[11px] rounded-[3px]', FLEET[a.status], (a.status === 'working' || a.status === 'needs-approval') && 'animate-k-pulse', !matches(a) && 'opacity-20')}
+              className={cn('size-[11px] rounded-[3px]', FLEET[a.status], a.status === 'working' && 'motion-safe:animate-k-halo [--k-halo:var(--run)]', a.status === 'needs-approval' && 'motion-safe:animate-k-halo [--k-halo:var(--wait)]', !matches(a) && 'opacity-20')}
             />
           ))}
         </div>

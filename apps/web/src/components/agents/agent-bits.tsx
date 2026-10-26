@@ -1,21 +1,25 @@
 import type { TodoItem } from '@kelpie/protocol';
 import type { AgentStatus } from '@/lib/agents';
+import type { PlanGroup } from '@/lib/status';
 import { cn } from '@/lib/utils';
 
 /**
- * The design's status marks: a pulsing dot while working, a solid one when done or failed, a ring otherwise.
+ * The design's status marks: a solid dot with a breathing halo while working or waiting on the
+ * person, a solid one when done or failed, a green ring when finished with a branch still to merge,
+ * a grey ring otherwise. Takes an agent's status or its group in the plan (see `planGroup`).
  * With a `label`, it is announced (and shown on hover) as that; otherwise it is decoration.
  */
-export function StatusDot({ status, label, className }: { status: AgentStatus; label?: string; className?: string }) {
+export function StatusDot({ status, label, className }: { status: AgentStatus | PlanGroup; label?: string; className?: string }) {
   return (
     <span
       {...(label ? { role: 'img', 'aria-label': label, title: label } : { 'aria-hidden': true })}
       className={cn(
         'inline-block size-[7px] shrink-0 rounded-full',
-        status === 'working' && 'bg-run animate-k-pulse',
-        status === 'needs-approval' && 'bg-wait animate-k-pulse',
+        status === 'working' && 'bg-run motion-safe:animate-k-halo [--k-halo:var(--run)]',
+        (status === 'needs-approval' || status === 'needs-you') && 'bg-wait motion-safe:animate-k-halo [--k-halo:var(--wait)]',
         status === 'done' && 'bg-done',
         status === 'failed' && 'bg-fail',
+        status === 'to-merge' && 'border-done border-[1.5px]',
         (status === 'stopped' || status === 'idle') && 'border-mu2 border-[1.5px]',
         className,
       )}

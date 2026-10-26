@@ -5,8 +5,9 @@ import { HarnessMark } from '@/components/harness-mark';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { useApprovals } from '@/hooks/use-approvals';
 import { planProgress, type AgentSummary } from '@/lib/agents';
-import { isPlan } from '@/lib/approvals';
-import { planBar, planGroup, planLabel, planSections, type PlanBar } from '@/lib/plan';
+import { isPlan, isQuestion } from '@/lib/approvals';
+import { planBar, planLabel, planSections, type PlanBar, type PlanOpts } from '@/lib/plan';
+import { planGroup, type PlanGroup } from '@/lib/status';
 import { cn } from '@/lib/utils';
 import { StatusDot, TodoList } from './agent-bits';
 import { useAgentPane } from './pane-state';
@@ -52,21 +53,25 @@ const NO_AGENTS: AgentSummary[] = [];
  * The orchestrator's plan. Collapsed: a dot per agent that needs tracking (waiting on the person,
  * failed, working), what the most urgent one is doing, and finished agents as a count. Open: the
  * active agents with their todos, and the finished ones folded into "Done". Opening an agent shows
- * it in the agent pane.
+ * it in the agent pane. `settledAt`: the orchestrator's last activity, so agents are grouped as
+ * the round-up's dot groups them (see `planGroup`).
  */
-export function PlanDock() {
+export function PlanDock({ settledAt }: { settledAt?: number }) {
   const pane = useAgentPane();
   const approvals = useApprovals();
   const agents = pane?.agents ?? NO_AGENTS;
-  const opts = useMemo(() => {
+  const opts = useMemo((): PlanOpts => {
     const titles = new Map(agents.map((a) => [a.id, a.title]));
-    return { plans: new Set(approvals.filter(isPlan).map((a) => a.sessionId)), nameOf: (id: string) => titles.get(id) };
-  }, [agents, approvals]);
+    const asking = (is: typeof isPlan) => new Set(approvals.filter(is).map((a) => a.sessionId));
+    return { plans: asking(isPlan), questions: asking(isQuestion), nameOf: (id: string) => titles.get(id), settledAt };
+  }, [agents, approvals, settledAt]);
   if (!pane || agents.length === 0) return null;
   const bar = planBar(agents, opts);
-  const { active, done } = planSections(agents);
+  const { active, done } = planSections(agents, settledAt);
   const p = planProgress(agents);
-  const row = (a: AgentSummary) => <AgentRow key={a.id} agent={a} label={planLabel(a, opts)} onOpen={() => pane.openAgent(a.id)} />;
+  const row = (a: AgentSummary) => (
+    <AgentRow key={a.id} agent={a} group={planGroup(a, settledAt)} label={planLabel(a, opts)} onOpen={() => pane.openAgent(a.id)} />
+  );
   return (
     <Dock title="Plan" bar={<Dots bar={bar} />} summary={bar.text} end={bar.counts.join(' · ')}>
       <p className="text-mu2 px-2 pb-1 text-xs">
@@ -116,20 +121,19 @@ export function TodoDock({ todos }: { todos: TodoItem[] }) {
 /** A dot per agent that needs tracking, capped: the plan's live shape, even collapsed. */
 function Dots({ bar }: { bar: PlanBar }) {
   if (bar.dots.length === 0) return null;
-  const total = bar.dots.length + bar.more;
   return (
-    <span role="img" aria-label={`${total} active ${total === 1 ? 'agent' : 'agents'}`} className="flex shrink-0 items-center gap-1">
-      {bar.dots.map((a) => (
-        <StatusDot key={a.id} status={a.status} />
+    // Room between the dots for their halos.
+    <span role="img" aria-label={bar.label} title={bar.label} className="flex shrink-0 items-center gap-1.5">
+      {bar.dots.map(({ agent, group }) => (
+        <StatusDot key={agent.id} status={group} />
       ))}
       {bar.more > 0 && <span className="text-mu2 ml-0.5 font-mono text-[11px]">+{bar.more}</span>}
     </span>
   );
 }
 
-function AgentRow({ agent: a, label, onOpen }: { agent: AgentSummary; label: string; onOpen: () => void }) {
+function AgentRow({ agent: a, group, label, onOpen }: { agent: AgentSummary; group: PlanGroup; label: string; onOpen: () => void }) {
   const done = a.todos.filter((t) => t.status === 'completed').length;
-  const group = planGroup(a);
   // Todos only while they are live; a finished agent's are in its tab.
   const live = group === 'needs-you' || group === 'failed' || group === 'working';
   return (
@@ -151,7 +155,7 @@ function AgentRow({ agent: a, label, onOpen }: { agent: AgentSummary; label: str
               {done}/{a.todos.length}
             </span>
           )}
-          <StatusDot status={a.status} />
+          <StatusDot status={group} />
         </span>
       </button>
       {live && a.todos.length > 0 && <TodoList todos={a.todos} label={`${a.title}’s todos`} className="border-ln mb-1.5 ml-[33px] border-l pt-0.5 pl-3" />}
