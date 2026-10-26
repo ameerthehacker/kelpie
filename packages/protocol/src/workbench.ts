@@ -26,9 +26,9 @@ export type ItemStatus = z.infer<typeof ItemStatus>;
 
 /**
  * A ticket the person named for this work, shown as a chip on the card: a linked ticket (see
- * tickets.ts), without the round-up's own record of how it was linked (`source`, `addedAt`).
+ * tickets.ts), without the round-up's own record of it (`ref`, `source`, `titleSource`, `addedAt`).
  */
-export const CardTicket = LinkedTicket.omit({ source: true, addedAt: true }).extend({
+export const CardTicket = LinkedTicket.omit({ ref: true, source: true, titleSource: true, addedAt: true }).extend({
   url: z.url(),
   /** A Jira issue's key (`SHOP-412`); Asana links carry none. */
   key: z.string().min(1).max(40).optional(),

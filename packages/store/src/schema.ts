@@ -296,8 +296,10 @@ export const tickets = sqliteTable(
     url: text('url').notNull(),
     /** A Jira issue's key; Asana links carry none. */
     key: text('key'),
-    /** A readable name, once the orchestrator gives one. */
+    /** A readable name: the link's text in the person's message, or one the orchestrator or the person gave. */
     title: text('title'),
+    /** Where `title` came from (see TicketTitleSource): a title never replaces one from a stronger source. */
+    titleSource: text('title_source', { enum: ['link', 'orchestrator', 'person'] }),
     source: text('source', { enum: ['auto', 'orchestrator'] }).notNull(),
     createdAt: integer('created_at').notNull(),
   },

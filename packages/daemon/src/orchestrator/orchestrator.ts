@@ -63,6 +63,12 @@ const REPORT_CHARS = 2000;
 
 export { ToolError };
 
+/** The links of tickets still without a title, when there are any (for list_agents). */
+const untitled = (tickets: LinkedTicket[]) => {
+  const urls = tickets.filter((t) => !t.title).map((t) => t.url);
+  return urls.length ? { untitledTickets: urls } : {};
+};
+
 /** The base branch can't change: writers have already started from it. */
 export class BaseFixedError extends ToolError {}
 
@@ -142,6 +148,8 @@ export interface AgentList {
   maxAgents: number;
   working: number;
   agents: AgentInfo[];
+  /** Links of the round-up's tickets that have no title yet, for link_ticket to name once it knows them. */
+  untitledTickets?: string[];
 }
 
 /**
@@ -495,6 +503,7 @@ export class Orchestrator implements SessionHooks {
       maxAgents: this.maxAgents,
       working: this.busy(parent),
       agents: this.manager.children(parent.id).map((c) => this.agentInfo(c)),
+      ...untitled(parent.tickets()),
     };
   }
 
@@ -717,12 +726,15 @@ export class Orchestrator implements SessionHooks {
     return { agent: child, release: () => held && this.reserved.delete(child.id) };
   }
 
-  /** Links a Jira or Asana ticket to the round-up, or titles one already linked. */
-  linkTicket(parent: Session, url: string, title?: string): { tickets: LinkedTicket[] } {
+  /** Links a Jira or Asana ticket to the round-up, or titles one already linked (never over the person's own title). */
+  linkTicket(parent: Session, url: string, title?: string): { tickets: LinkedTicket[]; note?: string } {
     const t = parseTicketUrl(url);
     if (!t) throw new ToolError(`not a Jira issue or Asana task or project link: ${url}. Pass the ticket's own page, e.g. https://<org>.atlassian.net/browse/KEY-123 or https://app.asana.com/0/<project>/<task>.`);
     parent.linkTickets([t], 'orchestrator', title);
-    return { tickets: parent.tickets() };
+    const tickets = parent.tickets();
+    const named = tickets.find((x) => x.ref === t.ref);
+    const kept = !!title?.trim() && named?.titleSource === 'person' && named.title !== title.trim();
+    return { tickets, ...(kept ? { note: 'The person named this ticket themselves, so their title stays.' } : {}) };
   }
 
   /** Unlinks a ticket from the round-up, by any link to it. */

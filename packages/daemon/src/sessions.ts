@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import { attachmentsBlock, findTickets, mergeUsage, type LinkedTicket, type TicketLink, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings } from '@kelpie/protocol';
+import { attachmentsBlock, findTickets, mergeUsage, ticketsNote, type LinkedTicket, type TicketLink, type TicketTitleSource, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings } from '@kelpie/protocol';
 import { claudeCode, isChromeTool, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store, TicketRow, TicketSource } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary, type Now } from './agent-summary.js';
@@ -233,11 +233,13 @@ interface SessionContext {
 }
 
 const ticketOf = (r: TicketRow): LinkedTicket => ({
+  ref: r.ref,
   provider: r.provider,
   kind: r.kind,
   url: r.url,
   ...(r.key ? { key: r.key } : {}),
   ...(r.title ? { title: r.title } : {}),
+  ...(r.title && r.titleSource ? { titleSource: r.titleSource } : {}),
   source: r.source,
   addedAt: r.createdAt,
 });
@@ -479,11 +481,25 @@ export class Session {
     return (this.ticketsState ??= this.ctx.store.ticketsOf(this.id).map(ticketOf));
   }
 
-  /** Links tickets to this round-up (each once; see Store.linkTicket). True, and watchers hear, if anything changed. */
+  /**
+   * Links tickets to this round-up (each once; see Store.linkTicket), titled `title` or the text
+   * each was linked with. True, and watchers hear, if anything changed.
+   */
   linkTickets(links: TicketLink[], source: TicketSource, title?: string): boolean {
     if (this.row.parentId) throw new Error('tickets are linked to a round-up, not to one of its agents');
     let changed = false;
     for (const t of links) changed = this.ctx.store.linkTicket(this.id, t, source, title) || changed;
+    if (changed) this.ticketsChanged();
+    return changed;
+  }
+
+  /**
+   * Titles a linked ticket by its `ref` (no title clears it), unless it has a title from a stronger
+   * source (see titleWins). Undefined if it is not linked; true, and watchers hear, if it changed.
+   */
+  titleTicket(ref: string, title: string | undefined, titleSource: TicketTitleSource): boolean | undefined {
+    if (this.row.parentId) return undefined;
+    const changed = this.ctx.store.titleTicket(this.id, ref, title, titleSource);
     if (changed) this.ticketsChanged();
     return changed;
   }
@@ -647,8 +663,13 @@ export class Session {
     for (const s of all) if (s.deleted) throw new Error(s === this ? 'this round-up was deleted' : `"${s.title}" was deleted`);
     if (this.ctx.closing) throw new Error('Kelpie is shutting down');
     const files = opts.attachments ?? [];
+    const found = source === 'user' ? findTickets(text) : [];
+    // An orchestrator hears which tickets it links without a name, to title them once it knows them.
+    const known = found.length && this.role === 'orchestrator' && !this.row.parentId ? new Map(this.tickets().map((t) => [t.ref, t])) : undefined;
+    const unnamed = known ? found.filter((t) => !t.title && !known.get(t.ref)?.title).map((t) => t.url) : [];
+    const body = unnamed.length ? `${text}\n\n${ticketsNote(unnamed)}` : text;
     // The paths are in the text itself, so a turn re-sent after a crash still carries its files.
-    const turn = files.length ? `${text.trim() ? `${text}\n\n` : ''}${attachmentsBlock(files)}` : text;
+    const turn = files.length ? `${body.trim() ? `${body}\n\n` : ''}${attachmentsBlock(files)}` : body;
     // The harness echoes an empty turn as nothing, which would put the outbox out of step.
     if (!turn.trim() || together.some((t) => !t.text.trim())) throw new Error('a turn needs some text');
     const meta = files.length ? { ...opts.meta, attachments: files.map(({ path: _, ...a }) => a) } : opts.meta;
@@ -660,10 +681,9 @@ export class Session {
     });
     if (!this.row.title && source === 'user') this.update({ title: titleFrom(text) || titleFrom(files.map((f) => f.name).join(', ')) });
     // Tickets the person links to, in their round-up or to one of its agents, are the round-up's.
-    if (source === 'user') {
-      const found = findTickets(text);
+    if (found.length) {
       try {
-        if (found.length) (this.row.parentId ? this.ctx.get(this.row.parentId) : this)?.linkTickets(found, 'auto');
+        (this.row.parentId ? this.ctx.get(this.row.parentId) : this)?.linkTickets(found, 'auto');
       } catch (err) {
         console.error(`session ${this.id}: could not link tickets`, err);
       }
