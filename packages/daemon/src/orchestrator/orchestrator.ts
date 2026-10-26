@@ -12,6 +12,7 @@ import { ToolError } from '../errors.js';
 import { GitError, type Branch, type Worktrees } from '../worktrees.js';
 import { Changes } from '../review/changes.js';
 import { Reviews, type ReviewClaim } from '../review/reviews.js';
+import { SavedSettings } from '../settings.js';
 import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, musterPrompt, orchestratorPrompt, reviewBrief, type WorkPlace } from './prompt.js';
 
 /**
@@ -69,8 +70,10 @@ export interface OrchestratorOptions {
   store: Store;
   /** Where harnesses reach the kelpie MCP server, e.g. http://127.0.0.1:7317/mcp. */
   mcpUrl: string;
-  /** Sub-agents one orchestrator may have working at once. */
+  /** Sub-agents one orchestrator may have working at once, until the person sets it in Settings. */
   maxAgents?: number;
+  /** The person's settings (the agent limit among them). Default: read from `store`, over `maxAgents`. */
+  settings?: SavedSettings;
   /** Idles within this window go to the orchestrator as one notification. */
   notifyDelayMs?: number;
   /** Git worktrees for writing agents. Without it (or outside a git repo) writers share the round-up's cwd, one at a time. */
@@ -135,6 +138,9 @@ export interface AgentList {
   featureCheckout: string | undefined;
   /** The mode the person has the round-up in. */
   mode: Mode;
+  /** How many of its agents may work at once (the person sets it in Settings), and how many count against that now (working, or starting). */
+  maxAgents: number;
+  working: number;
   agents: AgentInfo[];
 }
 
@@ -147,7 +153,7 @@ export class Orchestrator implements SessionHooks {
   private sessions: SessionManager | undefined;
   private readonly store: Store;
   private readonly mcpUrl: string;
-  readonly maxAgents: number;
+  readonly settings: SavedSettings;
   private readonly notifyDelayMs: number;
   /** Bearer token → orchestrator round-up id, one per orchestrator process. */
   private readonly tokens = new Map<string, string>();
@@ -155,6 +161,11 @@ export class Orchestrator implements SessionHooks {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Each orchestrator's notifications go out one at a time, so two never cover the same idle. */
   private readonly flushes = new Map<string, Promise<void>>();
+  /** Orchestrators refused for the cap since they were last notified: told when the person raises it. */
+  private readonly capped = new Set<string>();
+  /** The last pass resuming waiting agents, and the one queued after it, if any (see `resumeWaiting`). */
+  private resumes: Promise<void> = Promise.resolve();
+  private resumeQueued: Promise<void> | undefined;
   /** Sub-agents to resume after a restart once the cap or the writer guard lets them. */
   private readonly waiting = new Set<string>();
   /**
@@ -186,7 +197,11 @@ export class Orchestrator implements SessionHooks {
     // A process left running in a worktree that goes would outlive its directory.
     if (this.worktrees) this.worktrees.beforeRemove = (row) => this.release(row);
     this.mcpUrl = opts.mcpUrl;
-    this.maxAgents = opts.maxAgents ?? 4;
+    this.settings = opts.settings ?? new SavedSettings(this.store, { maxAgents: opts.maxAgents });
+    this.settings.onChange((next, prev) => {
+      this.sessions?.publish({ type: 'settings', settings: next });
+      if (next.maxAgents > prev.maxAgents) this.limitRaised();
+    });
     this.notifyDelayMs = opts.notifyDelayMs ?? 1500;
     this.changes = new Changes(this.store);
     this.reviews = new Reviews(this.store, this.changes, {
@@ -198,6 +213,11 @@ export class Orchestrator implements SessionHooks {
 
   attach(sessions: SessionManager): void {
     this.sessions = sessions;
+  }
+
+  /** How many of a round-up's agents may work at once: the person's setting, read afresh each time. */
+  get maxAgents(): number {
+    return this.settings.get().maxAgents;
   }
 
   private get manager(): SessionManager {
@@ -265,7 +285,7 @@ export class Orchestrator implements SessionHooks {
       ...(denied.length && scratch ? { disallowedTools: denied.flatMap((dir) => SCRATCH_TOOLS.map((t) => `${t}(${under(dir)})`)) } : {}),
       mcpConfig,
       ...connected,
-      appendSystemPrompt: orchestratorPrompt(scratch, session.mode) + preface,
+      appendSystemPrompt: orchestratorPrompt(scratch, session.mode, this.maxAgents) + preface,
     };
   }
 
@@ -283,7 +303,7 @@ export class Orchestrator implements SessionHooks {
         this.reviewMoved(session.parentId);
       }
       // A slot or the repo may have freed up for an agent waiting to resume.
-      if (this.waiting.size) this.resumeWaiting();
+      if (this.waiting.size) void this.resumeWaiting();
     }
   }
 
@@ -472,6 +492,8 @@ export class Orchestrator implements SessionHooks {
       featureBranch: home?.branch,
       featureCheckout: home && (await this.checkout(home)),
       mode: parent.mode,
+      maxAgents: this.maxAgents,
+      working: this.busy(parent),
       agents: this.manager.children(parent.id).map((c) => this.agentInfo(c)),
     };
   }
@@ -681,7 +703,7 @@ export class Orchestrator implements SessionHooks {
     if (!child.writes) return { reason: `"${child.title}" is read-only` };
     if (parent.mode === 'plan') return { reason: 'the round-up is in plan mode, so writers wait' };
     if (!this.isWorking(child)) {
-      if (this.working(parent) + (this.starting.get(parent.id) ?? 0) >= this.maxAgents) return { reason: `${this.maxAgents} agent${this.maxAgents === 1 ? ' is' : 's are'} already working, the most at once` };
+      if (this.slotsLeft(parent) <= 0) return { reason: capReason(this.maxAgents, this.busy(parent)) };
       const writer = this.busyWriter(child.cwd, child.id);
       if (writer) return { reason: `writing agent "${writer.title}" is working in the same place` };
       const browser = child.browser ? this.browserInUse(parent, child.id) : undefined;
@@ -733,7 +755,20 @@ export class Orchestrator implements SessionHooks {
     for (const id of parents) this.schedule(id);
   }
 
-  private async resumeWaiting(): Promise<void> {
+  /**
+   * Resumes the agents waiting to, as far as the cap and the guards allow. One pass at a time: a call
+   * while one runs shares the single pass queued after it, which sees what the first one started.
+   */
+  private resumeWaiting(): Promise<void> {
+    this.resumeQueued ??= this.resumes.then(() => {
+      this.resumeQueued = undefined;
+      return this.resumePass();
+    });
+    this.resumes = this.resumeQueued;
+    return this.resumeQueued;
+  }
+
+  private async resumePass(): Promise<void> {
     for (const id of [...this.waiting]) {
       const agent = this.manager.get(id);
       const parent = agent?.parentId ? this.manager.get(agent.parentId) : undefined;
@@ -741,12 +776,13 @@ export class Orchestrator implements SessionHooks {
         this.waiting.delete(id);
         continue;
       }
-      if (this.working(parent) >= this.maxAgents) continue;
+      if (this.slotsLeft(parent) <= 0) continue;
       if (agent.writes && this.busyWriter(agent.cwd, agent.id)) continue;
       if (agent.browser && this.browserInUse(parent, agent.id)) continue;
       this.waiting.delete(id);
       try {
-        await agent.resumeAfterRestart(AGENT_RESTARTED);
+        // Counted from here: its process takes a moment to start working, and the cap must count it meanwhile.
+        await this.reserving(agent, () => agent.resumeAfterRestart(AGENT_RESTARTED));
       } catch (err) {
         console.error(`agent ${id}: could not resume`, err);
       }
@@ -759,15 +795,47 @@ export class Orchestrator implements SessionHooks {
     if (this.timers.has(parentId)) return;
     const timer = setTimeout(() => {
       this.timers.delete(parentId);
-      const next = (this.flushes.get(parentId) ?? Promise.resolve())
-        .then(() => this.flush(parentId))
-        // Refused while Kelpie shuts down: the next start sends it (it goes by notifiedIdx).
-        .catch((err) => console.error(`orchestrator ${parentId}: notification not sent:`, (err as Error).message));
-      this.flushes.set(parentId, next);
-      void next.finally(() => this.flushes.get(parentId) === next && this.flushes.delete(parentId));
+      // Refused while Kelpie shuts down: the next start sends it (it goes by notifiedIdx).
+      this.notifyInTurn(parentId, () => this.flush(parentId));
     }, this.notifyDelayMs);
     timer.unref();
     this.timers.set(parentId, timer);
+  }
+
+  /** Sends an orchestrator a notification after any still going out to it. */
+  private notifyInTurn(parentId: string, send: () => Promise<void>): void {
+    const next = (this.flushes.get(parentId) ?? Promise.resolve())
+      .then(send)
+      .catch((err) => console.error(`orchestrator ${parentId}: notification not sent:`, (err as Error).message));
+    this.flushes.set(parentId, next);
+    void next.finally(() => this.flushes.get(parentId) === next && this.flushes.delete(parentId));
+  }
+
+  /**
+   * The person raised the agent limit: agents waiting to resume start, as far as it now allows, and
+   * each orchestrator that was refused for the cap (and not notified since) hears there is room.
+   */
+  private limitRaised(): void {
+    // Agents waiting to resume go first: the room the notice offers is what they leave.
+    void this.resumeWaiting().then(() => this.offerRoom());
+  }
+
+  private offerRoom(): void {
+    for (const id of [...this.capped]) {
+      const parent = this.sessions?.get(id);
+      if (!parent) {
+        this.capped.delete(id);
+        continue;
+      }
+      if (this.slotsLeft(parent) <= 0) continue;
+      this.capped.delete(id);
+      this.notifyInTurn(id, async () => {
+        // An idle notification may have gone out meanwhile, or the room been taken.
+        const room = this.slotsLeft(parent);
+        if (room <= 0 || !this.sessions?.get(id)) return;
+        await parent.send(limitNotice(this.maxAgents, this.busy(parent), room), 'kelpie');
+      });
+    }
   }
 
   /** Tells the orchestrator about every sub-agent that went idle since it was last told. */
@@ -799,6 +867,8 @@ export class Orchestrator implements SessionHooks {
     // Muster's outcome is what git says is in the feature branch, not what its report claims.
     const mustered = owed.some(({ agent }) => agent.kind === 'muster') ? await this.settleMuster(parentId) : undefined;
     // Sent and marked in one transaction: after a crash it is neither lost nor sent twice.
+    // It can try again on this one: no separate word when the limit is raised.
+    this.capped.delete(parentId);
     await parent.send(notification(agents, mustered), 'kelpie', {
       alsoInTx: () => owed.forEach(({ agent, index }) => agent.markNotified(index)),
       // The text has each report already, unless it was cut there.
@@ -931,11 +1001,20 @@ export class Orchestrator implements SessionHooks {
     }
   }
 
+  /** How many more of a round-up's agents may start now: none, or below, once the limit was lowered under the count working. */
+  private slotsLeft(parent: Session): number {
+    return this.maxAgents - this.busy(parent);
+  }
+
+  /** A round-up's agents the cap counts: working (or cleared to start), and writers whose worktree is still being made. */
+  private busy(parent: Session): number {
+    return this.working(parent) + (this.starting.get(parent.id) ?? 0);
+  }
+
   private checkCap(parent: Session): void {
-    if (this.working(parent) + (this.starting.get(parent.id) ?? 0) >= this.maxAgents) {
-      throw new ToolError(
-        `${this.maxAgents} agents are already working, the most allowed at once. End your turn; you will be notified as they finish.`,
-      );
+    if (this.slotsLeft(parent) <= 0) {
+      this.capped.add(parent.id);
+      throw new ToolError(capRefusal(this.maxAgents, this.busy(parent)));
     }
   }
 
@@ -991,6 +1070,24 @@ export class Orchestrator implements SessionHooks {
       costUsd: Math.round(this.store.costOf(c.id) * 10_000) / 10_000,
     };
   }
+}
+
+const agents = (n: number) => `${n} agent${n === 1 ? '' : 's'}`;
+
+/** Why no more agents may start: `busy` of them count against the person's `max`, maybe more after they lowered it. */
+export function capReason(max: number, busy: number): string {
+  const now = busy <= max ? `${agents(busy)} ${busy === 1 ? 'is' : 'are'} already working` : `${agents(busy)} are working and the limit is now ${max}`;
+  return `${now}: the person allows at most ${agents(max)} at once (they set this in Kelpie's Settings)`;
+}
+
+/** spawn_agent's and message_agent's refusal at the cap. */
+export function capRefusal(max: number, busy: number): string {
+  return `${capReason(max, busy)}. End your turn; you will be notified as they finish.`;
+}
+
+/** Tells an orchestrator refused at the cap that the person raised it. */
+export function limitNotice(max: number, working: number, room: number): string {
+  return `<${NOTIFICATION_TAG}>\nThe person raised the limit to ${agents(max)} working at once. ${working} working now, so ${room === 1 ? 'one more' : `${room} more`} can start: go ahead with the work that was waiting for a free slot.\n\nThis message is from Kelpie, not the person.\n</${NOTIFICATION_TAG}>`;
 }
 
 /** What the orchestrator reads; the UI renders the same agents from the echo's `agents` and this text. */

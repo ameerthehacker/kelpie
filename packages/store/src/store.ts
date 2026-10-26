@@ -506,6 +506,25 @@ export class Store {
     return this.db.delete(schema.connections).where(eq(schema.connections.provider, provider)).run().changes > 0;
   }
 
+  /** Every saved setting, by key, its value parsed from JSON. Settings never saved are left out. */
+  settings(): Record<string, unknown> {
+    return Object.fromEntries(this.db.select().from(schema.settings).all().map((r) => [r.key, JSON.parse(r.value) as unknown]));
+  }
+
+  /** Saves settings (each value as JSON), all or none; null forgets one, so it has its default again. */
+  setSettings(values: Record<string, unknown>, now = Date.now()): void {
+    this.atomically(() => {
+      for (const [key, v] of Object.entries(values)) {
+        if (v === null) {
+          this.db.delete(schema.settings).where(eq(schema.settings.key, key)).run();
+          continue;
+        }
+        const value = JSON.stringify(v);
+        this.db.insert(schema.settings).values({ key, value, updatedAt: now }).onConflictDoUpdate({ target: schema.settings.key, set: { value, updatedAt: now } }).run();
+      }
+    });
+  }
+
   /**
    * Links a ticket to a round-up, once: linking one it has (by `ref`, whatever form the link
    * took) only sets its title, if one is given. True if anything changed.

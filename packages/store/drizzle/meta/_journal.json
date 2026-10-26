@@ -99,6 +99,13 @@
       "when": 1792991327770,
       "tag": "0013_reviews",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1793000549621,
+      "tag": "0014_settings",
+      "breakpoints": true
     }
   ]
 }

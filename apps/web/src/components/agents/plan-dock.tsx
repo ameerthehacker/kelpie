@@ -4,10 +4,12 @@ import type { TodoItem } from '@kelpie/protocol';
 import { HarnessMark } from '@/components/harness-mark';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { useApprovals } from '@/hooks/use-approvals';
+import { useMaxAgents } from '@/hooks/use-settings';
 import { planProgress, type AgentSummary } from '@/lib/agents';
 import { isPlan, isQuestion } from '@/lib/approvals';
 import { planBar, planLabel, planSections, type PlanBar, type PlanOpts } from '@/lib/plan';
 import { planGroup, type PlanGroup } from '@/lib/status';
+import { workingLabel } from '@/lib/settings';
 import { cn } from '@/lib/utils';
 import { StatusDot, TodoList } from './agent-bits';
 import { useAgentPane } from './pane-state';
@@ -60,6 +62,7 @@ export function PlanDock({ settledAt }: { settledAt?: number }) {
   const pane = useAgentPane();
   const approvals = useApprovals();
   const agents = pane?.agents ?? NO_AGENTS;
+  const limit = useMaxAgents();
   const opts = useMemo((): PlanOpts => {
     const titles = new Map(agents.map((a) => [a.id, a.title]));
     const asking = (is: typeof isPlan) => new Set(approvals.filter(is).map((a) => a.sessionId));
@@ -69,13 +72,15 @@ export function PlanDock({ settledAt }: { settledAt?: number }) {
   const bar = planBar(agents, opts);
   const { active, done } = planSections(agents, settledAt);
   const p = planProgress(agents);
+  const working = agents.filter((a) => a.status === 'working' || a.status === 'needs-approval').length;
   const row = (a: AgentSummary) => (
     <AgentRow key={a.id} agent={a} group={planGroup(a, settledAt)} label={planLabel(a, opts)} onOpen={() => pane.openAgent(a.id)} />
   );
   return (
     <Dock title="Plan" bar={<Dots bar={bar} />} summary={bar.text} end={bar.counts.join(' · ')}>
       <p className="text-mu2 px-2 pb-1 text-xs">
-        {p.agents} agents{p.steps > 0 && ` · ${p.stepsDone}/${p.steps} todos done`}
+        {p.agents} agents{working > 0 && ` · ${workingLabel(working, limit)}`}
+        {p.steps > 0 && ` · ${p.stepsDone}/${p.steps} todos done`}
       </p>
       {active.length > 0 && <ul className="flex flex-col">{active.map(row)}</ul>}
       {done.length > 0 && (

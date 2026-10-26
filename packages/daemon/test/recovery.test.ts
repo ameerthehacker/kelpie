@@ -201,6 +201,49 @@ describe('recovery after Kelpie stops', () => {
     expect((await second.orch.list(parent)).agents.map((a) => a.status).sort()).toEqual(['waiting', 'working']);
   });
 
+  it('resumes agents only as far as the saved limit allows, and the rest once the person raises it', async () => {
+    const db = join(tmp('kelpie-home-'), 'kelpie.db');
+    const argsFile = join(tmp('kelpie-args-'), 'args.jsonl');
+    let store = openStore(db);
+    const first = start(store, { FAKE_HANG: '1' });
+    const orchSession = first.sessions.create();
+    await orchSession.send('Read three things');
+    const agents = ['One', 'Two', 'Three'].map((title) => first.sessions.create(tmpdir(), { parentId: orchSession.id, role: 'agent', title }));
+    for (const a of agents) await a.send(`Read ${a.title}`, 'orchestrator');
+    await waitFor(() => agents.every((a) => a.info().harnessSessionId));
+    first.orch.settings.update({ maxAgents: 1 });
+
+    first.sessions.prepareShutdown();
+    await first.sessions.stopAll();
+    managers.length = 0;
+    store.close();
+
+    store = openStore(db);
+    const second = start(store, { FAKE_HANG: '1', FAKE_ARGS_FILE: argsFile });
+    expect(second.orch.maxAgents).toBe(1);
+    await second.orch.recover();
+    const agentArgs = () => jsonLines<string[]>(argsFile).filter((a) => !a.some((x) => x.includes("You are Kelpie's orchestrator")));
+    await waitFor(() => agentArgs().length > 0);
+    await sleep(300);
+    expect(agentArgs()).toHaveLength(1);
+    const parent = second.sessions.get(orchSession.id)!;
+    expect((await second.orch.list(parent)).agents.map((a) => a.status).sort()).toEqual(['waiting', 'waiting', 'working']);
+
+    // Raised twice in a row (a lower in between): the two resume passes run one after the other, so
+    // the second sees the agent the first is still starting and the limit holds.
+    second.orch.settings.update({ maxAgents: 2 });
+    second.orch.settings.update({ maxAgents: 1 });
+    second.orch.settings.update({ maxAgents: 2 });
+    await waitFor(() => agentArgs().length === 2);
+    await sleep(300);
+    expect(agentArgs()).toHaveLength(2);
+    expect((await second.orch.list(parent)).agents.map((a) => a.status).sort()).toEqual(['waiting', 'working', 'working']);
+
+    second.orch.settings.update({ maxAgents: 3 });
+    await waitFor(() => agentArgs().length === 3);
+    expect((await second.orch.list(parent)).agents.map((a) => a.status)).toEqual(['working', 'working', 'working']);
+  });
+
   it('delivers a review submitted just before Kelpie stopped, once, after the restart', async () => {
     const db = join(tmp('kelpie-home-'), 'kelpie.db');
     const root = join(tmp('kelpie-home-'), 'worktrees');

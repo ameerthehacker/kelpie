@@ -17,6 +17,7 @@ import { ReviewError } from './errors.js';
 import { NoSuchRound } from './review/changes.js';
 import type { NewAnchor } from './review/reviews.js';
 import type { SessionManager } from './sessions.js';
+import { SettingsError } from './settings.js';
 
 
 const MODEL_ERROR = 'model must be a model name or alias, like "sonnet" or "claude-opus-5-5"';
@@ -139,6 +140,7 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
       send({ event: 'sub-agents', data: JSON.stringify(sessions.all().filter((s) => s.parentId).map((s) => s.info())) });
       send({ event: 'usage', data: JSON.stringify(sessions.usage()) });
       send({ event: 'approvals-snapshot', data: JSON.stringify(sessions.approvals()) });
+      if (orch) send({ event: 'settings', data: JSON.stringify(orch.settings.get()) });
       return sessions.watch((u) => {
         if (u.type === 'session') send({ event: 'session', data: JSON.stringify(u.session) });
         else if (u.type === 'deleted') send({ event: 'deleted', data: JSON.stringify({ id: u.id }) });
@@ -147,9 +149,26 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
         else if (u.type === 'usage') send({ event: 'usage', data: JSON.stringify(u.usage) });
         else if (u.type === 'review') send({ event: 'review', data: JSON.stringify({ roundUpId: u.roundUpId, state: u.state }) });
         else if (u.type === 'changes') send({ event: 'changes', data: JSON.stringify({ roundUpId: u.roundUpId, sessionId: u.sessionId }) });
+        else if (u.type === 'settings') send({ event: 'settings', data: JSON.stringify(u.settings) });
       });
     }),
   );
+
+  // The person's settings, with each one's range; `/api/events` sends a `settings` event when they change.
+  if (orch) {
+    app.get('/api/settings', (c) => c.json(orch.settings.withLimits()));
+    // Only the fields sent change (null puts a default back); anything out of range or unknown changes nothing.
+    app.put('/api/settings', async (c) => {
+      const body = await c.req.json<unknown>().catch(() => undefined);
+      try {
+        orch.settings.update(body);
+      } catch (err) {
+        if (err instanceof SettingsError) return c.json({ error: err.message }, 400);
+        throw err;
+      }
+      return c.json(orch.settings.withLimits());
+    });
+  }
 
   app.post('/api/sessions', async (c) => {
     const body = await jsonBody<{ cwd?: unknown; model?: unknown; baseBranch?: unknown; mode?: unknown }>(c);

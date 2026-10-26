@@ -4,7 +4,7 @@
  *   pnpm kelpie:serve [--cwd <repo>] [--port 7317] [--model m]
  *
  * KELPIE_CWD / KELPIE_PORT / KELPIE_MODEL set the same defaults, KELPIE_MAX_AGENTS how many sub-agents
- * one orchestrator may have working at once, KELPIE_MAX_WORKTREES how many git worktrees may be on
+ * one orchestrator may have working at once (until set in Settings), KELPIE_MAX_WORKTREES how many git worktrees may be on
  * disk (default 20), KELPIE_WORKTREE_IDLE_DAYS how long an unused clean one stays (default 3), and
  * KELPIE_MAX_UPLOAD_MB the largest file one upload may be (default 25); `pnpm dev` runs it through turbo,
  * whose working directory is this package, so it passes the repo via KELPIE_CWD.

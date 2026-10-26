@@ -27,6 +27,7 @@ export interface DaemonOptions {
   /** Where the store's migrations are, when not beside its source (a bundled build). */
   migrationsFolder?: string;
   maxUploadBytes?: number;
+  /** The agent limit until the person sets one in Settings (clamped to 1–16). */
   maxAgents?: number;
   maxWorktrees?: number;
   worktreeIdleMs?: number;
