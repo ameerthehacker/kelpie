@@ -42,7 +42,11 @@ function TitleInput({ t, edits, onDone }: { t: TicketView; edits: Edits; onDone:
       onFocus={(e) => e.currentTarget.select()}
       onKeyDown={(e) => {
         e.stopPropagation();
-        if (e.key === 'Enter') finish(e.currentTarget.value, true);
+        if (e.key === 'Enter') {
+          // Focus moves to the Rename button now: this Enter must not press it too.
+          e.preventDefault();
+          finish(e.currentTarget.value, true);
+        }
         if (e.key === 'Escape') {
           e.preventDefault();
           finish(undefined, true);
