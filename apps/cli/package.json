@@ -1,6 +1,6 @@
 {
   "name": "kelpie-code",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Kelpie: hand a coding-agent orchestrator many jobs at once, on top of your own Claude Code.",
   "type": "module",
   "bin": {
