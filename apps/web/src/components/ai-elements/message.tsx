@@ -29,6 +29,7 @@ import {
   useState,
 } from "react";
 import { Streamdown } from "streamdown";
+import { markdownLinks, noLinkSafety } from "@/components/chat/markdown-link";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -330,6 +331,8 @@ export const MessageResponse = memo(
         "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         className
       )}
+      components={markdownLinks}
+      linkSafety={noLinkSafety}
       plugins={streamdownPlugins}
       {...props}
     />

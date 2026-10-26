@@ -122,6 +122,8 @@ describe('planBar', () => {
     expect(planBar(Array.from({ length: 22 }, () => agent('done')))).toEqual({ dots: [], more: 0, text: 'All 22 agents done', counts: [], label: '' });
     expect(planBar([agent('done'), agent('done', { branch: 'b', worktree: 'active' })]).text).toBe('All 2 agents finished · 1 ready to merge');
     expect(planBar([agent('done'), agent('stopped')]).text).toBe('1/2 agents finished · 1 stopped');
+    expect(planBar([agent('done')]).text).toBe('Agent done');
+    expect(planBar([agent('done', { branch: 'b', worktree: 'active' })]).text).toBe('Agent finished · 1 ready to merge');
   });
 
   it('drops a failure the orchestrator has moved on from out of the dots', () => {

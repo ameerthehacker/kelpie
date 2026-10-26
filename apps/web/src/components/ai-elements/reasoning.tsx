@@ -24,6 +24,7 @@ import {
   useState,
 } from "react";
 import { Streamdown } from "streamdown";
+import { markdownLinks, noLinkSafety } from "@/components/chat/markdown-link";
 
 import { Shimmer } from "./shimmer";
 
@@ -216,7 +217,7 @@ export const ReasoningContent = memo(
       )}
       {...props}
     >
-      <Streamdown plugins={streamdownPlugins}>{children}</Streamdown>
+      <Streamdown components={markdownLinks} linkSafety={noLinkSafety} plugins={streamdownPlugins}>{children}</Streamdown>
     </CollapsibleContent>
   )
 );

@@ -107,7 +107,9 @@ export function planBar(agents: readonly AgentSummary[], opts: PlanOpts & { maxD
     const count = (g: PlanGroup) => groups.filter((x) => x === g).length;
     const toMerge = count('to-merge');
     const finished = count('done') + toMerge;
-    const lead = finished === agents.length ? `All ${agents.length} agents ${toMerge ? 'finished' : 'done'}` : `${finished}/${agents.length} agents finished`;
+    const verb = toMerge ? 'finished' : 'done';
+    const all = agents.length === 1 ? `Agent ${verb}` : `All ${agents.length} agents ${verb}`;
+    const lead = finished === agents.length ? all : `${finished}/${agents.length} agents finished`;
     return { dots: [], more: 0, text: [lead, ...groupCounts(groups, ['to-merge', 'stopped'])].join(' · '), counts: [], label: '' };
   }
 
