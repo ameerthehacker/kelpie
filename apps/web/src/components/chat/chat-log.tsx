@@ -2,9 +2,21 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 import { useReducedMotion } from 'motion/react';
 import { useStickToBottom } from 'use-stick-to-bottom';
 import { Conversation } from '@/components/ai-elements/conversation';
+import { belowView, scrollTopFor, spotAt, type Spot } from '@/lib/scroll-spot';
 
 /** Where the person left each chat they had scrolled up in, for this page load. */
-const positions = new Map<string, number>();
+const positions = new Map<string, Spot>();
+
+function spotOf(scroller: HTMLElement, content: HTMLElement): Spot | undefined {
+  const entries = content.children;
+  return spotAt(scroller.getBoundingClientRect().top, entries.length, (i) => entries[i]!.getBoundingClientRect());
+}
+
+/** The scroll offset that puts `spot` back at the top, or as far down as the chat goes while it isn't loaded yet. */
+function scrollTopOf(spot: Spot, scroller: HTMLElement, content: HTMLElement): number {
+  const entry = content.children[spot.index]?.getBoundingClientRect();
+  return scrollTopFor(spot, entry, { scrollTop: scroller.scrollTop, top: scroller.getBoundingClientRect().top, scrollHeight: scroller.scrollHeight });
+}
 
 const QUIET_MS = 300; // the log's replay has gone this long without growing
 const LOAD_MAX_MS = 2000;
@@ -16,60 +28,91 @@ const NEAR_BOTTOM_PX = 70; // as use-stick-to-bottom counts it
  * is pinned there before paint. Only content arriving after that slides in, and never with
  * reduced motion. Remount it (key it) per round-up.
  */
-export function ChatLog({ id, content, className, children }: { id: string | undefined; content: unknown; className?: string; children: ReactNode }) {
+export function ChatLog({ id, content, className, children }: { id: string | undefined; content: readonly unknown[]; className?: string; children: ReactNode }) {
   const reduced = useReducedMotion();
   const [loaded, setLoaded] = useState(false);
   const smooth = loaded && !reduced;
   const instance = useStickToBottom({ initial: 'instant', resize: smooth ? 'smooth' : 'instant' });
-  const { scrollRef, state, stopScroll } = instance;
+  const { scrollRef, contentRef, state, stopScroll, scrollToBottom } = instance;
   const saved = useRef(id ? positions.get(id) : undefined);
+  const byPerson = useRef(false);
+  // The log starts over empty (and may first show the last round-up's for a render): nothing has
+  // been replayed until something is there, however long the first batch takes.
+  const filled = content.length > 0;
 
   // While loading, every render lands where it should before it is painted (the library's own
   // follow waits a frame). Through its setter, so it isn't taken for the person scrolling.
   useLayoutEffect(() => {
     if (loaded) return;
     const el = scrollRef.current;
-    if (!el) return;
+    const inner = contentRef.current;
+    if (!el || !inner) return;
     if (saved.current !== undefined) {
       // Unlocked every time: the log starts over empty, and a chat too short to scroll locks again.
       if (state.isAtBottom) stopScroll();
-      state.scrollTop = saved.current;
+      state.scrollTop = scrollTopOf(saved.current, el, inner);
     } else if (state.isAtBottom) state.scrollTop = el.scrollHeight;
-  }, [content, loaded, scrollRef, state, stopScroll]);
+  }, [content, loaded, scrollRef, contentRef, state, stopScroll]);
 
-  // Loaded once the replay goes quiet, after a while regardless, or as soon as the person takes over.
+  // Loaded once the replay goes quiet, or after a while regardless, counted from its first batch.
   useEffect(() => {
-    if (loaded) return;
+    if (loaded || !filled) return;
     const timer = setTimeout(() => setLoaded(true), QUIET_MS);
     return () => clearTimeout(timer);
-  }, [content, loaded]);
+  }, [content, filled, loaded]);
+  useEffect(() => {
+    if (loaded || !filled) return;
+    const timer = setTimeout(() => setLoaded(true), LOAD_MAX_MS);
+    return () => clearTimeout(timer);
+  }, [filled, loaded]);
+  // Or as soon as the person takes over, anywhere in the chat (its jump-to-latest button too).
+  const takeOver = loaded
+    ? undefined
+    : () => {
+        byPerson.current = true;
+        setLoaded(true);
+      };
+
+  // Loaded on its own at the bottom (the spot left from last time is gone, or hasn't come yet):
+  // follow new messages from here, as if it had opened at the bottom.
   useEffect(() => {
     const el = scrollRef.current;
-    const done = () => setLoaded(true);
-    const timer = setTimeout(done, LOAD_MAX_MS);
-    const input = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
-    for (const e of input) el?.addEventListener(e, done, { passive: true });
-    return () => {
-      clearTimeout(timer);
-      for (const e of input) el?.removeEventListener(e, done);
-    };
-  }, [scrollRef]);
+    if (!loaded || byPerson.current || !el || state.isAtBottom) return;
+    if (belowView(el) <= NEAR_BOTTOM_PX) void scrollToBottom('instant');
+  }, [loaded, scrollRef, state, scrollToBottom]);
 
   // Remember the spot once loaded (until then the one from last time still holds).
   useEffect(() => {
     const el = scrollRef.current;
-    if (!loaded || !id || !el) return;
+    const inner = contentRef.current;
+    if (!loaded || !filled || !id || !el || !inner) return;
+    let frame = 0;
     const record = () => {
-      if (el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX) positions.delete(id);
-      else positions.set(id, el.scrollTop);
+      frame = 0;
+      const spot = belowView(el) > NEAR_BOTTOM_PX && spotOf(el, inner);
+      if (spot) positions.set(id, spot);
+      else positions.delete(id);
+    };
+    const onScroll = () => {
+      frame ||= requestAnimationFrame(record);
     };
     record();
-    el.addEventListener('scroll', record, { passive: true });
-    return () => el.removeEventListener('scroll', record);
-  }, [loaded, id, scrollRef]);
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      cancelAnimationFrame(frame);
+    };
+  }, [loaded, filled, id, scrollRef, contentRef]);
 
   return (
-    <Conversation instance={instance} className={className}>
+    <Conversation
+      instance={instance}
+      className={className}
+      onWheelCapture={takeOver}
+      onTouchStartCapture={takeOver}
+      onPointerDownCapture={takeOver}
+      onKeyDownCapture={takeOver}
+    >
       {children}
     </Conversation>
   );

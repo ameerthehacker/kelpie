@@ -1,4 +1,4 @@
-import type { Harness, KelpieEvent, Mode, TodoItem } from '@kelpie/protocol';
+import type { Answers, Harness, KelpieEvent, Mode, TodoItem } from '@kelpie/protocol';
 
 export interface RunSpec {
   cwd: string;
@@ -78,7 +78,8 @@ export interface Run {
 }
 
 export type PermissionAnswer =
-  | { allow: true; by: 'person' | 'kelpie'; rules?: string[] }
+  /** `answers`: for questions put to the person (`permission.requested` with `questions`), what they chose. */
+  | { allow: true; by: 'person' | 'kelpie'; rules?: string[]; answers?: Answers }
   | { allow: false; by: 'person' | 'kelpie'; message: string };
 
 export interface Adapter {

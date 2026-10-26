@@ -1,9 +1,13 @@
-import { ChevronDownIcon } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { ChevronDownIcon, ChevronRightIcon } from 'lucide-react';
+import { useMemo, useState, type ReactNode } from 'react';
 import type { TodoItem } from '@kelpie/protocol';
 import { HarnessMark } from '@/components/harness-mark';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { byAttention, planProgress, STATUS_LABEL, type AgentSummary } from '@/lib/agents';
+import { useApprovals } from '@/hooks/use-approvals';
+import { planProgress, type AgentSummary } from '@/lib/agents';
+import { isPlan, isQuestion } from '@/lib/approvals';
+import { planBar, planLabel, planSections, type PlanBar, type PlanOpts } from '@/lib/plan';
+import { planGroup, type PlanGroup } from '@/lib/status';
 import { cn } from '@/lib/utils';
 import { StatusDot, TodoList } from './agent-bits';
 import { useAgentPane } from './pane-state';
@@ -19,7 +23,7 @@ const remembered = () => {
 };
 
 /** A panel docked above the composer, outside the chat flow; open or collapsed as the viewer last left it. */
-function Dock({ title, bar, summary, children }: { title: string; bar: ReactNode; summary: ReactNode; children: ReactNode }) {
+function Dock({ title, bar, summary, end, children }: { title: string; bar: ReactNode; summary: ReactNode; end?: ReactNode; children: ReactNode }) {
   const [open, setOpen] = useState(remembered);
   const toggle = (next: boolean) => {
     setOpen(next);
@@ -33,6 +37,7 @@ function Dock({ title, bar, summary, children }: { title: string; bar: ReactNode
         <span className="font-medium">{title}</span>
         {bar}
         <span className="text-mu min-w-0 flex-1 truncate text-xs">{summary}</span>
+        {end && <span className="text-mu2 shrink-0 text-xs">{end}</span>}
         <ChevronDownIcon className={cn('text-mu2 size-4 shrink-0 transition-transform', !open && '-rotate-90')} />
       </CollapsibleTrigger>
       <CollapsibleContent>
@@ -42,33 +47,48 @@ function Dock({ title, bar, summary, children }: { title: string; bar: ReactNode
   );
 }
 
+const NO_AGENTS: AgentSummary[] = [];
+
 /**
- * The orchestrator's plan: each agent with the todos it is working through. Opening an
- * agent shows it in the agent pane.
+ * The orchestrator's plan. Collapsed: a dot per agent that needs tracking (waiting on the person,
+ * failed, working), what the most urgent one is doing, and finished agents as a count. Open: the
+ * active agents with their todos, and the finished ones folded into "Done". Opening an agent shows
+ * it in the agent pane. `settledAt`: the orchestrator's last activity, so agents are grouped as
+ * the round-up's dot groups them (see `planGroup`).
  */
-export function PlanDock() {
+export function PlanDock({ settledAt }: { settledAt?: number }) {
   const pane = useAgentPane();
-  if (!pane || pane.agents.length === 0) return null;
-  const agents = [...pane.agents].sort(byAttention);
+  const approvals = useApprovals();
+  const agents = pane?.agents ?? NO_AGENTS;
+  const opts = useMemo((): PlanOpts => {
+    const titles = new Map(agents.map((a) => [a.id, a.title]));
+    const asking = (is: typeof isPlan) => new Set(approvals.filter(is).map((a) => a.sessionId));
+    return { plans: asking(isPlan), questions: asking(isQuestion), nameOf: (id: string) => titles.get(id), settledAt };
+  }, [agents, approvals, settledAt]);
+  if (!pane || agents.length === 0) return null;
+  const bar = planBar(agents, opts);
+  const { active, done } = planSections(agents, settledAt);
   const p = planProgress(agents);
-  const working = agents.find((a) => a.status === 'working');
+  const row = (a: AgentSummary) => (
+    <AgentRow key={a.id} agent={a} group={planGroup(a, settledAt)} label={planLabel(a, opts)} onOpen={() => pane.openAgent(a.id)} />
+  );
   return (
-    <Dock
-      title="Plan"
-      bar={<Segments agents={agents} />}
-      summary={
-        <>
-          {p.agentsDone}/{p.agents} agents done
-          {p.steps > 0 && ` · ${p.stepsDone}/${p.steps} todos`}
-          {working?.now && ` · ${working.title}: ${working.now}`}
-        </>
-      }
-    >
-      <ul className="flex flex-col">
-        {agents.map((a) => (
-          <AgentRow key={a.id} agent={a} onOpen={() => pane.openAgent(a.id)} />
-        ))}
-      </ul>
+    <Dock title="Plan" bar={<Dots bar={bar} />} summary={bar.text} end={bar.counts.join(' · ')}>
+      <p className="text-mu2 px-2 pb-1 text-xs">
+        {p.agents} agents{p.steps > 0 && ` · ${p.stepsDone}/${p.steps} todos done`}
+      </p>
+      {active.length > 0 && <ul className="flex flex-col">{active.map(row)}</ul>}
+      {done.length > 0 && (
+        <Collapsible defaultOpen={active.length === 0}>
+          <CollapsibleTrigger className="group/done text-mu hover:bg-hov flex w-full items-center gap-1.5 rounded-xl px-2 py-1.5 text-left text-xs">
+            <ChevronRightIcon aria-hidden="true" className="text-mu2 size-3.5 transition-transform group-data-[state=open]/done:rotate-90" />
+            Done ({done.length})
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <ul className="flex flex-col">{done.map(row)}</ul>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
     </Dock>
   );
 }
@@ -98,29 +118,24 @@ export function TodoDock({ todos }: { todos: TodoItem[] }) {
   );
 }
 
-/** One bar segment per agent, so the plan's shape shows even when collapsed. */
-function Segments({ agents }: { agents: AgentSummary[] }) {
+/** A dot per agent that needs tracking, capped: the plan's live shape, even collapsed. */
+function Dots({ bar }: { bar: PlanBar }) {
+  if (bar.dots.length === 0) return null;
   return (
-    <span aria-hidden="true" className="flex w-24 shrink-0 gap-0.5">
-      {agents.map((a) => (
-        <span
-          key={a.id}
-          className={cn(
-            'h-1 flex-1 rounded-full',
-            a.status === 'done' && 'bg-done',
-            a.status === 'working' && 'bg-run animate-k-pulse',
-            a.status === 'needs-approval' && 'bg-wait animate-k-pulse',
-            a.status === 'failed' && 'bg-fail',
-            (a.status === 'idle' || a.status === 'stopped') && 'bg-ln2',
-          )}
-        />
+    // Room between the dots for their halos.
+    <span role="img" aria-label={bar.label} title={bar.label} className="flex shrink-0 items-center gap-1.5">
+      {bar.dots.map(({ agent, group }) => (
+        <StatusDot key={agent.id} status={group} />
       ))}
+      {bar.more > 0 && <span className="text-mu2 ml-0.5 font-mono text-[11px]">+{bar.more}</span>}
     </span>
   );
 }
 
-function AgentRow({ agent: a, onOpen }: { agent: AgentSummary; onOpen: () => void }) {
+function AgentRow({ agent: a, group, label, onOpen }: { agent: AgentSummary; group: PlanGroup; label: string; onOpen: () => void }) {
   const done = a.todos.filter((t) => t.status === 'completed').length;
+  // Todos only while they are live; a finished agent's are in its tab.
+  const live = group === 'needs-you' || group === 'failed' || group === 'working';
   return (
     <li className="flex flex-col">
       <button
@@ -131,8 +146,8 @@ function AgentRow({ agent: a, onOpen }: { agent: AgentSummary; onOpen: () => voi
       >
         <HarnessMark harness={a.harness} />
         <span className="flex min-w-0 items-baseline gap-2">
-          <span className={cn('shrink-0 truncate', a.status === 'done' ? 'text-mu' : 'text-fg')}>{a.title}</span>
-          <span className="text-mu truncate text-xs">{a.now || STATUS_LABEL[a.status]}</span>
+          <span className={cn('shrink-0 truncate', group === 'done' ? 'text-mu' : 'text-fg')}>{a.title}</span>
+          <span className={cn('truncate text-xs', group === 'needs-you' ? 'text-wait' : group === 'failed' ? 'text-fail' : 'text-mu')}>{label}</span>
         </span>
         <span className="text-mu2 flex items-center gap-1.5 text-xs">
           {a.todos.length > 0 && (
@@ -140,10 +155,10 @@ function AgentRow({ agent: a, onOpen }: { agent: AgentSummary; onOpen: () => voi
               {done}/{a.todos.length}
             </span>
           )}
-          <StatusDot status={a.status} />
+          <StatusDot status={group} />
         </span>
       </button>
-      {a.todos.length > 0 && <TodoList todos={a.todos} label={`${a.title}’s todos`} className="border-ln mb-1.5 ml-[33px] border-l pt-0.5 pl-3" />}
+      {live && a.todos.length > 0 && <TodoList todos={a.todos} label={`${a.title}’s todos`} className="border-ln mb-1.5 ml-[33px] border-l pt-0.5 pl-3" />}
     </li>
   );
 }

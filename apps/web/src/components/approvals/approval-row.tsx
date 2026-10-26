@@ -105,7 +105,12 @@ export function ApprovalRow({ group, selected, busy, onAnswer, onSelect, canReme
             autoFocus
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            onKeyDown={(e) => e.key === 'Escape' && setNoting(false)}
+            onKeyDown={(e) => {
+              // Closes the note only: the page's own Escape (back from an agent's page) must not fire too.
+              if (e.key !== 'Escape') return;
+              e.preventDefault();
+              setNoting(false);
+            }}
             placeholder="Tell the agent why, or what to do instead (optional)"
             className="bg-chip text-fg h-8 min-w-0 flex-1 rounded-full px-3 text-[13px] outline-none"
           />

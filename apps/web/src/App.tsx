@@ -14,8 +14,10 @@ import { AttachmentChips } from '@/components/chat/attachments';
 import { ChatLog } from '@/components/chat/chat-log';
 import { Composer } from '@/components/chat/composer';
 import { WorkingStatus } from '@/components/chat/working-status';
+import { AgentCrumb } from '@/components/shell/agent-crumb';
 import { KelpieLogo } from '@/components/shell/brand';
 import { Search } from '@/components/shell/search';
+import { TicketChips } from '@/components/shell/tickets';
 import { AppSidebar } from '@/components/shell/sidebar';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -30,6 +32,7 @@ import { useRoundUps } from '@/hooks/use-round-ups';
 import { useSession } from '@/hooks/use-session';
 import type { AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
+import { isRequestKind } from '@/lib/attention';
 import { ROUND_UP_ROUTE, roundUpPath, roundUpSummary, shortPath, titleOf, type RoundUp } from '@/lib/round-ups';
 
 const NO_AGENTS: AgentSummary[] = [];
@@ -53,7 +56,7 @@ function useNavOpen(): [boolean, (open: boolean) => void] {
   return [open, set];
 }
 
-/** The round-up's name in the display face, with its repo and what it is up to. */
+/** The round-up's name in the display face, with its repo, what it is up to, and its tickets. */
 function TitleBlock({ roundUp, agents }: { roundUp: RoundUp; agents: AgentSummary[] }) {
   const now = useNow();
   return (
@@ -70,6 +73,14 @@ function TitleBlock({ roundUp, agents }: { roundUp: RoundUp; agents: AgentSummar
           ·
         </span>
         <span>{roundUpSummary(roundUp, agents, now)}</span>
+        {!!roundUp.tickets?.length && (
+          <>
+            <span aria-hidden="true" className="text-fa">
+              ·
+            </span>
+            <TicketChips tickets={roundUp.tickets} />
+          </>
+        )}
       </div>
     </div>
   );
@@ -135,7 +146,7 @@ export function App() {
   // notified of while away (cleared as they come back).
   const unseen = useAttention();
   const allApprovals = useApprovals();
-  const waiting = allApprovals.length + unseen.filter((i) => i.kind !== 'approval' && i.kind !== 'plan').length;
+  const waiting = allApprovals.length + unseen.filter((i) => !isRequestKind(i.kind)).length;
 
   useEffect(() => {
     const title = roundUpId ? `${titleOf(current)} · kelpie` : 'kelpie';
@@ -173,7 +184,9 @@ export function App() {
     <AppSidebar
       className={className}
       roundUps={roundUps}
-      currentId={roundUpId}
+      // A sub-agent's page sits under its round-up.
+      currentId={current?.role === 'agent' ? current.parentId : roundUpId}
+      inAgent={current?.role === 'agent'}
       onNavigate={() => {
         // On a phone the sidebar is a sheet over the chat; get it out of the way once something is picked.
         setMobileNav(false);
@@ -219,6 +232,7 @@ export function App() {
                   <PanelLeftIcon className="size-[17px]" strokeWidth={1.7} />
                 </button>
               )}
+              {current?.role === 'agent' && current.parentId && <AgentCrumb agent={current} roundUp={roundUps?.find((r) => r.id === current.parentId)} />}
               <span className="flex-1" />
               <Search roundUps={roundUps} />
               <AgentsButton />
@@ -245,7 +259,7 @@ export function App() {
                       ),
                     )}
                     {/* Whenever the composer offers stop: the same busy state, whoever started the turn. */}
-                    {busy && <WorkingStatus events={events} agents={agents ?? NO_AGENTS} />}
+                    <WorkingStatus busy={busy} events={events} agents={agents ?? NO_AGENTS} />
                   </ConversationContent>
                   <ConversationScrollButton />
                 </ChatLog>
@@ -253,8 +267,8 @@ export function App() {
                 <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
                   {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
                   {/* The plan sits outside the chat flow, always in view while agents work. */}
-                  {roundUpId && <ApprovalTray approvals={approvals} roundUpId={current?.role === 'agent' ? (current.parentId ?? roundUpId) : roundUpId} />}
-                  {agents?.length ? <PlanDock /> : <TodoDock todos={todos} />}
+                  {roundUpId && <ApprovalTray approvals={approvals} roundUpId={current?.role === 'agent' ? (current.parentId ?? roundUpId) : roundUpId} inChat={roundUpId} />}
+                  {agents?.length ? <PlanDock settledAt={current?.updatedAt} /> : <TodoDock todos={todos} />}
                   <Composer
                     status={status}
                     busy={busy}

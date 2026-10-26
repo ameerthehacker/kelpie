@@ -7,7 +7,8 @@ import { HarnessMark } from '@/components/harness-mark';
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Kbd } from '@/components/ui/kbd';
 import { useRoundUpStatus } from '@/hooks/use-round-up-status';
-import { ROUND_UP_STATUS_LABEL, roundUpPath, titleOf, type RoundUp } from '@/lib/round-ups';
+import { roundUpPath, titleOf, type RoundUp } from '@/lib/round-ups';
+import { GROUP_LABEL } from '@/lib/status';
 import { setTheme } from '@/lib/theme';
 
 // userAgentData isn't in TypeScript's DOM lib yet; platform is the fallback where it's missing.
@@ -83,7 +84,7 @@ export function Search({ roundUps }: { roundUps: RoundUp[] | undefined }) {
                   return (
                     <CommandItem key={r.id} value={`round-up ${titleOf(r)} ${r.id}`} onSelect={run(() => navigate(roundUpPath(r.id)))}>
                       <span className="min-w-0 flex-1 truncate">{titleOf(r)}</span>
-                      {status && <StatusDot status={status} label={ROUND_UP_STATUS_LABEL[status]} />}
+                      {status && <StatusDot status={status} label={GROUP_LABEL[status]} />}
                     </CommandItem>
                   );
                 })}

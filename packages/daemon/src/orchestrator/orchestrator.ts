@@ -3,7 +3,7 @@ import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
 import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
-import { Harness, type AgentUpdate, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
+import { Harness, parseTicketUrl, type AgentUpdate, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
 import { logLines, report, type AgentReport, type LogPage } from './digest.js';
@@ -19,6 +19,8 @@ import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt,
 export const ORCHESTRATOR_TOOLS = ['Read', 'Grep', 'Glob'];
 /** Tools the orchestrator gets to write in its scratch folder only (a spec to pass on), never in the repo. */
 export const SCRATCH_TOOLS = ['Edit', 'Write'];
+/** How the orchestrator asks the person something only they can settle: Kelpie puts the questions to them. */
+export const ASK_TOOL = 'AskUserQuestion';
 const FILE_TOOLS = ['Read', 'Edit', 'Write'];
 /** A permission rule's pattern for everything under an absolute path (Claude Code writes those with a leading `//`). */
 const under = (dir: string) => `/${dir}/**`;
@@ -225,7 +227,7 @@ export class Orchestrator implements SessionHooks {
     const planning = session.mode === 'plan';
     return {
       // In plan mode it puts its plan to the person with ExitPlanMode, which only works in the harness's own plan mode.
-      tools: [...ORCHESTRATOR_TOOLS, ...(scratch ? SCRATCH_TOOLS : []), ...(planning ? ['ExitPlanMode'] : [])],
+      tools: [...ORCHESTRATOR_TOOLS, ASK_TOOL, ...(scratch ? SCRATCH_TOOLS : []), ...(planning ? ['ExitPlanMode'] : [])],
       // Default mode, never accept-edits: then every edit asks, and `decide` lets through only those
       // in the scratch folder. The round-up's mode is for its agents (and its prompt).
       permissionMode: planning ? 'plan' : 'default',
@@ -292,11 +294,12 @@ export class Orchestrator implements SessionHooks {
   /**
    * Answers what the orchestrator's harness asks by policy: its kelpie tools, its read tools in its
    * repo checkout, feature branch worktree and scratch folder, and its edit tools in its scratch
-   * folder, are always fine; anything else is refused. Its plan goes to the person. An agent's
-   * requests all go to the person.
+   * folder, are always fine; anything else is refused. Its plan and its questions go to the person.
+   * An agent's requests all go to the person.
    */
   decide(session: Session, req: EventData<'permission.requested'>): PermissionAnswer | undefined {
     if (session.role !== 'orchestrator') return undefined;
+    if (req.tool === ASK_TOOL) return undefined;
     if (req.tool === 'ExitPlanMode') {
       return session.mode === 'plan' ? undefined : { allow: false, by: 'kelpie', message: 'This round-up is not in plan mode any more: carry on with the work.' };
     }
@@ -592,6 +595,21 @@ export class Orchestrator implements SessionHooks {
       const mime = getMimeType(path);
       return { name: basename(path), size: stat.size, path, ...(mime ? { mime } : {}) };
     });
+  }
+
+  /** Links a Jira or Asana ticket to the round-up, or titles one already linked. */
+  linkTicket(parent: Session, url: string, title?: string): { tickets: LinkedTicket[] } {
+    const t = parseTicketUrl(url);
+    if (!t) throw new ToolError(`not a Jira issue or Asana task or project link: ${url}. Pass the ticket's own page, e.g. https://<org>.atlassian.net/browse/KEY-123 or https://app.asana.com/0/<project>/<task>.`);
+    parent.linkTickets([t], 'orchestrator', title);
+    return { tickets: parent.tickets() };
+  }
+
+  /** Unlinks a ticket from the round-up, by any link to it. */
+  unlinkTicket(parent: Session, url: string): { tickets: LinkedTicket[] } {
+    const t = parseTicketUrl(url);
+    if (!t || !parent.unlinkTicket(t.ref)) throw new ToolError(`no such ticket is linked to this round-up: ${url}`);
+    return { tickets: parent.tickets() };
   }
 
   async interrupt(parent: Session, agentId: string): Promise<{ status: string }> {
