@@ -1,4 +1,5 @@
 import type { Answers, Harness, KelpieEvent, Mode, TodoItem } from '@kelpie/protocol';
+import type { UsageLimitStop } from './limits.js';
 
 export interface RunSpec {
   cwd: string;
@@ -87,4 +88,9 @@ export interface Adapter {
   /** The Kelpie modes this harness supports, in the order a person cycles through them. */
   readonly modes: readonly Mode[];
   start(spec: RunSpec): Run;
+  /**
+   * Whether an event ends a turn at the person's usage limit, and when that resets if known.
+   * Kelpie pauses such a session and resumes it after the reset; harnesses without it never pause.
+   */
+  limitOf?(event: KelpieEvent, now?: Date): UsageLimitStop | undefined;
 }

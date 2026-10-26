@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Readable } from 'node:stream';
 import type { KelpieEvent } from '@kelpie/protocol';
+import { resetFromText, type UsageLimitStop } from '../limits.js';
 import type { Adapter, PermissionAnswer, Run, RunExit, RunSpec } from '../types.js';
 import { ClaudeCodeParser } from './parse.js';
 
@@ -272,8 +273,26 @@ function ruleParts(rule: string): { toolName: string; ruleContent?: string } {
   return m ? { toolName: m[1]!, ruleContent: m[2]! } : { toolName: rule };
 }
 
+/** The CLI's words when a usage limit refuses a turn: "You've hit your session limit · resets 6pm (Asia/Calcutta)". */
+const LIMIT_MESSAGE = /^You['\u2019]ve hit your .*\blimit\b/i;
+
+/**
+ * A turn that stopped at the usage limit: tagged so by the parser (with the reset time the CLI
+ * reported, if it did), or, in a log from before it tagged them, a failure in the CLI's own words.
+ * The reset time is read from the message when the CLI gave none.
+ */
+export function claudeLimitOf(event: KelpieEvent, now: Date = new Date()): UsageLimitStop | undefined {
+  if (event.kind !== 'turn.ended' || event.data.status !== 'failed') return undefined;
+  const message = event.data.error ?? '';
+  if (!event.data.limit && !LIMIT_MESSAGE.test(message)) return undefined;
+  const given = event.data.limit?.resetsAt ? new Date(event.data.limit.resetsAt) : undefined;
+  const resetsAt = given && !Number.isNaN(given.getTime()) ? given : resetFromText(message, now);
+  return { message: message || 'Usage limit reached', ...(resetsAt ? { resetsAt } : {}) };
+}
+
 export const claudeCode: Adapter = {
   harness: 'claude-code',
   modes: ['auto', 'acceptEdits', 'plan'],
   start: (spec) => new ClaudeCodeRun(spec),
+  limitOf: claudeLimitOf,
 };

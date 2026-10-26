@@ -56,6 +56,10 @@ export class ClaudeCodeParser {
   private lastText = '';
   /** Permission requests waiting for an answer, with the input they asked about and the call they are for. */
   private readonly permissions = new Map<string, { input: Obj; callId: string | undefined }>();
+  /** This turn was refused for the usage limit (the CLI's synthetic error message said so), with what it said of the reset. */
+  private limitHit: { resetsAt?: number; window?: string } | undefined;
+  /** The latest `rejected` rate-limit report this turn: the limit it hit, if the turn then fails. */
+  private rejected: { resetsAt?: number; window?: string } | undefined;
 
   constructor(opts: ParserOptions) {
     this.runId = opts.runId;
@@ -217,6 +221,8 @@ export class ClaudeCodeParser {
   }
 
   private assistant(o: Obj, x: EmitExtra): KelpieEvent[] {
+    // The CLI's own message for a refused request ("You've hit your session limit · resets 6pm (…)"), model `<synthetic>`.
+    if (!x.parentCallId && (o.error === 'rate_limit' || o.api_error === 'usage_limit_reached')) this.limitHit = limitInfo(o.api_error_params?.rate_limit_info);
     const out: KelpieEvent[] = [];
     for (const block of blocks(o.message?.content)) {
       switch (block.type) {
@@ -327,12 +333,16 @@ export class ClaudeCodeParser {
       status === 'failed'
         ? (Array.isArray(o.errors) && o.errors.length ? o.errors.join('; ') : String(o.result ?? o.subtype ?? 'unknown error'))
         : undefined;
+    // Stopped at the usage limit: the CLI said so in its error message, or the API refused (429) with the limit reported rejected.
+    const hit = status === 'failed' ? (this.limitHit ?? (o.api_error_status === 429 ? this.rejected : undefined)) : undefined;
+    this.limitHit = this.rejected = undefined;
     const ended = this.emit(
       'turn.ended',
       {
         status,
         ...(typeof o.result === 'string' && success ? { resultText: o.result } : {}),
         ...(error ? { error } : {}),
+        ...(hit ? { limit: { ...(hit.resetsAt ? { resetsAt: epochToIso(hit.resetsAt) } : {}), ...(hit.window ? { window: hit.window } : {}) } } : {}),
         ...(typeof o.duration_ms === 'number' ? { durationMs: o.duration_ms } : {}),
         ...(typeof o.num_turns === 'number' ? { numTurns: o.num_turns } : {}),
       },
@@ -356,6 +366,7 @@ export class ClaudeCodeParser {
 
   private rateLimit(o: Obj, x: EmitExtra): KelpieEvent {
     const info: Obj = o.rate_limit_info ?? {};
+    if (info.status === 'rejected') this.rejected = limitInfo(info);
     const window: string | undefined = info.rateLimitType;
     const util = window ? info.unifiedWindows?.[window]?.utilization : undefined;
     const windows: Record<string, UsageWindow> = {};
@@ -379,6 +390,14 @@ export class ClaudeCodeParser {
 }
 
 const epochToIso = (seconds: number) => new Date(seconds * 1000).toISOString();
+
+/** What a rate-limit report says of the limit hit: when it resets (epoch seconds) and which window it is. */
+function limitInfo(info: Obj | undefined): { resetsAt?: number; window?: string } {
+  return {
+    ...(typeof info?.resetsAt === 'number' && info.resetsAt > 0 ? { resetsAt: info.resetsAt } : {}),
+    ...(typeof info?.rateLimitType === 'string' ? { window: info.rateLimitType } : {}),
+  };
+}
 
 /**
  * The rule the CLI suggests for allowing a request, as a permission rule string: `Bash(pnpm install)`,

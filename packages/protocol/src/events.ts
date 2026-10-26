@@ -211,6 +211,23 @@ export const RateLimit = ev(
 /** The harness started or stopped working (a turn running, or sent turns still queued). Emitted on change. */
 export const Activity = ev('activity', z.object({ busy: z.boolean() }));
 
+/**
+ * A failed turn that stopped at the person's usage limit (the harness's words are in `error`): not
+ * a failure of the work. The harness gives `resetsAt` and `window` when it says; Kelpie adds when it
+ * will pick the work up again, or nothing if it won't on its own.
+ */
+export const TurnLimit = z.object({
+  /** When the limit resets (ISO). */
+  resetsAt: z.string().optional(),
+  /** Which limit, as the harness names it (Claude Code: `five_hour`, `seven_day`…). */
+  window: z.string().optional(),
+  /** When Kelpie will resume the session (ISO); absent if it won't on its own. */
+  retryAt: z.string().optional(),
+  /** How many times Kelpie had already tried again and found the limit still in force. */
+  attempts: z.number().optional(),
+});
+export type TurnLimit = z.infer<typeof TurnLimit>;
+
 export const TurnEnded = ev(
   'turn.ended',
   z.object({
@@ -219,6 +236,7 @@ export const TurnEnded = ev(
     error: z.string().optional(),
     durationMs: z.number().optional(),
     numTurns: z.number().optional(),
+    limit: TurnLimit.optional(),
   }),
 );
 
