@@ -2,11 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import { attachmentsBlock, findTickets, mergeUsage, type LinkedTicket, type TicketLink, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings } from '@kelpie/protocol';
+import { attachmentsBlock, findTickets, mergeUsage, type LinkedTicket, type TicketLink, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings, type UsageLimitPause } from '@kelpie/protocol';
 import { claudeCode, isChromeTool, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store, TicketRow, TicketSource } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary, type Now } from './agent-summary.js';
 import type { ReviewState } from './review/types.js';
+import { LIMIT_RESUMED, UsageLimits, type LimitTiming } from './usage-limits.js';
 
 export type TurnStatus = EventData<'turn.ended'>['status'];
 
@@ -46,6 +47,8 @@ export interface SessionInfo {
   branch?: string;
   deliver?: 'muster' | 'standalone';
   worktree?: 'creating' | 'active' | 'mustered' | 'removed';
+  /** Paused because its harness hit the person's usage limit: Kelpie resumes it once that resets. */
+  limited?: UsageLimitPause;
 }
 
 /** What subscribers receive. `index` is the event's position in the session log (stable across runs and restarts). */
@@ -156,6 +159,15 @@ export interface SessionHooks {
    * to the person. (Rules the person saved for the round-up are applied before this.) Must not throw.
    */
   decide?(session: Session, request: EventData<'permission.requested'>): PermissionAnswer | undefined;
+  /** Whether sessions paused at the usage limit resume on their own once it resets (the person's setting). Default: they do. */
+  autoResume?(): boolean;
+  /**
+   * Resumes a session paused at the usage limit (e.g. a sub-agent once the agent limit has room).
+   * Without it, the session is sent LIMIT_RESUMED.
+   */
+  resumeLimited?(session: Session): Promise<void>;
+  /** A session's pause at the usage limit began, changed or ended. Must not throw. */
+  limitChanged?(session: Session): void;
 }
 
 /** A file sent with a turn, and where the harness finds it. */
@@ -210,6 +222,8 @@ export interface SessionManagerOptions {
   hooks?: SessionHooks;
   /** Each round-up's scratch folder (uploads, files passed to agents) goes in `<scratchDir>/<roundUpId>`. None without it. */
   scratchDir?: string;
+  /** How long resuming after the usage limit waits past a reset, between resumes, and for a probe (shorter in tests). */
+  limitTiming?: Partial<LimitTiming>;
 }
 
 interface SessionContext {
@@ -230,6 +244,8 @@ interface SessionContext {
   get: (id: string) => Session | undefined;
   /** What the session is waiting on the person for changed. */
   approvalsChanged: (s: Session) => void;
+  /** Sessions paused at the usage limit. */
+  limits: UsageLimits;
 }
 
 const ticketOf = (r: TicketRow): LinkedTicket => ({
@@ -355,6 +371,20 @@ export class Session {
     return this.row.title;
   }
 
+  get harness(): string {
+    return this.row.harness;
+  }
+
+  /** Epoch ms. */
+  get createdAt(): number {
+    return this.row.createdAt;
+  }
+
+  /** Paused because its harness hit the usage limit, if it is. */
+  get limited(): UsageLimitPause | undefined {
+    return this.ctx.limits.pause(this.id);
+  }
+
   get parentId(): string | undefined {
     return this.row.parentId ?? undefined;
   }
@@ -470,6 +500,7 @@ export class Session {
       mode: this.mode,
       tickets: this.tickets(),
       ...(parentId ? this.worktreeSummary() : {}),
+      ...(this.limited ? { limited: this.limited } : {}),
     };
   }
 
@@ -504,6 +535,7 @@ export class Session {
   summary(): AgentSummary {
     const { id, title, harness, writes, browser, createdAt, updatedAt } = this.row;
     const t = this.lastTurnState;
+    const limited = this.limited;
     return {
       id,
       parentId: this.row.parentId ?? '',
@@ -512,7 +544,20 @@ export class Session {
       model: this.modelState ?? this.row.model ?? undefined,
       writes,
       browser,
-      status: this.working ? (this.asking.size ? 'needs-approval' : 'working') : t === 'completed' ? 'done' : t === 'failed' ? 'failed' : t === 'interrupted' ? 'stopped' : 'idle',
+      status: this.working
+        ? this.asking.size
+          ? 'needs-approval'
+          : 'working'
+        : limited
+          ? 'paused'
+          : t === 'completed'
+            ? 'done'
+            : t === 'failed'
+              ? 'failed'
+              : t === 'interrupted'
+                ? 'stopped'
+                : 'idle',
+      ...(limited ? { limited } : {}),
       ...this.nowState,
       todos: this.todosState,
       kind: this.row.kind,
@@ -706,6 +751,16 @@ export class Session {
     this.clearResumePending();
   }
 
+  /**
+   * Picks up after the usage limit reset: sends `note` (with any turn the harness never took in),
+   * to its live process or a new one that resumes the same harness session.
+   */
+  async resumeAfterLimit(note: string = LIMIT_RESUMED): Promise<void> {
+    if (this.deleted || this.ctx.closing) return;
+    await this.send(note, 'kelpie', { meta: { resumed: 'limit' } });
+    this.clearResumePending();
+  }
+
   markResumePending(): void {
     this.update({ resumePending: true });
   }
@@ -782,7 +837,9 @@ export class Session {
     this.pumping = this.pump(run, resume);
   }
 
+  /** Stops the current turn; one paused at the usage limit is no longer resumed on its own either. */
   async interrupt(): Promise<void> {
+    this.ctx.limits.cancel(this.id);
     await this.run?.interrupt();
   }
 
@@ -891,6 +948,9 @@ export class Session {
         } else if (event.kind === 'rate_limit') {
           this.ctx.reportUsage(event.harness, event.data);
         } else if (event.kind === 'turn.ended') {
+          // Stopped at the usage limit: paused until it resets, and its log entry says when Kelpie picks it up.
+          const stop = this.ctx.adapter.limitOf?.(event);
+          if (stop) event = { ...event, data: { ...event.data, limit: this.ctx.limits.hit(this, stop, event.data.limit) } };
           this.lastTurnState = event.data.status;
           changed = true;
         } else if (event.kind === 'process.exited') {
@@ -936,6 +996,7 @@ export class Session {
           }
         }
         if (changed) this.ctx.changed(this);
+        this.ctx.limits.observe(this, event);
         this.permissions(run, event);
         if (this.track(event)) this.ctx.agentChanged(this);
         try {
@@ -966,6 +1027,8 @@ export class SessionManager {
   private readonly usageByHarness = new Map<string, HarnessUsage>();
   /** Sub-agents whose summary changed and is about to go out. */
   private readonly agentTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Sessions paused at the usage limit, and when each resumes (see `startLimits`). */
+  readonly limits: UsageLimits;
 
   constructor(opts: SessionManagerOptions) {
     this.store = opts.store;
@@ -1006,7 +1069,31 @@ export class SessionManager {
         }
         this.publish({ type: 'usage', usage: this.usage() });
       },
+      limits: undefined as unknown as UsageLimits,
     };
+    const hooks = this.ctx.hooks;
+    this.limits = this.ctx.limits = new UsageLimits({
+      store: this.store,
+      get: (id) => this.sessions.get(id),
+      resume: async (id) => {
+        const s = this.sessions.get(id);
+        if (!s) return;
+        await (hooks.resumeLimited ? hooks.resumeLimited(s) : s.resumeAfterLimit());
+      },
+      enabled: () => hooks.autoResume?.() ?? true,
+      ...(opts.limitTiming ? { timing: opts.limitTiming } : {}),
+      changed: (id) => {
+        const s = this.sessions.get(id);
+        if (!s) return;
+        this.ctx.changed(s);
+        this.ctx.agentChanged(s);
+        try {
+          hooks.limitChanged?.(s);
+        } catch (err) {
+          console.error(`session ${id}: limit hook failed`, err);
+        }
+      },
+    });
     for (const u of this.store.listUsage()) this.usageByHarness.set(u.harness, u);
     for (const row of this.store.listSessions()) {
       const session = new Session(row, this.ctx);
@@ -1071,6 +1158,7 @@ export class SessionManager {
       await this.ctx.hooks.removing?.(session).catch((err) => console.error(`round-up ${id}: worktree cleanup failed`, err));
     }
     this.sessions.delete(id);
+    this.limits.forget(id);
     await Promise.all(this.children(id).map((c) => this.delete(c.id, true)));
     await session.delete();
     // A round-up's scratch folder goes with it; a sub-agent's files stay for the rest of the round-up.
@@ -1230,9 +1318,18 @@ export class SessionManager {
     return () => this.watchers.delete(listener);
   }
 
+  /**
+   * Starts resuming sessions paused at the usage limit: what is due goes now, the rest at its time.
+   * Call once harnesses can start (after recovery).
+   */
+  startLimits(): void {
+    this.limits.start();
+  }
+
   /** Marks every round-up still working, so the next daemon start resumes it. Call before `stopAll`. */
   prepareShutdown(): void {
     this.ctx.closing = true;
+    this.limits.stop();
     for (const s of this.sessions.values()) if (s.working) s.markResumePending();
   }
 

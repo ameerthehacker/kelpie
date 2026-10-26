@@ -123,6 +123,8 @@ export const Message = ev(
     attachments: z.array(Attachment).optional(),
     /** On the notification of a review the person submitted: what it was, for the UI. */
     review: ReviewNotice.optional(),
+    /** A turn Kelpie sent to pick the work up again: after the usage limit reset. */
+    resumed: z.enum(['limit']).optional(),
   }),
 );
 

@@ -13,7 +13,8 @@ import { GitError, type Branch, type Worktrees } from '../worktrees.js';
 import { Changes } from '../review/changes.js';
 import { Reviews, type ReviewClaim } from '../review/reviews.js';
 import { SavedSettings } from '../settings.js';
-import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, musterPrompt, orchestratorPrompt, reviewBrief, type WorkPlace } from './prompt.js';
+import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, limitResumed, musterPrompt, orchestratorPrompt, reviewBrief, type WorkPlace } from './prompt.js';
+import { LIMIT_RESUMED } from '../usage-limits.js';
 
 /**
  * The orchestrator's built-in tools: read-only ones, for its repo checkout, its feature branch's
@@ -107,8 +108,10 @@ export interface AgentInfo {
   branch?: string;
   deliver?: 'muster' | 'standalone';
   worktree?: WorktreeRow['state'];
-  /** `needs approval`: working, but waiting on the person to allow something it asked for. */
-  status: 'working' | 'needs approval' | 'idle' | 'waiting';
+  /** `needs approval`: working, but waiting on the person to allow something it asked for. `paused`: stopped at the usage limit until it resets. */
+  status: 'working' | 'needs approval' | 'idle' | 'waiting' | 'paused';
+  /** While paused: when Kelpie resumes it (ISO), if it will on its own. */
+  resumesAt?: string;
   lastTurn: string | undefined;
   updatedAt: string;
   costUsd: number;
@@ -166,8 +169,8 @@ export class Orchestrator implements SessionHooks {
   /** The last pass resuming waiting agents, and the one queued after it, if any (see `resumeWaiting`). */
   private resumes: Promise<void> = Promise.resolve();
   private resumeQueued: Promise<void> | undefined;
-  /** Sub-agents to resume after a restart once the cap or the writer guard lets them. */
-  private readonly waiting = new Set<string>();
+  /** Sub-agents to resume (after a restart, or the usage limit) once the cap or the writer guard lets them. */
+  private readonly waiting = new Map<string, 'restart' | 'limit'>();
   /**
    * Sub-agents a tool call has cleared to start but whose turn is not sent yet (sending can
    * wait for a process that is stopping). They count as working, so no second call slips past
@@ -201,6 +204,7 @@ export class Orchestrator implements SessionHooks {
     this.settings.onChange((next, prev) => {
       this.sessions?.publish({ type: 'settings', settings: next });
       if (next.maxAgents > prev.maxAgents) this.limitRaised();
+      if (next.autoResume !== prev.autoResume) this.sessions?.limits.settingChanged();
     });
     this.notifyDelayMs = opts.notifyDelayMs ?? 1500;
     this.changes = new Changes(this.store);
@@ -305,6 +309,31 @@ export class Orchestrator implements SessionHooks {
       // A slot or the repo may have freed up for an agent waiting to resume.
       if (this.waiting.size) void this.resumeWaiting();
     }
+  }
+
+  autoResume(): boolean {
+    return this.settings.get().autoResume;
+  }
+
+  /**
+   * After the usage limit reset: a sub-agent waits its turn under the agent limit (and the writer
+   * and browser guards); the orchestrator is told which of its agents were paused too.
+   */
+  async resumeLimited(session: Session): Promise<void> {
+    if (session.role === 'agent' && session.parentId) {
+      this.waiting.set(session.id, 'limit');
+      return this.resumeWaiting();
+    }
+    const since = session.limited?.since ?? 0;
+    const agents = this.manager.children(session.id).filter((c) => c.limited || this.manager.limits.resumedSince(c.id, since));
+    await session.resumeAfterLimit(limitResumed(agents.map((a) => ({ agentId: a.id, title: a.title }))));
+    // Agents that finished while it was paused.
+    this.schedule(session.id);
+  }
+
+  /** An agent paused at the usage limit isn't news for its orchestrator; one that won't resume on its own is. */
+  limitChanged(session: Session): void {
+    if (session.role === 'agent' && session.parentId && !session.working) this.schedule(session.parentId);
   }
 
   /**
@@ -748,11 +777,13 @@ export class Orchestrator implements SessionHooks {
   async recover(): Promise<void> {
     // Also anything with turns it never took in (e.g. killed in the instant after a send).
     const pending = this.manager.all().filter((s) => s.resumePending || this.store.undelivered(s.id).length > 0);
-    for (const agent of pending.filter((s) => s.role === 'agent')) this.waiting.add(agent.id);
+    for (const agent of pending.filter((s) => s.role === 'agent')) this.waiting.set(agent.id, 'restart');
     await this.resumeWaiting();
     await Promise.all(pending.filter((s) => s.role === 'orchestrator').map((s) => s.resumeAfterRestart(ORCHESTRATOR_RESTARTED)));
     const parents = new Set(this.manager.all().flatMap((s) => (s.parentId ? [s.parentId] : [])));
     for (const id of parents) this.schedule(id);
+    // Work paused at the usage limit: what is due resumes now, the rest when its limit resets.
+    this.manager.startLimits();
   }
 
   /**
@@ -769,10 +800,11 @@ export class Orchestrator implements SessionHooks {
   }
 
   private async resumePass(): Promise<void> {
-    for (const id of [...this.waiting]) {
+    for (const [id, why] of [...this.waiting]) {
       const agent = this.manager.get(id);
       const parent = agent?.parentId ? this.manager.get(agent.parentId) : undefined;
-      if (!agent || !parent) {
+      // One paused at the limit may have been picked up meanwhile, or the person said not to resume it.
+      if (!agent || !parent || (why === 'limit' && (agent.working || !this.manager.limits.willResume(id)))) {
         this.waiting.delete(id);
         continue;
       }
@@ -782,7 +814,7 @@ export class Orchestrator implements SessionHooks {
       this.waiting.delete(id);
       try {
         // Counted from here: its process takes a moment to start working, and the cap must count it meanwhile.
-        await this.reserving(agent, () => agent.resumeAfterRestart(AGENT_RESTARTED));
+        await this.reserving(agent, () => (why === 'limit' ? agent.resumeAfterLimit(LIMIT_RESUMED) : agent.resumeAfterRestart(AGENT_RESTARTED)));
       } catch (err) {
         console.error(`agent ${id}: could not resume`, err);
       }
@@ -841,9 +873,11 @@ export class Orchestrator implements SessionHooks {
   /** Tells the orchestrator about every sub-agent that went idle since it was last told. */
   private async flush(parentId: string): Promise<void> {
     const parent = this.manager.get(parentId);
-    if (!parent) return;
+    // Paused at the usage limit itself: what it is owed goes once it is resumed.
+    if (!parent || this.manager.limits.willResume(parentId)) return;
     const owed = this.manager.children(parentId).flatMap((c) => {
-      if (this.isWorking(c) || this.waiting.has(c.id)) return [];
+      // Paused at the usage limit, it will pick up on its own: news once it is done (or won't resume).
+      if (this.isWorking(c) || this.waiting.has(c.id) || this.manager.limits.willResume(c.id)) return [];
       const idle = this.store.lastEventAt(c.id, 'activity');
       return idle && !idle.event.data.busy && idle.index > c.notifiedIdx ? [{ agent: c, index: idle.index }] : [];
     });
@@ -856,7 +890,7 @@ export class Orchestrator implements SessionHooks {
       agents.push({
         agentId: agent.id,
         title: agent.title,
-        status: r.lastTurn ?? 'not started',
+        status: agent.limited ? 'paused at the usage limit (the person can resume it)' : (r.lastTurn ?? 'not started'),
         report: r.report,
         ...(r.error ? { error: r.error } : {}),
         ...(r.filesChanged.length ? { filesChanged: r.filesChanged } : {}),
@@ -1064,7 +1098,8 @@ export class Orchestrator implements SessionHooks {
       ...(c.browser ? { browser: true } : {}),
       kind: c.kind,
       ...(row ? { branch: row.branch, worktree: row.state, ...(row.deliver ? { deliver: row.deliver } : {}) } : {}),
-      status: this.isWorking(c) ? (c.approvals().length ? 'needs approval' : 'working') : this.waiting.has(c.id) ? 'waiting' : 'idle',
+      status: this.isWorking(c) ? (c.approvals().length ? 'needs approval' : 'working') : c.limited ? 'paused' : this.waiting.has(c.id) ? 'waiting' : 'idle',
+      ...(!this.isWorking(c) && c.limited?.retryAt ? { resumesAt: new Date(c.limited.retryAt).toISOString() } : {}),
       lastTurn: c.lastTurn,
       updatedAt: new Date(info.updatedAt).toISOString(),
       costUsd: Math.round(this.store.costOf(c.id) * 10_000) / 10_000,

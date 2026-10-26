@@ -365,6 +365,22 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     return c.json(s.info(), 202);
   });
 
+  // A session paused at the usage limit: try it now ("Resume now"), or keep it paused until the person sends it something.
+  app.post('/api/sessions/:id/limit/resume', (c) => {
+    const s = sessions.get(c.req.param('id'));
+    if (!s) return c.json({ error: 'no such session' }, 404);
+    if (!s.limited) return c.json({ error: 'not paused at the usage limit' }, 409);
+    if (!sessions.limits.resumeNow(s.id)) return c.json({ error: 'it is working already' }, 409);
+    return c.json(s.info(), 202);
+  });
+
+  app.post('/api/sessions/:id/limit/cancel', (c) => {
+    const s = sessions.get(c.req.param('id'));
+    if (!s) return c.json({ error: 'no such session' }, 404);
+    if (!sessions.limits.cancel(s.id)) return c.json({ error: 'not paused at the usage limit' }, 409);
+    return c.json(s.info());
+  });
+
   // KEF stream: each `kef` event carries its session-log index as the SSE id,
   // so a reconnect with Last-Event-ID resumes without gaps or repeats.
   app.get('/api/sessions/:id/events', (c) => {

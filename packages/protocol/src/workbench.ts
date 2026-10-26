@@ -77,7 +77,7 @@ export const CardUpdate = CardPatch.extend({
 export type CardUpdate = z.infer<typeof CardUpdate>;
 
 /** An agent's status as the UI groups it (the daemon's agent summary). */
-export type WorkbenchAgentStatus = 'working' | 'needs-approval' | 'done' | 'failed' | 'stopped' | 'idle';
+export type WorkbenchAgentStatus = 'working' | 'needs-approval' | 'paused' | 'done' | 'failed' | 'stopped' | 'idle';
 
 /** One deliverable on a card, as the person sees it. */
 export interface WorkbenchItem {

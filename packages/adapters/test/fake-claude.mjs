@@ -15,6 +15,10 @@
 // asks to use that tool on the url FAKE_ASK. Interrupted while asking, it ends the turn the way the real
 // CLI does (ask-interrupt.jsonl): it cancels the request, unless FAKE_NO_CANCEL=1, then reports the turn aborted.
 // FAKE_ENV_FILE gets a line of JSON per start with the GitHub env it was given (GH_TOKEN, GITHUB_TOKEN).
+// FAKE_LIMIT_FILE: while that file exists, every turn hits the usage limit the way the real CLI does
+// (usage-limit.jsonl): a rejected rate_limit_event, the CLI's synthetic message, a failed result. The
+// file holds JSON { resetsAt?: epoch seconds, text?: the message }; remove it and turns go through again.
+// FAKE_TURN_DELAY (ms) holds each later FAKE_EVERY_TURN answer back that long after its echo: a turn that takes a while.
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -34,6 +38,25 @@ if (process.env.FAKE_RESUME_FAIL === '1' && args.includes('--resume')) {
   out({ type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 0, num_turns: 0, session_id: resume, total_cost_usd: 0, usage: {}, errors: [error] });
   process.stderr.write(error + '\n');
   process.exit(1);
+}
+
+/** The limit as FAKE_LIMIT_FILE says it is now, if turns are refused. */
+const limited = () => {
+  if (!process.env.FAKE_LIMIT_FILE) return undefined;
+  try {
+    return JSON.parse(readFileSync(process.env.FAKE_LIMIT_FILE, 'utf8') || '{}');
+  } catch {
+    return undefined;
+  }
+};
+function limitTurn(message, limit) {
+  const session_id = JSON.parse(lines[0]).session_id;
+  const info = { status: 'rejected', rateLimitType: 'five_hour', ...(limit.resetsAt ? { resetsAt: limit.resetsAt } : {}) };
+  const text = limit.text ?? "You've hit your session limit · resets 6pm (UTC)";
+  out({ type: 'user', message, session_id, parent_tool_use_id: null, isReplay: true });
+  out({ type: 'rate_limit_event', rate_limit_info: info, session_id });
+  out({ type: 'assistant', message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text }] }, session_id, parent_tool_use_id: null, error: 'rate_limit', api_error: 'usage_limit_reached', api_error_status: 429, api_error_params: { rate_limit_info: info } });
+  out({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, terminal_reason: 'api_error', result: text, session_id, total_cost_usd: 0, usage: {} });
 }
 
 const ASK_ID = 'fake-ask-1';
@@ -60,11 +83,20 @@ for await (const line of createInterface({ input: process.stdin })) {
   } else if (msg.type === 'user' && process.env.FAKE_STDIN_FILE) {
     appendFileSync(process.env.FAKE_STDIN_FILE, JSON.stringify({ resume: args.includes('--resume') ? resume : null, text: msg.message.content[0].text }) + '\n');
   }
-  if (msg.type === 'user' && printed && process.env.FAKE_EVERY_TURN === '1' && !hang) {
+  const limit = msg.type === 'user' && !hang ? limited() : undefined;
+  if (limit) {
+    if (!printed) out(lines[0]);
+    printed = true;
+    limitTurn(msg.message, limit);
+  } else if (msg.type === 'user' && printed && process.env.FAKE_EVERY_TURN === '1' && !hang) {
     const session_id = JSON.parse(lines[0]).session_id;
     out({ type: 'user', message: msg.message, session_id, parent_tool_use_id: null, isReplay: true });
-    out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }, session_id, parent_tool_use_id: null });
-    out({ type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id, total_cost_usd: 0, usage: {} });
+    const answer = () => {
+      out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }, session_id, parent_tool_use_id: null });
+      out({ type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id, total_cost_usd: 0, usage: {} });
+    };
+    if (process.env.FAKE_TURN_DELAY) setTimeout(answer, Number(process.env.FAKE_TURN_DELAY));
+    else answer();
   } else if (msg.type === 'user' && !printed) {
     printed = true;
     if (process.env.FAKE_ASK && !hang) {

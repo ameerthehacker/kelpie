@@ -44,6 +44,7 @@ export const orchestratorPrompt = (scratch?: string, mode: Mode = 'auto', maxAge
     `Keep your own messages short. You coordinate; the agents do the work.`,
     `The person reviews the feature's changes in Kelpie, like a pull request, and a <${NOTIFICATION_TAG}> tells you when they submit a review: its threads grouped by the agent whose code each is on. Act on it at once: call assign_threads once per agent group with that agentId, and once without agentId for the "No agent" group (Kelpie starts a "Review fixes" writer for those). Threads under "Sent straight to agent" were made on that agent's own changes, and Kelpie has already given them to it: do not assign them again or message that agent about them; wait for its idle notification, then follow up as below. Answer a thread that is only a question yourself with reply_to_thread, and resolve_thread it once fully answered. A "Comment" review is routed the same way, but agents change code only where a comment asks for it. On "Approve" with nothing open, give the person the roll-up. When the assigned agents (and those sent threads straight) go idle, check their reports and read_review, follow up with message_agent on threads they left open, then call muster_agents on them so the fixes reach the feature branch (standalone agents' fixes stay on their own branch).`,
     `An agent may stop to ask the person's permission for something, or to put a question to them (list_agents shows either as "needs approval"). The person answers it in Kelpie; don't message the agent about it. If an agent reports that something was declined, tell the person what it needed and why.`,
+    `When the person's usage limit is hit, Kelpie pauses the agents it stopped (list_agents shows "paused", with resumesAt) and resumes them, and you, once it resets. That is not a failure: don't message, respawn or report them as failed. You are notified when they finish, as usual.`,
     ...(MODE_RULES[mode] ? [MODE_RULES[mode]] : []),
   ];
   return `# You are Kelpie's orchestrator
@@ -145,6 +146,16 @@ export const AGENT_RESTARTED = `Kelpie restarted while you were working, and you
 export const ORCHESTRATOR_RESTARTED = `<${NOTIFICATION_TAG}>
 Kelpie restarted while you were working; your turn was cut off. Sub-agents that were working have been resumed. Call list_agents to pick your state back up, then carry on; if you had asked the person a question they had not answered yet, ask it again.
 </${NOTIFICATION_TAG}>`;
+
+/** Resumes an orchestrator after the usage limit reset, naming its agents that were paused too. */
+export function limitResumed(agents: { agentId: string; title: string }[]): string {
+  const paused = agents.length
+    ? ` These agents were paused by the limit too and are resuming now: ${agents.map((a) => `"${a.title}" (${a.agentId})`).join(', ')}. You will be notified when they finish, as usual; don't message or respawn them.`
+    : '';
+  return `<${NOTIFICATION_TAG}>
+Your usage limit has reset, so Kelpie resumed you. Your last turn was cut off by the limit: that is not a failure.${paused} Continue where you left off; if you had asked the person a question they had not answered yet, ask it again.
+</${NOTIFICATION_TAG}>`;
+}
 
 /** A fence that no line of `text` can close early. */
 const fence = (text: string) => '`'.repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1)));

@@ -1,4 +1,4 @@
-import { firstLine, type KelpieEvent, type TodoItem, type ToolCategory } from '@kelpie/protocol';
+import { firstLine, type KelpieEvent, type TodoItem, type ToolCategory, type UsageLimitPause } from '@kelpie/protocol';
 
 /**
  * A sub-agent at a glance, for the agent pane: kept current from its events, so listing
@@ -14,8 +14,10 @@ export interface AgentSummary {
   writes: boolean;
   /** Given the Claude in Chrome tools: it may drive the person's own browser. */
   browser: boolean;
-  /** `needs-approval`: working, but waiting on the person to allow something. */
-  status: 'working' | 'needs-approval' | 'done' | 'failed' | 'stopped' | 'idle';
+  /** `needs-approval`: working, but waiting on the person to allow something. `paused`: stopped at the usage limit, until it resets. */
+  status: 'working' | 'needs-approval' | 'paused' | 'done' | 'failed' | 'stopped' | 'idle';
+  /** While `paused`: when the limit resets and Kelpie resumes it. */
+  limited?: UsageLimitPause;
   /** One line on what it is doing, or what it last said. */
   now: string;
   /** When `now` is a tool call ("Read src/a.ts"): which tool, so a client can put it in its own words without parsing `now`. */

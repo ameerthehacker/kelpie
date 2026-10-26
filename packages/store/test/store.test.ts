@@ -91,7 +91,7 @@ describe('store', () => {
     cpSync(join(import.meta.dirname, '../drizzle'), before, { recursive: true });
     const journal = join(before, 'meta/_journal.json');
     const j = JSON.parse(readFileSync(journal, 'utf8')) as { entries: { tag: string }[] };
-    expect(j.entries.at(-1)!.tag).toBe('0014_settings');
+    expect(j.entries.map((e) => e.tag)).toContain('0014_settings');
     j.entries = j.entries.filter((e) => e.tag < '0014');
     writeFileSync(journal, JSON.stringify(j));
     const path = join(dir, 'kelpie.db');
@@ -104,6 +104,36 @@ describe('store', () => {
     expect(store.settings()).toEqual({});
     store.setSettings({ maxAgents: 3 });
     expect(store.settings()).toEqual({ maxAgents: 3 });
+    store.close();
+  });
+
+  it('adds the usage_limits table to a store made before it, and keeps pauses until cleared', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
+    const before = join(dir, 'drizzle');
+    cpSync(join(import.meta.dirname, '../drizzle'), before, { recursive: true });
+    const journal = join(before, 'meta/_journal.json');
+    const j = JSON.parse(readFileSync(journal, 'utf8')) as { entries: { tag: string }[] };
+    j.entries = j.entries.filter((e) => e.tag < '0017');
+    writeFileSync(journal, JSON.stringify(j));
+    const path = join(dir, 'kelpie.db');
+    const old = openStore(path, { migrationsFolder: before });
+    old.createSession({ id: 'r', cwd: '/r' });
+    expect(() => old.limits()).toThrow(/no such table/);
+    old.close();
+    const store = openStore(path);
+    store.createSession({ id: 'a', cwd: '/r', parentId: 'r', role: 'agent' });
+    const row = store.setLimit({ sessionId: 'a', harness: 'claude-code', message: 'limit', resetsAt: 5000, retryAt: 5090 }, 1000);
+    expect(row).toEqual({ sessionId: 'a', harness: 'claude-code', message: 'limit', resetsAt: 5000, retryAt: 5090, attempts: 0, auto: true, createdAt: 1000 });
+    // Hit again: when it first paused stays.
+    expect(store.setLimit({ sessionId: 'a', harness: 'claude-code', message: 'limit', resetsAt: null, retryAt: 9000, attempts: 1 }, 2000)).toMatchObject({ retryAt: 9000, attempts: 1, createdAt: 1000 });
+    expect(store.updateLimit('a', { auto: false })).toMatchObject({ auto: false });
+    expect(store.limits().map((l) => l.sessionId)).toEqual(['a']);
+    expect(store.clearLimit('a')).toBe(true);
+    expect(store.limitOf('a')).toBeUndefined();
+    store.setLimit({ sessionId: 'a', harness: 'claude-code', message: 'limit', resetsAt: null, retryAt: 1 });
+    // Goes with its session.
+    store.deleteSession('r');
+    expect(store.limits()).toEqual([]);
     store.close();
   });
 
