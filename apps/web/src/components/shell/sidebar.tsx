@@ -22,7 +22,8 @@ import { NotificationPrompt, NotificationsMenu } from './notifications-menu';
 
 interface RowProps {
   roundUp: RoundUp;
-  active: boolean;
+  /** Open: the page itself, or the place a sub-agent's page sits under. */
+  active: 'page' | 'location' | undefined;
   now: number;
   onNavigate: () => void;
   onRename: (id: string, title: string) => Promise<unknown>;
@@ -71,7 +72,10 @@ function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, wait
         onBlur={save}
         onKeyDown={(e) => {
           if (e.key === 'Enter') save();
-          if (e.key === 'Escape') setEditing(false);
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            setEditing(false);
+          }
         }}
         className="bg-surf border-ln2 h-[38px] w-full rounded-[10px] border px-3 text-sm outline-none"
       />
@@ -82,7 +86,7 @@ function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, wait
     <div className="group/row relative">
       <Link
         to={roundUpPath(roundUp.id)}
-        aria-current={active ? 'page' : undefined}
+        aria-current={active}
         title={label}
         onClick={onNavigate}
         className={cn('hover:bg-hov flex h-[38px] items-center gap-2.5 rounded-[10px] pr-9 pl-3 text-sm', active && 'bg-sel font-medium')}
@@ -199,6 +203,8 @@ function ThemeSwitch() {
 interface SidebarProps {
   roundUps: RoundUp[] | undefined;
   currentId: string | undefined;
+  /** A sub-agent of `currentId` is open, not the round-up's own chat. */
+  inAgent?: boolean;
   /** Called when a link in the sidebar is followed. */
   onNavigate: () => void;
   onRename: (id: string, title: string) => Promise<unknown>;
@@ -208,7 +214,7 @@ interface SidebarProps {
 }
 
 /** The round-ups, usage, notifications and theme: the design's left-hand panel. */
-export function AppSidebar({ roundUps, currentId, onNavigate, onRename, onDelete, onHide, className }: SidebarProps) {
+export function AppSidebar({ roundUps, currentId, inAgent, onNavigate, onRename, onDelete, onHide, className }: SidebarProps) {
   const now = useNow();
   const approvals = useApprovals();
   const statusOf = useRoundUpStatus();
@@ -249,7 +255,7 @@ export function AppSidebar({ roundUps, currentId, onNavigate, onRename, onDelete
           <RoundUpRow
             key={r.id}
             roundUp={r}
-            active={r.id === currentId}
+            active={r.id !== currentId ? undefined : inAgent ? 'location' : 'page'}
             now={now}
             onNavigate={onNavigate}
             onRename={onRename}

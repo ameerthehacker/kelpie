@@ -112,6 +112,12 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
       }
       return;
     }
+    // Out of the card, before Escape means anything else (back from an agent's page, say).
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      return;
+    }
     const n = Number(e.key);
     const act: Record<string, () => void> = {
       ArrowDown: () => setRow((r) => Math.min(rows - 1, r + 1)),

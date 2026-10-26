@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { relativeTime, shortPath, statusLine, type RoundUp } from '../src/lib/round-ups.js';
+import { relativeTime, shortPath, statusLine, wayBack, type RoundUp } from '../src/lib/round-ups.js';
 import { nextMode } from '../src/lib/modes.js';
 
 const NOW = new Date('2026-10-23T12:00:00').getTime();
@@ -34,5 +34,26 @@ describe('modes', () => {
     expect(nextMode(modes, 'auto')).toBe('acceptEdits');
     expect(nextMode(modes, 'plan')).toBe('auto');
     expect(nextMode([], 'plan')).toBe('plan');
+  });
+});
+
+describe('wayBack', () => {
+  const to = '/r/parent';
+
+  it('steps back through history when opened from the round-up', () => {
+    expect(wayBack(to, { state: { from: to }, key: 'k1' })).toBe('back');
+    // Reloaded: the history entry (and its state) is still there.
+    expect(wayBack(to, { state: { from: to }, key: 'default' })).toBe('back');
+  });
+
+  it('opens the round-up in place when reached another way inside the app', () => {
+    expect(wayBack(to, { state: { from: '/approvals' }, key: 'k2' })).toBe('replace');
+    expect(wayBack(to, { state: { from: '/r/other' }, key: 'k2' })).toBe('replace');
+    expect(wayBack(to, { state: null, key: 'k3' })).toBe('replace');
+  });
+
+  it('opens the round-up as a new entry when landed on directly', () => {
+    expect(wayBack(to, { state: null, key: 'default' })).toBe('push');
+    expect(wayBack(to, { state: undefined, key: 'default' })).toBe('push');
   });
 });

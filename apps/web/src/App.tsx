@@ -186,6 +186,7 @@ export function App() {
       roundUps={roundUps}
       // A sub-agent's page sits under its round-up.
       currentId={current?.role === 'agent' ? current.parentId : roundUpId}
+      inAgent={current?.role === 'agent'}
       onNavigate={() => {
         // On a phone the sidebar is a sheet over the chat; get it out of the way once something is picked.
         setMobileNav(false);
