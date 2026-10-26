@@ -11,6 +11,7 @@ import { canStart, checkHarnesses, shared, type HarnessStatus } from './harness-
 import { Orchestrator } from './orchestrator/orchestrator.js';
 import { createApp } from './server.js';
 import { SessionManager } from './sessions.js';
+import { claudeTitles, type TitleGenerator } from './titles.js';
 import { Worktrees } from './worktrees.js';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -31,6 +32,8 @@ export interface DaemonOptions {
   maxAgents?: number;
   maxWorktrees?: number;
   worktreeIdleMs?: number;
+  /** Names round-ups once their conversation starts. Default: through the person's own `claude` (Haiku); false: never. */
+  titles?: TitleGenerator | false;
 }
 
 export interface Daemon {
@@ -94,6 +97,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     scratchDir: join(home, 'scratch'),
     // What may run without asking is settled per session (the orchestrator's specFor, saved rules); anything else asks.
     defaults: opts.model ? { model: opts.model } : {},
+    ...(opts.titles === false ? {} : { titles: opts.titles ?? claudeTitles() }),
   });
   orchestrator.attach(sessions);
 

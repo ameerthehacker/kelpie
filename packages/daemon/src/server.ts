@@ -342,7 +342,8 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     // Null puts the harness's default model back.
     if (body.model !== undefined && body.model !== null && !isModel(body.model)) return c.json({ error: MODEL_ERROR }, 400);
     const title = typeof body.title === 'string' ? body.title.trim().replace(/\s+/g, ' ') : '';
-    if (body.title !== undefined && (!title || title.length > 200)) return c.json({ error: 'title must be 1-200 characters' }, 400);
+    // An empty title clears the person's own: the round-up goes back to its first message, and AI titles resume.
+    if (body.title !== undefined && (typeof body.title !== 'string' || title.length > 200)) return c.json({ error: 'title must be at most 200 characters' }, 400);
     if (body.baseBranch !== undefined && (typeof body.baseBranch !== 'string' || !orch)) return c.json({ error: 'baseBranch must be a branch name' }, 400);
     if (typeof body.baseBranch === 'string' && orch) {
       try {

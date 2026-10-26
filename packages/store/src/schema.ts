@@ -19,6 +19,14 @@ export const sessions = sqliteTable('sessions', {
   /** A sub-agent's log index up to which its orchestrator has been told it went idle. */
   notifiedIdx: integer('notified_idx').notNull().default(-1),
   title: text('title').notNull().default(''),
+  /**
+   * Where a top-level round-up's `title` came from (see SessionTitleSource): its first message, a
+   * title Claude generated, or the person. Null while it has none, and on sub-agents (their
+   * orchestrator names them).
+   */
+  titleSource: text('title_source', { enum: ['message', 'ai', 'person'] }),
+  /** How many of the person's messages the round-up had when it was last titled by AI; null if never. */
+  titleTurn: integer('title_turn'),
   cwd: text('cwd').notNull(),
   harness: text('harness').notNull().default('claude-code'),
   model: text('model'),

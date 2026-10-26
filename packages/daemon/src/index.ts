@@ -36,3 +36,4 @@ export { startDaemon, envNumber, limitsFromEnv, HomeInUseError, PortInUseError, 
 export { Connections, ConnectError, type Connector, type ConnectionAccount, type ConnectionStatus } from './connectors/connector.js';
 export { GitHubConnector, githubEnv, type GitHubOptions, type RunGh } from './connectors/github.js';
 export { SavedSettings, SettingsError } from './settings.js';
+export { Titler, claudeTitles, conversationPart, sanitizeTitle, saysEnough, titlePrompt, TITLE_SYSTEM, REFRESH_AT, type Conversation, type Part, type TitleGenerator, type TitleInput, type Titled } from './titles.js';

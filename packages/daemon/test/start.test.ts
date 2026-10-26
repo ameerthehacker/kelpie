@@ -25,7 +25,7 @@ describe('startDaemon', () => {
     const cwd = tmp('kelpie-cwd-');
     mkdirSync(join(cwd, 'sub'));
     const port = await freePort();
-    const daemon = await startDaemon({ cwd, port, home, staticDir: web });
+    const daemon = await startDaemon({ cwd, port, home, staticDir: web, titles: false });
     try {
       expect(daemon.url).toBe(`http://127.0.0.1:${port}`);
       const health = (await (await fetch(`${daemon.url}/api/health`)).json()) as { ok: boolean; defaultCwd: string };
@@ -40,7 +40,7 @@ describe('startDaemon', () => {
       await daemon.close();
     }
     // Closed: the port and the data directory are free for the next start.
-    const again = await startDaemon({ cwd, port, home });
+    const again = await startDaemon({ cwd, port, home, titles: false });
     await again.close();
   });
 });
