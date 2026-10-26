@@ -131,6 +131,16 @@ export interface SendOptions {
   meta?: Record<string, unknown>;
   /** Files listed in the turn by path (the harness reads them itself) and, for the UI, in its echo. */
   attachments?: SentFile[];
+  /** Turns for other sessions, queued in the same transaction and sent with this one (e.g. a review's briefs). */
+  together?: TogetherTurn[];
+}
+
+/** A turn for another session that goes with a `send`: both survive a crash, or neither was queued. */
+export interface TogetherTurn {
+  session: Session;
+  text: string;
+  source: OutboxSource;
+  meta?: Record<string, unknown>;
 }
 
 export interface CreateOptions {
@@ -547,23 +557,46 @@ export class Session {
    * yet survives a crash and is sent again.
    */
   async send(text: string, source: OutboxSource = 'user', opts: SendOptions = {}): Promise<void> {
-    while (this.stopping) await this.stopping;
-    // A process can exit before its last events are logged; logging its exit clears the outbox, so this turn waits.
-    if (this.run?.exited) await this.pumping;
-    if (this.deleted) throw new Error('this round-up was deleted');
+    const together = opts.together ?? [];
+    const all: Session[] = [this, ...together.map((t) => t.session)];
+    // A process can exit before its last events are logged; logging its exit clears the outbox, so a turn waits.
+    // For several sessions, until none of them is in that state at once.
+    do {
+      await Promise.all(all.map((s) => s.settled()));
+    } while (all.some((s) => s.unsettled()));
+    for (const s of all) if (s.deleted) throw new Error(s === this ? 'this round-up was deleted' : `"${s.title}" was deleted`);
     if (this.ctx.closing) throw new Error('Kelpie is shutting down');
     const files = opts.attachments ?? [];
     // The paths are in the text itself, so a turn re-sent after a crash still carries its files.
     const turn = files.length ? `${text.trim() ? `${text}\n\n` : ''}${attachmentsBlock(files)}` : text;
     // The harness echoes an empty turn as nothing, which would put the outbox out of step.
-    if (!turn.trim()) throw new Error('a turn needs some text');
+    if (!turn.trim() || together.some((t) => !t.text.trim())) throw new Error('a turn needs some text');
     const meta = files.length ? { ...opts.meta, attachments: files.map(({ path: _, ...a }) => a) } : opts.meta;
-    this.load();
+    for (const s of all) s.load();
     this.ctx.store.atomically(() => {
       opts.alsoInTx?.();
       this.ctx.store.enqueue(this.id, turn, source, Date.now(), meta);
+      for (const t of together) this.ctx.store.enqueue(t.session.id, t.text, t.source, Date.now(), t.meta);
     });
     if (!this.row.title && source === 'user') this.update({ title: titleFrom(text) || titleFrom(files.map((f) => f.name).join(', ')) });
+    // Each is in its outbox now: one that cannot start here is sent on the next start.
+    const sent = await Promise.allSettled([this.dispatch(turn), ...together.map((t) => t.session.dispatch(t.text))]);
+    sent.slice(1).forEach((r, i) => r.status === 'rejected' && console.error(`session ${together[i]!.session.id}: could not start`, r.reason));
+    if (sent[0]!.status === 'rejected') throw sent[0]!.reason;
+  }
+
+  /** Waits until a turn can be queued without its process's exit clearing it. */
+  private async settled(): Promise<void> {
+    while (this.stopping) await this.stopping;
+    if (this.run?.exited) await this.pumping;
+  }
+
+  private unsettled(): boolean {
+    return !!this.stopping || (!!this.run?.exited && this.pumpActive);
+  }
+
+  /** Hands a queued turn to the live process, or starts one (which sends every undelivered turn). */
+  private async dispatch(turn: string): Promise<void> {
     if (this.run && !this.run.exited) this.run.send(turn);
     else await this.launch();
   }

@@ -94,14 +94,17 @@ interface ReviewMeta {
   verdict: 'comment' | 'request_changes' | 'approve';
   comments: number;
   threads: number;
+  /** Threads made on an agent's own Changes tab, sent straight to it. */
+  direct?: { agentId: string; title: string; threads: number }[];
 }
 
 const VERDICT: Record<ReviewMeta['verdict'], string> = { comment: 'Comment', request_changes: 'Request changes', approve: 'Approve' };
 
-/** "You submitted a review · Request changes · 3 comments". */
-export function reviewNotice(r: Pick<ReviewMeta, 'verdict' | 'comments'>): string {
+/** "You submitted a review · Request changes · 3 comments · 2 sent to API, 1 to Docs". */
+export function reviewNotice(r: Pick<ReviewMeta, 'verdict' | 'comments' | 'direct'>): string {
   const parts = ['You submitted a review', VERDICT[r.verdict] ?? r.verdict];
   if (r.comments) parts.push(`${r.comments} comment${r.comments === 1 ? '' : 's'}`);
+  if (r.direct?.length) parts.push(r.direct.map((d, i) => `${d.threads} ${i ? 'to' : 'sent to'} ${d.title}`).join(', '));
   return parts.join(' · ');
 }
 

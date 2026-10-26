@@ -54,13 +54,13 @@ export function repo(): string {
 
 export const LOCAL = { host: '127.0.0.1:7317', 'content-type': 'application/json' };
 
-export function setup(opts: { env?: Record<string, string>; store?: Store; checkout?: string; root?: string } = {}) {
+export function setup(opts: { env?: Record<string, string>; store?: Store; checkout?: string; root?: string; maxAgents?: number } = {}) {
   const checkout = opts.checkout ?? repo();
   const store = opts.store ?? openStore(':memory:');
   const argsFile = join(tmp('kelpie-args-'), 'args.jsonl');
   const stdinFile = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
   const worktrees = new Worktrees({ store, root: opts.root ?? join(tmp('kelpie-home-'), 'worktrees') });
-  const orch = new Orchestrator({ store, mcpUrl: 'http://127.0.0.1:7317/mcp', maxAgents: 6, notifyDelayMs: 100, worktrees });
+  const orch = new Orchestrator({ store, mcpUrl: 'http://127.0.0.1:7317/mcp', maxAgents: opts.maxAgents ?? 6, notifyDelayMs: 100, worktrees });
   const sessions = new SessionManager({
     store,
     defaultCwd: checkout,

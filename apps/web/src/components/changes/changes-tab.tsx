@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import { useChanges } from '@/hooks/use-changes';
 import { useChangesNav } from '@/hooks/use-changes-nav';
 import { useReview } from '@/hooks/use-review';
-import { anchorSha, filesLabel, type ChangedFile } from '@/lib/changes';
+import { anchorSha, filesLabel, musteredFromLabel, type ChangedFile } from '@/lib/changes';
 import { threadsOffDiff, threadsOn, type ReviewThread } from '@/lib/review';
 import { cn } from '@/lib/utils';
 import { FileCard, FilePath } from './file-card';
@@ -89,9 +89,7 @@ export function ChangesTab({ roundUpId, repo }: { roundUpId: string; repo?: stri
             </span>
           )}
         </div>
-        <p className="text-mu text-xs">
-          Mustered from {mustered} agent{mustered === 1 ? '' : 's'}' branch{mustered === 1 ? '' : 'es'}
-        </p>
+        <p className="text-mu text-xs">{musteredFromLabel(mustered)}</p>
       </div>
 
       <ReviewBar roundUpId={roundUpId} />

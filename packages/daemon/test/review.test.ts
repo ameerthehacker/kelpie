@@ -1,12 +1,14 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
+import { openStore } from '@kelpie/store';
 import type { ManagerUpdate, ReviewState, ReviewThread, Session, SessionManager } from '../src/index.js';
-import { commit, git, jsonLines, LOCAL, lines, mcpClient, reported, roundUp, setup, sleep, startWith, waitFor, writer, type Ctx } from './review-fixtures.js';
+import { commit, git, jsonLines, LOCAL, lines, mcpClient, reported, roundUp, setup, sleep, startWith, tmp, waitFor, writer, type Ctx } from './review-fixtures.js';
 
 const managers: SessionManager[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(managers.splice(0).map((m) => m.stopAll()));
 });
 const start = (...args: Parameters<typeof setup>) => {
@@ -316,5 +318,205 @@ describe('reviews', () => {
     expect(ctx.store.thread(open.id)!.assignedTo).toBeNull();
     expect(ctx.sessions.children(parent.id).filter((c) => c.title === 'Review fixes')).toHaveLength(1);
     await planning.close();
+  });
+});
+
+type Line = Omit<Anchor, 'view' | 'viewSessionId'>;
+/** A comment made on an agent's own Changes tab, at its default round's head. */
+const onAgent = async (ctx: Ctx, parent: Session, agent: Session, a: Line, body = 'please fix') => {
+  const head = (await ctx.orch.changes.of(agent.id))!.headSha!;
+  return comment(ctx, parent, head, { ...a, view: 'agent', viewSessionId: agent.id }, body);
+};
+const L2: Line = { path: 'app.txt', side: 'additions', line: 2, lineText: 'L2 api' };
+const BRIEF = 'The person reviewed changes';
+/** The review briefs agents' harnesses took in (a fresh fake echoes its fixture's text, so not from the log). */
+const briefs = (file: string) => jsonLines<{ text: string }>(file).filter((l) => l.text.startsWith(BRIEF));
+/** What the orchestrator's harness took in for the latest review notification after `n` turns. */
+const reviewText = (ctx: Ctx, n: number) => waitFor(() => jsonLines<{ text: string }>(ctx.stdinFile).slice(n).findLast((l) => l.text.includes('submitted a review'))?.text);
+const NO_AGENT = '## No agent (base code, Muster, or a deleted/read-only agent)';
+const ACT = 'Act on it now (see your rules). This message is from Kelpie, not the person.';
+
+describe("reviews made on an agent's own changes", () => {
+  it('go straight to that agent in the submit (its mustered worktree back), and are listed, not routed, for the orchestrator', async () => {
+    const ctx = start();
+    const { parent, api, head } = await mustered(ctx);
+    const own = (await onAgent(ctx, parent, api, L2, 'rename it')).body.thread as ReviewThread;
+    const feature = (await comment(ctx, parent, head(), L2, 'and document it')).body.thread as ReviewThread;
+    const base = (await comment(ctx, parent, head(), { path: 'app.txt', side: 'additions', line: 5, lineText: 'l5' }, 'why is this here?')).body.thread as ReviewThread;
+    expect(ctx.store.worktreeOf(api.id)!.state).toBe('mustered');
+    const since = ctx.store.getSession(api.id)!.notifiedIdx;
+    const before = kelpieTurns(parent).length;
+
+    const { review } = await ctx.orch.reviews.submit(parent.id, 'request_changes', 'Close.');
+    expect([own, feature, base].map((t) => ctx.store.thread(t.id)!.assignedTo)).toEqual([api.id, null, null]);
+    const turn = await waitFor(() => kelpieTurns(parent).slice(before).find((e) => e.data.review));
+    expect(turn.data.review).toEqual({ reviewId: review.id, verdict: 'request_changes', comments: 3, threads: 3, direct: [{ agentId: api.id, title: 'API', threads: 1 }] });
+    expect(turn.data.text).toBe(
+      [
+        '<kelpie-notification>',
+        "The person submitted a review of the feature's changes: Request changes.",
+        '> Close.',
+        `## Agent "API" (${api.id}): 1 thread`,
+        `- [${feature.id}] app.txt:2 (additions): "and document it"`,
+        `${NO_AGENT}: 1 thread`,
+        `- [${base.id}] app.txt:5 (additions): "why is this here?"`,
+        `## Sent straight to agent "API" (${api.id}): 1 thread (made on its own changes)`,
+        `- [${own.id}] app.txt:2 (additions): "rename it"`,
+        ACT,
+        '</kelpie-notification>',
+      ].join('\n'),
+    );
+
+    const brief = (await waitFor(() => briefs(ctx.stdinFile)[0])).text;
+    const echo = await waitFor(() => api.events().findLast((e) => e.kind === 'message' && e.data.sent));
+    expect(echo.kind === 'message' && echo.data.source).toBe('orchestrator');
+    expect(brief).toContain('They made these on your own changes, so Kelpie sent them straight to you. Their review: Request changes.\n> Close.');
+    expect(brief).toContain(`Thread: ${own.id}`);
+    expect(brief).toContain('- person: rename it');
+    expect(brief).not.toContain(feature.id);
+    expect(brief).not.toContain(base.id);
+    await reported(ctx, api, since);
+    // It was mustered: its worktree was brought back from the feature branch for it.
+    expect(ctx.store.worktreeOf(api.id)!.state).toBe('active');
+    expect(briefs(ctx.stdinFile)).toHaveLength(1);
+    expect(ctx.store.undelivered(api.id)).toEqual([]);
+    // Its idle notification counts the thread it was sent.
+    const idle = await waitFor(() => kelpieTurns(parent).slice(before).find((e) => e.data.text.includes(`## Agent "API" (${api.id}) is idle`)));
+    expect(idle.data.text).toContain('Review threads: 0 resolved, 1 open');
+    expect(idle.data.agents?.find((a) => a.agentId === api.id)?.reviewThreads).toEqual({ open: 1, resolved: 0 });
+
+    const agent = await mcpClient(ctx, await startWith(ctx, ctx.store.worktreeOf(api.id)!.branch));
+    expect((await agent.call('list_review_threads')).data.map((t: { threadId: string }) => t.threadId)).toEqual([own.id]);
+    expect((await agent.call('resolve_thread', { threadId: own.id, body: 'Renamed.' })).data).toEqual({ threadId: own.id, status: 'resolved' });
+    await agent.close();
+  });
+
+  it('routes a Comment review the same way, to a standalone writer too', async () => {
+    const ctx = start();
+    const parent = await roundUp(ctx);
+    const solo = await writer(ctx, parent, 'Solo', 'standalone');
+    commit(solo.cwd, 'app.txt', lines({ 2: 'L2 api' }));
+    const own = (await onAgent(ctx, parent, solo, L2, 'is this name right?')).body.thread as ReviewThread;
+    const before = kelpieTurns(parent).length;
+    await ctx.orch.reviews.submit(parent.id, 'comment');
+    expect(ctx.store.thread(own.id)!.assignedTo).toBe(solo.id);
+    const turn = await waitFor(() => kelpieTurns(parent).slice(before).find((e) => e.data.review));
+    expect(turn.data.text).toBe(
+      [
+        '<kelpie-notification>',
+        "The person submitted a review of the feature's changes: Comment.",
+        `## Sent straight to agent "Solo" (${solo.id}): 1 thread (made on its own changes)`,
+        `- [${own.id}] app.txt:2 (additions): "is this name right?"`,
+        ACT,
+        '</kelpie-notification>',
+      ].join('\n'),
+    );
+    const brief = (await waitFor(() => briefs(ctx.stdinFile)[0])).text;
+    expect(brief).toContain('Their review: Comment. Change code only where a comment asks for it.');
+  });
+
+  it("fall back to the orchestrator, saying why, when the agent can't take them now", async () => {
+    const ctx = start({ maxAgents: 1 });
+    const { parent, api, docs } = await mustered(ctx);
+    const submitted = async (body: string) => {
+      const thread = (await onAgent(ctx, parent, api, L2, body)).body.thread as ReviewThread;
+      const n = jsonLines(ctx.stdinFile).length;
+      const { review } = await ctx.orch.reviews.submit(parent.id, 'request_changes');
+      const turn = await waitFor(() => kelpieTurns(parent).find((e) => e.data.review?.reviewId === review.id));
+      expect(turn.data.review?.direct).toBeUndefined();
+      expect(ctx.store.thread(thread.id)!.assignedTo).toBeNull();
+      return { thread, text: await reviewText(ctx, n) };
+    };
+
+    // Plan mode: writers wait.
+    const mode = parent.mode;
+    await ctx.sessions.setMode(parent, 'plan');
+    const plan = await submitted('in plan mode');
+    expect(plan.text).toContain(`## Agent "API" (${api.id}): 1 thread\n- [${plan.thread.id}] app.txt:2 (additions): "in plan mode" (made on "API"'s own changes, not sent straight to it: the round-up is in plan mode, so writers wait)`);
+    await ctx.sessions.setMode(parent, mode);
+
+    // The cap: Docs is working, and one agent at a time is the most.
+    const busy = ctx.orch.message(parent, docs.id, 'one more thing');
+    const cap = await submitted('at the cap');
+    expect(cap.text).toContain(`"at the cap" (made on "API"'s own changes, not sent straight to it: 1 agent is already working, the most at once)`);
+    await busy;
+    await waitFor(() => !docs.working);
+
+    // Deleted: its threads have no agent left.
+    const gone = (await onAgent(ctx, parent, api, L2, 'gone')).body.thread as ReviewThread;
+    await ctx.sessions.delete(api.id);
+    const n = jsonLines(ctx.stdinFile).length;
+    await ctx.orch.reviews.submit(parent.id, 'request_changes');
+    const text = await reviewText(ctx, n);
+    expect(text).toContain(`${NO_AGENT}: 1 thread\n- [${gone.id}] app.txt:2 (additions): "gone" (made on an agent's own changes, not sent straight to it: that agent was deleted)`);
+    expect(text).not.toContain('Sent straight');
+    expect(briefs(ctx.stdinFile)).toHaveLength(0);
+  });
+
+  it('are not sent straight to a read-only agent, Muster, or a writer while another works in its place', async () => {
+    const ctx = start();
+    const parent = await roundUp(ctx);
+    const api = await writer(ctx, parent, 'API');
+    const at = { parentId: parent.id, role: 'agent' as const };
+    const reader = ctx.sessions.create(api.cwd, { ...at, writes: false, title: 'Look' });
+    const muster = ctx.sessions.create(api.cwd, { ...at, writes: true, kind: 'muster', title: 'Muster' });
+    const twin = ctx.sessions.create(api.cwd, { ...at, writes: true, title: 'Twin' });
+    expect(ctx.orch.claimForReview(parent, reader.id)).toEqual({ reason: '"Look" is read-only' });
+    expect(ctx.orch.claimForReview(parent, muster.id)).toEqual({ reason: '"Muster" is Muster' });
+    expect(ctx.orch.claimForReview(parent, 'nope')).toEqual({ reason: 'that agent was deleted' });
+    const busy = ctx.orch.message(parent, api.id, 'keep going');
+    expect(ctx.orch.claimForReview(parent, twin.id)).toEqual({ reason: 'writing agent "API" is working in the same place' });
+    await busy;
+    // One that can take them has its slot held until released.
+    await waitFor(() => !api.working);
+    const claim = ctx.orch.claimForReview(parent, api.id);
+    expect(claim).toMatchObject({ agent: { id: api.id } });
+    expect(ctx.orch.claimForReview(parent, twin.id)).toEqual({ reason: 'writing agent "API" is working in the same place' });
+    if ('release' in claim) claim.release();
+    expect(ctx.orch.claimForReview(parent, twin.id)).toMatchObject({ agent: { id: twin.id } });
+  });
+
+  it("deliver the agent's brief exactly once when Kelpie stops right after the submit", async () => {
+    const db = join(tmp('kelpie-home-'), 'kelpie.db');
+    const root = join(tmp('kelpie-home-'), 'worktrees');
+    let store = openStore(db);
+    const first = setup({ store, root });
+    managers.push(first.sessions);
+    const parent = await roundUp(first);
+    const api = await writer(first, parent, 'API');
+    commit(api.cwd, 'app.txt', lines({ 2: 'L2 api' }));
+    const own = (await onAgent(first, parent, api, L2, 'rename it')).body.thread as ReviewThread;
+    // Stopped dead right after the submit: both turns are in their outboxes, never taken in.
+    await Promise.all([parent.stop(), api.stop()]);
+    for (const s of [parent, api]) vi.spyOn(s as unknown as { launch: () => Promise<void> }, 'launch').mockResolvedValue(undefined);
+    await first.orch.reviews.submit(parent.id, 'request_changes');
+    expect(store.undelivered(api.id).map((r) => r.text)).toEqual([expect.stringContaining(`Thread: ${own.id}`)]);
+    expect(store.undelivered(parent.id).map((r) => r.text)).toEqual([expect.stringContaining('## Sent straight to agent "API"')]);
+    expect(store.thread(own.id)!.assignedTo).toBe(api.id);
+    await first.sessions.stopAll();
+    managers.length = 0;
+    store.close();
+
+    store = openStore(db);
+    const second = setup({ store, root, checkout: first.checkout });
+    managers.push(second.sessions);
+    await second.orch.reconcile();
+    await second.orch.recover();
+    await waitFor(() => briefs(second.stdinFile).length === 1);
+    await waitFor(() => !store.undelivered(api.id).length && !store.undelivered(parent.id).length);
+    const again = second.sessions.get(parent.id)!;
+    await waitFor(() => kelpieTurns(again).some((e) => e.data.text.includes(`## Agent "API" (${api.id}) is idle`)));
+    expect(briefs(second.stdinFile)).toHaveLength(1);
+    expect(kelpieTurns(again).filter((e) => e.data.review)).toHaveLength(1);
+
+    // And never again.
+    await second.sessions.stopAll();
+    managers.length = 0;
+    const third = setup({ store, root, checkout: first.checkout });
+    managers.push(third.sessions);
+    await third.orch.recover();
+    await sleep(300);
+    expect(briefs(third.stdinFile)).toEqual([]);
+    expect(third.store.undelivered(api.id)).toEqual([]);
   });
 });

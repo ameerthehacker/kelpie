@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentsOf, anchorSha, filesLabel, groupByDir, gutterNumbers, neighbors, splitPath, statSquares, vscodeUrl } from '../src/lib/changes.js';
+import { agentsOf, anchorSha, filesLabel, groupByDir, musteredFromLabel, gutterNumbers, neighbors, splitPath, statSquares, vscodeUrl } from '../src/lib/changes.js';
 
 describe('splitPath', () => {
   it('splits a path into its directory and its name', () => {
@@ -56,6 +56,11 @@ describe('small labels', () => {
   it('counts files', () => {
     expect(filesLabel(1)).toBe('1 file');
     expect(filesLabel(185)).toBe('185 files');
+  });
+
+  it('says how many agents a feature branch was mustered from', () => {
+    expect(musteredFromLabel(1)).toBe("Mustered from 1 agent's branch");
+    expect(musteredFromLabel(2)).toBe("Mustered from 2 agents' branches");
   });
 
   it('lists each agent once', () => {
