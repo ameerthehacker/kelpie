@@ -103,23 +103,25 @@ describe('recovery after Kelpie stops', () => {
     expect(order.at(-1)).toBe('orch');
     expect(order.slice(0, -1).sort()).toEqual(['a', 'b', 'c']);
 
-    const got = await waitFor(() => {
-      const r = jsonLines<Received>(stdin);
-      return r.length >= 4 && r;
-    });
-    expect(got).toEqual(
-      expect.arrayContaining([
-        { resume: 'h-a', text: expect.stringContaining('Kelpie restarted while you were working') },
-        { resume: 'h-b', text: expect.stringContaining('Kelpie restarted while you were working') },
-        { resume: 'h-c', text: 'Also check ticket 3' },
-        { resume: 'h-orch', text: expect.stringContaining('Call list_agents to pick your state back up') },
-      ]),
+    // Waited for by content, not by count: C's quick turn can end, and the orchestrator hear of it, before B reads its own.
+    await vi.waitFor(
+      () =>
+        expect(jsonLines<Received>(stdin)).toEqual(
+          expect.arrayContaining([
+            { resume: 'h-a', text: expect.stringContaining('Kelpie restarted while you were working') },
+            { resume: 'h-b', text: expect.stringContaining('Kelpie restarted while you were working') },
+            { resume: 'h-c', text: 'Also check ticket 3' },
+            { resume: 'h-orch', text: expect.stringContaining('Call list_agents to pick your state back up') },
+          ]),
+        ),
+      { timeout: 5000, interval: 20 },
     );
 
     // Once the resumed agents finish, the orchestrator hears about all three, once.
-    await waitFor(() => sessions.get('orch')!.events().some((e) => e.kind === 'message' && e.data.sent && e.data.text.includes('"C"')));
+    const heard = (title: string) => sessions.get('orch')!.events().some((e) => e.kind === 'message' && e.data.sent && e.data.text.includes(`"${title}"`));
+    await waitFor(() => ['A', 'B', 'C'].every(heard));
     await waitFor(() => !sessions.all().some((s) => s.working));
-    await sleep(200);
+    await sleep(200); // for any second notice that should not come
     const told = jsonLines<Received>(stdin)
       .filter((r) => r.resume === 'h-orch' || r.text.startsWith('<kelpie-notification>'))
       .map((r) => r.text)

@@ -1,6 +1,6 @@
-import { writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { openStore } from '@kelpie/store';
 import type { ManagerUpdate, ReviewState, ReviewThread, Session, SessionManager } from '../src/index.js';
@@ -416,12 +416,15 @@ describe("reviews made on an agent's own changes", () => {
   });
 
   it("fall back to the orchestrator, saying why, when the agent can't take them now", async () => {
-    const ctx = start({ maxAgents: 1 });
+    const hold = join(tmp('kelpie-hold-'), 'hold');
+    onTestFinished(() => rmSync(hold, { force: true })); // a failure must not leave the harnesses held
+    const ctx = start({ maxAgents: 1, env: { FAKE_HOLD_FILE: hold } });
     const { parent, api, docs } = await mustered(ctx);
     const submitted = async (body: string) => {
       const thread = (await onAgent(ctx, parent, api, L2, body)).body.thread as ReviewThread;
       const n = jsonLines(ctx.stdinFile).length;
       const { review } = await ctx.orch.reviews.submit(parent.id, 'request_changes');
+      rmSync(hold, { force: true }); // routed: the harnesses may answer now
       const turn = await waitFor(() => kelpieTurns(parent).find((e) => e.data.review?.reviewId === review.id));
       expect(turn.data.review?.direct).toBeUndefined();
       expect(ctx.store.thread(thread.id)!.assignedTo).toBeNull();
@@ -435,7 +438,8 @@ describe("reviews made on an agent's own changes", () => {
     expect(plan.text).toContain(`## Agent "API" (${api.id}): 1 thread\n- [${plan.thread.id}] app.txt:2 (additions): "in plan mode" (made on "API"'s own changes, not sent straight to it: the round-up is in plan mode, so writers wait)`);
     await ctx.sessions.setMode(parent, mode);
 
-    // The cap: Docs is working, and one agent at a time is the most.
+    // The cap: Docs is working (its turn held until the submit), and one agent at a time is the most.
+    writeFileSync(hold, '');
     const busy = ctx.orch.message(parent, docs.id, 'one more thing');
     const cap = await submitted('at the cap');
     expect(cap.text).toContain(`"at the cap" (made on "API"'s own changes, not sent straight to it: 1 agent is already working: the person allows at most 1 agent at once (they set this in Kelpie's Settings))`);

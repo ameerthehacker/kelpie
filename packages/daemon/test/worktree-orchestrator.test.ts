@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { openStore } from '@kelpie/store';
 import { BaseFixedError, createApp, Orchestrator, SessionManager, ToolError, Worktrees, type Session } from '../src/index.js';
@@ -156,7 +156,9 @@ describe('worktrees for writing agents', () => {
   });
 
   it('musters clean branches itself, hands a conflict to Muster, and believes git about the outcome', async () => {
-    const ctx = setup({ FAKE_EVERY_TURN: '1' });
+    const hold = join(tmp('kelpie-hold-'), 'hold');
+    onTestFinished(() => rmSync(hold, { force: true })); // a failure must not leave the harnesses held
+    const ctx = setup({ FAKE_EVERY_TURN: '1', FAKE_HOLD_FILE: hold });
     const { parent, call } = await orchestrator(ctx);
     await call('set_base_branch', { branch: 'origin/main' });
     const ids: string[] = [];
@@ -178,8 +180,11 @@ describe('worktrees for writing agents', () => {
     expect(solo!.info()).toMatchObject({ deliver: 'standalone' });
     const heard: string[] = [];
     const unwatch = ctx.sessions.watch((u) => u.type === 'session' && u.session.id === api!.id && heard.push(u.session.worktree ?? ''));
+    writeFileSync(hold, ''); // Muster's turn waits on it, so Muster is surely still working when asked to muster again
     const { data, error } = await call('muster_agents', { agentIds: [api!.id, docs!.id, copy!.id], notes: 'API wins on line two' });
     unwatch();
+    expect((await call('muster_agents', { agentIds: [copy!.id] })).error).toMatch(/Muster agent is already working/);
+    rmSync(hold);
     expect(heard).toContain('mustered');
     expect(error).toBeUndefined();
     expect(data.merged).toEqual(['API', 'Docs']);
@@ -206,7 +211,6 @@ describe('worktrees for writing agents', () => {
     expect(brief).toContain(ctx.store.worktreeOf(copy!.id)!.branch);
     expect(brief).toContain('API wins on line two');
     expect(brief).toContain('do Copy');
-    expect((await call('muster_agents', { agentIds: [copy!.id] })).error).toMatch(/Muster agent is already working/);
 
     // The fake Muster resolved nothing: the notification says so, from git.
     await waitFor(() => notes(parent).find((n) => n.includes('checked with git')));
