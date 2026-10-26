@@ -14,10 +14,15 @@ export interface AgentSummary {
   writes: boolean;
   /** Given the Claude in Chrome tools: it may drive the person's own browser. */
   browser: boolean;
-  /** `needs-approval`: working, but waiting on the person to allow something. `paused`: stopped at the usage limit, until it resets. */
-  status: 'working' | 'needs-approval' | 'paused' | 'done' | 'failed' | 'stopped' | 'idle';
+  /**
+   * `needs-approval`: working, but waiting on the person to allow something. `paused`: stopped at the
+   * usage limit, until it resets. `halted`: the person stopped it ("Stop all") until they resume it.
+   */
+  status: 'working' | 'needs-approval' | 'halted' | 'paused' | 'done' | 'failed' | 'stopped' | 'idle';
   /** While `paused`: when the limit resets and Kelpie resumes it. */
   limited?: UsageLimitPause;
+  /** Not working, but in line to resume (after a restart, or the person's "Resume all") once the agent limit has room. */
+  queued?: boolean;
   /** One line on what it is doing, or what it last said. */
   now: string;
   /** When `now` is a tool call ("Read src/a.ts"): which tool, so a client can put it in its own words without parsing `now`. */

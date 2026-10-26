@@ -123,8 +123,8 @@ export const Message = ev(
     attachments: z.array(Attachment).optional(),
     /** On the notification of a review the person submitted: what it was, for the UI. */
     review: ReviewNotice.optional(),
-    /** A turn Kelpie sent to pick the work up again: after the usage limit reset. */
-    resumed: z.enum(['limit']).optional(),
+    /** A turn Kelpie sent to pick the work up again: after the usage limit reset, or once the person resumed what they stopped. */
+    resumed: z.enum(['limit', 'halt']).optional(),
   }),
 );
 
@@ -376,6 +376,20 @@ export const PermissionResolved = ev(
   }),
 );
 
+/**
+ * Kelpie's own entry in a round-up's log, not the harness's: the person stopped every agent working
+ * under it ("Stop all"), or resumed them. `agents`: how many were stopped, or picked up again;
+ * `orchestrator`: whether the orchestrator's own turn was stopped too.
+ */
+export const Halt = ev(
+  'halt',
+  z.object({
+    action: z.enum(['stopped', 'resumed']),
+    agents: z.number().int().nonnegative(),
+    orchestrator: z.boolean().optional(),
+  }),
+);
+
 export const KelpieEvent = z.discriminatedUnion('kind', [
   SessionStarted,
   Message,
@@ -391,6 +405,7 @@ export const KelpieEvent = z.discriminatedUnion('kind', [
   ProcessExited,
   PermissionRequested,
   PermissionResolved,
+  Halt,
   Other,
 ]);
 export type KelpieEvent = z.infer<typeof KelpieEvent>;

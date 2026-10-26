@@ -49,6 +49,11 @@ export interface SessionInfo {
   worktree?: 'creating' | 'active' | 'mustered' | 'removed';
   /** Paused because its harness hit the person's usage limit: Kelpie resumes it once that resets. */
   limited?: UsageLimitPause;
+  /**
+   * When the person stopped it with "Stop all" (epoch ms). On a round-up: its orchestrator may not
+   * start or message agents until they resume it. On a sub-agent: "Resume all" picks it up again.
+   */
+  halted?: number;
 }
 
 /** What subscribers receive. `index` is the event's position in the session log (stable across runs and restarts). */
@@ -178,6 +183,11 @@ export interface SessionHooks {
   resumeLimited?(session: Session): Promise<void>;
   /** A session's pause at the usage limit began, changed or ended. Must not throw. */
   limitChanged?(session: Session): void;
+  /**
+   * Kelpie's word to go with the session's next turn, whoever sends it (the person included): e.g.
+   * that the person stopped all its agents. Runs in the transaction that queues the turn.
+   */
+  notice?(session: Session): string | undefined;
 }
 
 /** A file sent with a turn, and where the harness finds it. */
@@ -330,6 +340,8 @@ export class Session {
   private modelState: string | undefined;
   /** A top-level round-up's tickets, read from the store when first asked for. */
   private ticketsState: LinkedTicket[] | undefined;
+  /** When the person stopped it with "Stop all", as the store keeps it. */
+  private haltedAt: number | undefined;
 
   constructor(
     row: SessionRow,
@@ -337,6 +349,7 @@ export class Session {
   ) {
     this.row = row;
     this.lastTurnState = ctx.store.lastEvent(row.id, 'turn.ended')?.data.status;
+    this.haltedAt = ctx.store.haltOf(row.id);
     if (row.parentId) {
       this.todosState = this.ownTodos();
       this.modelState = ctx.store.lastEvent(row.id, 'session.started')?.data.model;
@@ -397,6 +410,20 @@ export class Session {
   /** Paused because its harness hit the usage limit, if it is. */
   get limited(): UsageLimitPause | undefined {
     return this.ctx.limits.pause(this.id);
+  }
+
+  /** When the person stopped it with "Stop all" (epoch ms), if they did and have not resumed it since. */
+  get halted(): number | undefined {
+    return this.haltedAt;
+  }
+
+  /** Marks it stopped by the person (kept across restarts, which never resume it), or not any more. */
+  setHalted(at: number | undefined): void {
+    if (this.haltedAt === at || (at !== undefined && this.haltedAt !== undefined)) return;
+    if (at === undefined) this.ctx.store.clearHalt(this.id);
+    this.haltedAt = at === undefined ? undefined : this.ctx.store.setHalt(this.id, at);
+    this.ctx.changed(this);
+    this.ctx.agentChanged(this);
   }
 
   get parentId(): string | undefined {
@@ -515,6 +542,7 @@ export class Session {
       tickets: this.tickets(),
       ...(parentId ? this.worktreeSummary() : {}),
       ...(this.limited ? { limited: this.limited } : {}),
+      ...(this.haltedAt !== undefined ? { halted: this.haltedAt } : {}),
     };
   }
 
@@ -576,16 +604,19 @@ export class Session {
         ? this.asking.size
           ? 'needs-approval'
           : 'working'
-        : limited
-          ? 'paused'
-          : t === 'completed'
-            ? 'done'
-            : t === 'failed'
-              ? 'failed'
-              : t === 'interrupted'
-                ? 'stopped'
-                : 'idle',
+        : this.haltedAt !== undefined
+          ? 'halted'
+          : limited
+            ? 'paused'
+            : t === 'completed'
+              ? 'done'
+              : t === 'failed'
+                ? 'failed'
+                : t === 'interrupted'
+                  ? 'stopped'
+                  : 'idle',
       ...(limited ? { limited } : {}),
+      ...(!this.working && this.row.resumePending ? { queued: true } : {}),
       ...this.nowState,
       todos: this.todosState,
       kind: this.row.kind,
@@ -734,12 +765,14 @@ export class Session {
     let sent = turn;
     this.ctx.store.atomically(() => {
       opts.alsoInTx?.();
-      const extra = source === 'user' ? undefined : this.ctx.hooks.inbox?.(this);
-      if (extra) sent = `${turn}\n\n${extra}`;
+      const extra = [source === 'user' ? undefined : this.ctx.hooks.inbox?.(this), this.ctx.hooks.notice?.(this)].filter(Boolean);
+      if (extra.length) sent = [turn, ...extra].join('\n\n');
       this.ctx.store.enqueue(this.id, sent, source, Date.now(), meta);
       for (const t of together) this.ctx.store.enqueue(t.session.id, t.text, t.source, Date.now(), t.meta);
     });
     if (!this.row.title && source === 'user') this.update({ title: titleFrom(text) || titleFrom(files.map((f) => f.name).join(', ')) });
+    // The person picking up an agent they stopped: it is theirs to run again, not left for "Resume all".
+    if (source === 'user' && this.row.parentId && this.haltedAt !== undefined) this.setHalted(undefined);
     // Tickets the person links to, in their round-up or to one of its agents, are the round-up's.
     if (found.length) {
       try {
@@ -796,6 +829,13 @@ export class Session {
     this.clearResumePending();
   }
 
+  /** Picks up after the person stopped it ("Stop all") and resumed it: sends `note`, to its live process or a new one. */
+  async resumeAfterHalt(note: string): Promise<void> {
+    if (this.deleted || this.ctx.closing) return;
+    await this.send(note, 'kelpie', { meta: { resumed: 'halt' } });
+    this.clearResumePending();
+  }
+
   markResumePending(): void {
     this.update({ resumePending: true });
   }
@@ -810,6 +850,38 @@ export class Session {
     if (!this.row.parentId) return;
     this.ctx.agentChanged(this);
     this.ctx.changed(this);
+  }
+
+  /**
+   * Logs an entry of Kelpie's own (not the harness's) and shows it to watchers: e.g. that the person
+   * stopped all agents. It moves the round-up up the list, as anything the person does.
+   */
+  note<K extends EventKind>(kind: K, data: EventData<K>): void {
+    if (this.deleted) return;
+    const log = this.load();
+    const event = { id: randomUUID(), runId: 'kelpie', seq: 0, ts: new Date().toISOString(), harness: this.row.harness, kind, data } as KelpieEvent;
+    const index = log.push(event) - 1;
+    const now = Date.now();
+    try {
+      this.ctx.store.appendEvent(this.id, index, event, now);
+      this.row = { ...this.row, updatedAt: now };
+    } catch (err) {
+      console.error(`session ${this.id}: could not store event ${index}`, err);
+    }
+    this.emit(index, event);
+    this.release();
+    this.ctx.changed(this);
+  }
+
+  /** Hands a logged event to every subscriber: one broken one must neither starve the others nor take the daemon down. */
+  private emit(index: number, event: KelpieEvent): void {
+    for (const listener of this.listeners.keys()) {
+      try {
+        listener({ index, event });
+      } catch (err) {
+        console.error(`session ${this.id}: listener failed`, err);
+      }
+    }
   }
 
   /** Records that the orchestrator has been told about this sub-agent up to log index `index`. */
@@ -1022,14 +1094,7 @@ export class Session {
         } catch (err) {
           console.error(`session ${this.id}: could not store event ${index}`, err);
         }
-        // One broken subscriber must neither starve the others nor take the daemon down.
-        for (const listener of this.listeners.keys()) {
-          try {
-            listener({ index, event });
-          } catch (err) {
-            console.error(`session ${this.id}: listener failed`, err);
-          }
-        }
+        this.emit(index, event);
         if (changed) this.ctx.changed(this);
         this.ctx.limits.observe(this, event);
         this.permissions(run, event);
