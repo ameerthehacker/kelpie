@@ -127,7 +127,7 @@ function EffortPicker({ effort, onEffort, note }: { effort: '' | Effort; onEffor
             onFocus={() => setShown(e)}
             onBlur={() => setShown(undefined)}
             onPointerEnter={() => setShown(e)}
-            className="text-mu data-[state=checked]:bg-surf data-[state=checked]:text-fg focus:ring-acc/40 hover:text-fg flex h-7 flex-1 cursor-default items-center justify-center rounded-md text-xs outline-none select-none focus:ring-2 data-[state=checked]:shadow-sm"
+            className="text-mu data-[state=checked]:bg-surf dark:data-[state=checked]:bg-ln2 data-[state=checked]:text-fg data-[state=checked]:font-medium focus:ring-acc/40 hover:text-fg flex h-7 flex-1 cursor-default items-center justify-center rounded-md text-xs outline-none select-none focus:ring-2 data-[state=checked]:shadow-sm"
           >
             {EFFORT_INFO[e].short}
           </DropdownMenuPrimitive.RadioItem>
