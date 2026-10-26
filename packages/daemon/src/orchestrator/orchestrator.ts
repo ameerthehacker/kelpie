@@ -945,7 +945,7 @@ export class Orchestrator implements SessionHooks {
     if (!row || !home || !this.worktrees || row.state !== 'active') return {};
     try {
       await this.worktrees.checkpoint(row, agent.title);
-      const stats = await this.worktrees.stats(row, home.branch);
+      const stats = await this.worktrees.stats(row);
       return { branch: row.branch, ahead: stats.ahead, ...(stats.diffstat ? { diffstat: stats.diffstat } : {}), ...(row.deliver ? { deliver: row.deliver } : {}) };
     } catch (err) {
       console.error(`agent ${agent.id}: could not read its branch`, err);

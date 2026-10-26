@@ -4,7 +4,7 @@ import { isAbsolute, join } from 'node:path';
 import { parsePatch } from 'diff';
 import { LRUCache } from 'lru-cache';
 import type { DeliveryRow, Store } from '@kelpie/store';
-import { forkOf, runGit } from '../worktrees.js';
+import { ownBase, runGit } from '../worktrees.js';
 import type { AgentRef, ChangedFile, Changes as ChangesView, Round, Side } from './types.js';
 
 /** A whole feature's patch may be this big before every file is sent as too large. */
@@ -166,8 +166,8 @@ export function findLine(content: string, line: number, text: string): number | 
 const safePath = (path: string) => !!path && !isAbsolute(path) && !path.split(/[\\/]/).includes('..') && !path.includes('\0');
 
 /**
- * What changed in a round-up: the feature branch against its base, or one writer's work against the
- * feature branch, as git sees it. Everything here only reads git, so it takes no locks.
+ * What changed in a round-up: the feature branch's own work, or one writer's (from `ownBase`), as git
+ * sees it. Everything here only reads git, so it takes no locks.
  */
 export class Changes {
   /** Committed diffs, by repo and commits (which never change). */
@@ -209,7 +209,7 @@ export class Changes {
         sessionId,
         roundUpId: session.id,
         repo: home.repoRoot,
-        baseSha: home.baseCommit,
+        baseSha: await ownBase(home, head),
         headSha: head,
         branch: home.branch,
         baseRef: home.baseBranch,
@@ -226,13 +226,13 @@ export class Changes {
     if (onDisk) {
       const head = await this.revParse(row.path, 'HEAD');
       if (head) {
-        rounds.push({ index: rounds.length + 1, state: 'active', baseSha: forkOf(row), headSha: head });
+        rounds.push({ index: rounds.length + 1, state: 'active', baseSha: await ownBase(row, head), headSha: head });
         workdir = row.path;
       }
     } else if (row.state === 'removed') {
       // Swept off disk, its work not mustered: its branch is the work.
       const tip = await this.revParse(row.repoRoot, `refs/heads/${row.branch}`);
-      if (tip) rounds.push({ index: rounds.length + 1, state: 'active', baseSha: forkOf(row), headSha: tip });
+      if (tip) rounds.push({ index: rounds.length + 1, state: 'active', baseSha: await ownBase(row, tip), headSha: tip });
     }
     if (!rounds.length) return 'none';
     const active = rounds.find((r) => r.state === 'active');

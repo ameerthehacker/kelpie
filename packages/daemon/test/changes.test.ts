@@ -221,4 +221,101 @@ describe('changes', () => {
     expect(alone.patch).toContain('+line 3499');
     expect(await ctx.orch.changes.file(api.id, 'missing.txt')).toBeNull();
   });
+  describe('base: only the work of its own', () => {
+    /** Main moves on in origin: `n` commits, each adding a file, fetched into the repo. */
+    let upstream = 0;
+    const mainMovesOn = (ctx: Ctx, n: number) => {
+      for (let i = 0; i < n; i++, upstream++) commit(ctx.checkout, `upstream-${upstream}.txt`, `upstream ${upstream}\n`);
+      git(ctx.checkout, 'push', '-q', 'origin', 'HEAD:main');
+      git(ctx.checkout, 'fetch', '-q', 'origin');
+      return git(ctx.checkout, 'rev-parse', 'origin/main');
+    };
+
+    it('shows nothing for a fresh agent', async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      const changes = (await ctx.orch.changes.of(api.id))!;
+      expect(changes).toMatchObject({ state: 'ready', baseSha: ctx.store.worktreeOf(api.id)!.forkCommit, stats: { files: 0, additions: 0, deletions: 0 } });
+    });
+
+    it("leaves out a newer main an agent's branch was reset onto, keeping its committed and uncommitted work", async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      const row = ctx.store.worktreeOf(api.id)!;
+      const main = mainMovesOn(ctx, 5);
+      git(api.cwd, 'reset', '-q', '--hard', 'origin/main');
+
+      // Nothing of its own yet: main's five commits are not its changes.
+      const fresh = (await ctx.orch.changes.of(api.id))!;
+      expect(fresh).toMatchObject({ baseSha: main, headSha: main, stats: { files: 0 } });
+      expect(await ctx.worktrees.ownCommits(row)).toBe(0);
+      expect(await ctx.worktrees.stats(row)).toEqual({ ahead: 0, diffstat: '', dirty: false });
+
+      commit(api.cwd, 'api.txt', 'api\n');
+      commit(api.cwd, 'app.txt', lines({ 4: 'L4 api' }));
+      writeFileSync(join(api.cwd, 'base.txt'), 'keep\ndrop\nend\nwip\n');
+      const work = (await ctx.orch.changes.of(api.id))!;
+      expect(work).toMatchObject({ baseSha: main, dirty: true, rounds: [{ index: 1, state: 'active', baseSha: main }] });
+      expect(brief(work.files)).toEqual([
+        ['api.txt', 'added', 1, 0, 'API'],
+        ['app.txt', 'modified', 1, 1, 'API'],
+        ['base.txt', 'modified', 1, 0, 'API'],
+      ]);
+      expect(await ctx.worktrees.ownCommits(row)).toBe(2);
+      // Main moving on again (and fetched) changes nothing.
+      mainMovesOn(ctx, 1);
+      expect((await ctx.orch.changes.of(api.id))!.baseSha).toBe(main);
+
+      // Mustered, its delivery starts there too: the feature's changes put only its files down to it,
+      // and the feature's own diff leaves out the main it brought in.
+      git(api.cwd, 'checkout', '-q', '--', 'base.txt');
+      const { merged } = await ctx.orch.muster(parent, [api.id]);
+      expect(merged).toEqual(['API']);
+      expect(ctx.store.deliveriesOf(parent.id)).toMatchObject([{ forkCommit: main }]);
+      const feature = (await ctx.orch.changes.of(parent.id))!;
+      expect(brief(feature.files)).toEqual([
+        ['api.txt', 'added', 1, 0, 'API'],
+        ['app.txt', 'modified', 1, 1, 'API'],
+      ]);
+      expect(feature.baseSha).toBe(main);
+    });
+
+    it('leaves out the feature branch moving on, merged into an agent or not', async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      const docs = await writer(ctx, parent, 'Docs');
+      commit(api.cwd, 'api.txt', 'api\n');
+      commit(docs.cwd, 'docs.txt', 'docs\n');
+      expect((await ctx.orch.muster(parent, [api.id])).merged).toEqual(['API']);
+      const home = ctx.store.worktreeOf(parent.id)!;
+      expect(brief((await ctx.orch.changes.of(docs.id))!.files)).toEqual([['docs.txt', 'added', 1, 0, 'Docs']]);
+
+      git(docs.cwd, 'merge', '-q', '--no-edit', home.branch);
+      commit(docs.cwd, 'more.txt', 'more\n');
+      const changes = (await ctx.orch.changes.of(docs.id))!;
+      expect(changes.baseSha).toBe(git(home.path, 'rev-parse', 'HEAD'));
+      expect(brief(changes.files)).toEqual([
+        ['docs.txt', 'added', 1, 0, 'Docs'],
+        ['more.txt', 'added', 1, 0, 'Docs'],
+      ]);
+      expect(await ctx.worktrees.stats(ctx.store.worktreeOf(docs.id)!)).toMatchObject({ diffstat: '2 files changed, 2 insertions(+)' });
+    });
+
+    it("leaves out main merged into the feature branch from its diff", async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      commit(api.cwd, 'api.txt', 'api\n');
+      await ctx.orch.muster(parent, [api.id]);
+      const home = ctx.store.worktreeOf(parent.id)!;
+      mainMovesOn(ctx, 3);
+      git(home.path, 'merge', '-q', '--no-edit', 'origin/main');
+      const feature = (await ctx.orch.changes.of(parent.id))!;
+      expect(feature.baseSha).toBe(git(ctx.checkout, 'rev-parse', 'origin/main'));
+      expect(brief(feature.files)).toEqual([['api.txt', 'added', 1, 0, 'API']]);
+    });
+  });
 });

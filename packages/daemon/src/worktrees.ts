@@ -91,7 +91,7 @@ export interface Branch {
 }
 
 export interface WorktreeStats {
-  /** Commits on the branch not yet on `against`. */
+  /** Commits of its own (since `ownBase`). */
   ahead: number;
   /** `git diff --shortstat`, e.g. "3 files changed, 40 insertions(+), 2 deletions(-)"; empty if none. */
   diffstat: string;
@@ -123,6 +123,45 @@ export interface WorktreesOptions {
 
 /** Where a worktree's branch was cut; rows from before that was recorded fall back to the base. */
 export const forkOf = (row: WorktreeRow) => row.forkCommit || row.baseCommit;
+
+const isAncestor = async (repo: string, a: string, b: string) => (await git(repo, ['merge-base', '--is-ancestor', a, b])).code === 0;
+
+/**
+ * Where a worktree's own work at `head` starts: what its diff, counts and delivery are taken from,
+ * so nothing it didn't do shows up as its change. It stays the same once the work is merged on.
+ *
+ * Its own commits are those down its first parents since its fork that its base and the remote
+ * branches don't have (their copies of its own and its parent's branch aside): so a branch reset or
+ * rebased onto a newer base (`git reset --hard origin/main`) starts where it landed, not at the fork.
+ * The work starts below the oldest of them; or, if it has since merged in the branch it was cut from
+ * (to catch up as that moved on), at the newest commit of that branch it merged; or at its merge-base
+ * with its base, if that is newer still.
+ */
+export async function ownBase(row: WorktreeRow, head: string): Promise<string> {
+  const repo = row.repoRoot;
+  const fork = forkOf(row);
+  const parent = row.kind === 'agent' ? `refs/heads/${row.parentBranch}` : row.baseBranch;
+  const onFork = await isAncestor(repo, fork, head);
+  const base = (await git(repo, ['rev-parse', '--verify', '--quiet', `${row.baseBranch}^{commit}`])).code === 0 ? [row.baseBranch] : [];
+  const copies = [row.branch, ...(row.kind === 'agent' ? [row.parentBranch] : [])].flatMap((b) => [`--exclude=*/${b}`]);
+  const own = await git(repo, ['rev-list', '--first-parent', '--parents', head, '--not', ...(onFork ? [fork] : []), ...base, ...copies, '--remotes']);
+  if (own.code !== 0) return fork;
+  const commits = own.stdout.split('\n').filter(Boolean).map((l) => l.split(' '));
+  if (!commits.length) return head;
+  // Below its oldest; if that is a root commit (nothing else has any of its history), the fork is all there is to go by.
+  const start = commits.at(-1)![1] ?? fork;
+  let since = start;
+  for (const [, , theirs] of commits) {
+    if (theirs && (await isAncestor(repo, theirs, parent)) && (await isAncestor(repo, start, theirs))) {
+      since = theirs;
+      break;
+    }
+  }
+  // A newer base it brought in some other way (a branch reset onto it, mustered): its work is from there.
+  const mb = base.length ? await git(repo, ['merge-base', head, row.baseBranch]) : undefined;
+  const newer = mb?.code === 0 ? mb.stdout.trim() : '';
+  return newer && newer !== since && (await isAncestor(repo, since, newer)) ? newer : since;
+}
 
 /** What a removal is about to take away: work that would be lost is committed first. */
 const CHECKPOINT = (what: string) => `kelpie: checkpoint (${what})`;
@@ -406,7 +445,9 @@ export class Worktrees {
 
   /** Commits on the worktree's branch since it was cut: its own work. */
   async ownCommits(row: WorktreeRow): Promise<number> {
-    const r = await git(row.repoRoot, ['rev-list', '--count', `${forkOf(row)}..refs/heads/${row.branch}`]);
+    const tip = await git(row.repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${row.branch}^{commit}`]);
+    if (tip.code !== 0) return 0;
+    const r = await git(row.repoRoot, ['rev-list', '--count', `${await ownBase(row, tip.stdout.trim())}..${tip.stdout.trim()}`]);
     return r.code === 0 ? Number(r.stdout.trim()) || 0 : 0;
   }
 
@@ -420,9 +461,12 @@ export class Worktrees {
     return (await git(repo, ['merge-base', '--is-ancestor', branch, into])).code === 0;
   }
 
-  async stats(row: WorktreeRow, against: string): Promise<WorktreeStats> {
-    const ahead = await git(row.repoRoot, ['rev-list', '--count', `${against}..${row.branch}`]);
-    const diffstat = await git(row.repoRoot, ['diff', '--shortstat', `${against}...${row.branch}`]);
+  /** The branch's own work (from `ownBase`): its commits, their diffstat, and whether it has uncommitted changes. */
+  async stats(row: WorktreeRow): Promise<WorktreeStats> {
+    const tip = await ok(row.repoRoot, ['rev-parse', '--verify', `refs/heads/${row.branch}^{commit}`]);
+    const base = await ownBase(row, tip);
+    const ahead = await git(row.repoRoot, ['rev-list', '--count', `${base}..${tip}`]);
+    const diffstat = await git(row.repoRoot, ['diff', '--shortstat', base, tip]);
     return {
       ahead: Number(ahead.stdout.trim()) || 0,
       diffstat: diffstat.stdout.trim(),
@@ -462,7 +506,8 @@ export class Worktrees {
     await this.checkpoint(row, 'before muster cleanup');
     // What it delivered, kept before its branch goes: the feature's changes are put down to it from this.
     const tip = await git(row.repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${row.branch}^{commit}`]);
-    if (tip.code === 0 && tip.stdout.trim() !== forkOf(row)) {
+    const base = tip.code === 0 ? await ownBase(row, tip.stdout.trim()) : undefined;
+    if (base && tip.stdout.trim() !== base) {
       const agent = this.store.getSession(row.sessionId);
       this.store.addDelivery({
         roundUpId: row.roundUpId,
@@ -470,7 +515,7 @@ export class Worktrees {
         title: agent?.title ?? row.branch,
         harness: agent?.harness ?? 'claude-code',
         branch: row.branch,
-        forkCommit: forkOf(row),
+        forkCommit: base,
         tipCommit: tip.stdout.trim(),
       });
     }
