@@ -141,6 +141,44 @@ describe('reviews', () => {
     expect(docs.id).toBeTruthy();
   });
 
+  it('sends the review again when a muster moves the lines its threads are on', async () => {
+    const ctx = start();
+    const { parent, api, head } = await mustered(ctx);
+    const moved = (await comment(ctx, parent, head(), { path: 'app.txt', side: 'additions', line: 18, lineText: 'L18 docs' })).body.thread as ReviewThread;
+    await ctx.orch.reviews.submit(parent.id, 'request_changes');
+    const since = ctx.store.getSession(api.id)!.notifiedIdx;
+    await ctx.orch.message(parent, api.id, 'add a header');
+    await reported(ctx, api, since);
+    await sleep(300);
+    const seen: ManagerUpdate[] = [];
+    ctx.sessions.watch((u) => u.type === 'review' && seen.push(u));
+    // Nothing in the review changes, only the feature branch under it: the thread's line moves down one.
+    commit(api.cwd, 'app.txt', lines({ 2: 'L2 api', 18: 'L18 docs' }, { before: ['// header'] }));
+    expect((await ctx.orch.muster(parent, [api.id])).merged).toEqual(['API']);
+    const update = await waitFor(() => seen.find((u) => u.type === 'review'), 3000);
+    const thread = update.type === 'review' ? update.state.threads.find((t) => t.id === moved.id) : undefined;
+    expect(thread).toMatchObject({ outdated: false, line: 18, currentLine: 19 });
+  });
+
+  it('never sends a review state older than one already sent', async () => {
+    const ctx = start();
+    const parent = ctx.sessions.create();
+    const seen: ManagerUpdate[] = [];
+    ctx.sessions.watch((u) => u.type === 'review' && seen.push(u));
+    const builds: ((s: ReviewState) => void)[] = [];
+    ctx.orch.reviews.state = () => new Promise((resolve) => builds.push(resolve));
+    const state = (open: number): ReviewState => ({ roundUpId: parent.id, pending: null, reviews: [], threads: [], counts: { open, resolved: 0, pending: 0 } });
+    ctx.orch.reviews.changed(parent.id);
+    await waitFor(() => builds.length === 1);
+    ctx.orch.reviews.changed(parent.id);
+    await waitFor(() => builds.length === 2);
+    // The second build finishes first; the first, slower one is stale by the time it is done.
+    builds[1]!(state(2));
+    builds[0]!(state(1));
+    await sleep(50);
+    expect(seen.map((u) => u.type === 'review' && u.state.counts.open)).toEqual([2]);
+  });
+
   it("checks a comment on one of an agent's rounds against that round, and finds its thread there", async () => {
     const ctx = start();
     const { parent, api } = await mustered(ctx);
