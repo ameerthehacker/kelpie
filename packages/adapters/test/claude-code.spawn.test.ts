@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -90,6 +90,33 @@ describe('claude-code spawn', () => {
     expect(kinds.slice(-3)).toEqual(['turn.ended', 'activity', 'process.exited']);
     expect(events.at(-3)!.data).toMatchObject({ status: 'interrupted' });
     expect(events.at(-2)!.data).toEqual({ busy: false });
+  });
+});
+
+describe('MCP config', () => {
+  it('reaches the harness in a file only the person can read, never in argv, and goes when it exits', async () => {
+    const rawArgs = join(mkdtempSync(join(tmpdir(), 'kelpie-raw-')), 'args.jsonl');
+    const config = JSON.stringify({ mcpServers: { kelpie: { type: 'http', url: 'http://127.0.0.1:1/mcp', headers: { Authorization: 'Bearer s3cret' } } } });
+    const run = start('plain', { prompt: 'hi', hang: true, mcpConfig: [config], env: { FAKE_FIXTURE: join(FIXTURES, 'plain.jsonl'), FAKE_HANG: '1', FAKE_RAW_ARGS_FILE: rawArgs } });
+    const events = collect(run);
+    let argv: string[] | undefined;
+    for (let i = 0; i < 200 && !argv; i++) {
+      if (existsSync(rawArgs)) argv = JSON.parse(readFileSync(rawArgs, 'utf8').split('\n')[0]!);
+      else await new Promise((r) => setTimeout(r, 20));
+    }
+    const path = argv![argv!.indexOf('--mcp-config') + 1]!;
+    expect(argv!.join(' ')).not.toContain('s3cret');
+    expect(readFileSync(join(run.runDir, 'run.json'), 'utf8')).not.toContain('s3cret');
+    expect(readFileSync(path, 'utf8')).toBe(config);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(statSync(join(path, '..')).mode & 0o777).toBe(0o700);
+    await run.stop();
+    await events;
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('passes a config path through as it is', () => {
+    expect(claudeArgs({ cwd: '/r', mcpConfig: ['/etc/kelpie/mcp.json'] })).toEqual(expect.arrayContaining(['--mcp-config', '/etc/kelpie/mcp.json']));
   });
 });
 
