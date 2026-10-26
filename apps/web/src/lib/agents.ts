@@ -1,4 +1,4 @@
-import type { TodoItem, ToolCategory, UsageLimitPause } from '@kelpie/protocol';
+import type { Effort, TodoItem, ToolCategory, UsageLimitPause } from '@kelpie/protocol';
 
 /** A sub-agent at a glance (mirrors the daemon's `AgentSummary`). */
 export interface AgentSummary {
@@ -7,6 +7,8 @@ export interface AgentSummary {
   title: string;
   harness: string;
   model?: string;
+  /** The reasoning effort it was given; absent for the harness's default. */
+  effort?: Effort;
   writes: boolean;
   /** Given the Claude in Chrome tools: it may drive the person's own browser. */
   browser: boolean;

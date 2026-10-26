@@ -25,6 +25,7 @@ import { api } from '@/lib/api';
 import { buildChat } from '@/lib/chat';
 import { unechoed, type SentMessage } from '@/lib/session-state';
 import { uploadFile } from '@/lib/uploads';
+import { EFFORT_INFO } from '@/lib/effort';
 import { harnessOf, modelLabel } from '@/lib/harnesses';
 import { pausedShort } from '@/lib/limits';
 import { workingLabel } from '@/lib/settings';
@@ -307,6 +308,12 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
               {STATUS_LABEL[a.status]}
               <span className="text-fa">·</span>
               {[harnessOf(a.harness).name, a.model && modelLabel(a.model)].filter(Boolean).join(' ')}
+              {a.effort && (
+                <>
+                  <span className="text-fa">·</span>
+                  {EFFORT_INFO[a.effort].label.toLowerCase()} effort
+                </>
+              )}
               <span className="text-fa">·</span>
               {a.writes ? 'can edit' : 'read-only'}
               {a.browser && (
