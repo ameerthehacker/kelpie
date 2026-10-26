@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import type { Store, WorktreeRow } from '@kelpie/store';
 
@@ -99,6 +100,9 @@ export interface WorktreeStats {
 }
 
 export type MergeResult = { ok: true } | { ok: false; conflicts: string[] };
+
+/** A landed feature: the branch it went into, and the merge commit; or why it didn't. */
+export type LandResult = { ok: true; into: string; commit: string } | { ok: false; error: string };
 
 export interface WorktreesOptions {
   store: Store;
@@ -326,6 +330,55 @@ export class Worktrees {
       const conflicts = (await git(home.path, ['diff', '--name-only', '--diff-filter=U'])).stdout.split('\n').filter(Boolean);
       await git(home.path, ['merge', '--abort']);
       return { ok: false, conflicts: conflicts.length ? conflicts : [r.stderr.trim() || 'merge failed'] };
+    });
+  }
+
+  /**
+   * Lands a feature: merges `branch` into the local branch named by `base` (`origin/main` lands on
+   * `main`, made from it if there is none). Where that branch is checked out, the merge happens
+   * there, only if it is clean; otherwise in a worktree of Kelpie's own, made for it and removed after.
+   */
+  land(repo: string, branch: string, base: string, message: string): Promise<LandResult> {
+    return this.locked(repo, async () => {
+      const remotes = (await ok(repo, ['remote'])).split('\n').filter(Boolean);
+      const remote = remotes.find((r) => base.startsWith(`${r}/`));
+      const into = remote ? base.slice(remote.length + 1) : base;
+      if (!SAFE_REF.test(into) || into.includes('..')) return { ok: false, error: `can't merge into ${into}: not a branch name` };
+      const exists = (await git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${into}`])).code === 0;
+      const target = exists ? `refs/heads/${into}` : `refs/remotes/${base}`;
+      const ahead = await git(repo, ['rev-list', '--count', `${target}..refs/heads/${branch}`]);
+      if (ahead.code !== 0) return { ok: false, error: `can't compare ${branch} with ${into}: ${ahead.stderr.trim()}` };
+      if (Number(ahead.stdout.trim()) === 0) return { ok: false, error: `nothing to merge: ${into} already has everything on ${branch}` };
+      if (!exists) await ok(repo, ['branch', into, `refs/remotes/${base}`]);
+      const listed = (await ok(repo, ['worktree', 'list', '--porcelain'])).split('\n\n');
+      const at = listed.find((w) => w.split('\n').includes(`branch refs/heads/${into}`))?.match(/^worktree (.+)$/m)?.[1];
+      // Outside the root: it is nobody's worktree, and the sweep must never take it for one.
+      const temp = at ? undefined : join(tmpdir(), `kelpie-land-${createHash('sha256').update(`${repo}\n${branch}`).digest('hex').slice(0, 12)}`);
+      const cwd = at ?? temp!;
+      try {
+        if (at && (await this.dirty(at))) return { ok: false, error: `${at} has uncommitted changes on ${into}: commit or stash them, then merge again` };
+        if (temp) {
+          rmSync(temp, { recursive: true, force: true });
+          await git(repo, ['worktree', 'prune']);
+          await ok(repo, ['worktree', 'add', '--quiet', temp, into]);
+        }
+        const r = await git(cwd, [...(await this.identity(cwd)), 'merge', '--no-ff', '--no-verify', '-m', message, branch]);
+        if (r.code !== 0) {
+          const conflicts = (await git(cwd, ['diff', '--name-only', '--diff-filter=U'])).stdout.split('\n').filter(Boolean);
+          await git(cwd, ['merge', '--abort']);
+          return {
+            ok: false,
+            error: conflicts.length ? `${branch} conflicts with ${into} in ${conflicts.join(', ')}: ask Kelpie to bring ${into} into the feature first` : r.stderr.trim() || 'the merge failed',
+          };
+        }
+        return { ok: true, into, commit: await ok(cwd, ['rev-parse', 'HEAD']) };
+      } finally {
+        if (temp) {
+          await git(repo, ['worktree', 'remove', '--force', temp]);
+          rmSync(temp, { recursive: true, force: true });
+          await git(repo, ['worktree', 'prune']);
+        }
+      }
     });
   }
 

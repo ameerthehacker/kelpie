@@ -3,7 +3,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { Context } from 'hono';
 import { z } from 'zod';
-import { Harness } from '@kelpie/protocol';
+import { CardCreate, CardUpdate, EntryPatch, Harness } from '@kelpie/protocol';
 import { isLocalHost } from '../local.js';
 import type { Session } from '../sessions.js';
 import { ToolError } from '../errors.js';
@@ -19,6 +19,16 @@ const files = z
 async function result(fn: () => unknown): Promise<CallToolResult> {
   try {
     return { content: [{ type: 'text', text: JSON.stringify(await fn(), null, 2) }] };
+  } catch (err) {
+    if (err instanceof ToolError) return { content: [{ type: 'text', text: err.message }], isError: true };
+    throw err;
+  }
+}
+
+/** A tool that answers in plain text (the Workbench's compact views). */
+async function text(fn: () => string | Promise<string>): Promise<CallToolResult> {
+  try {
+    return { content: [{ type: 'text', text: await fn() }] };
   } catch (err) {
     if (err instanceof ToolError) return { content: [{ type: 'text', text: err.message }], isError: true };
     throw err;
@@ -58,10 +68,62 @@ function reviewTools(mcp: McpServer, orch: Orchestrator, session: Session, scope
   );
 }
 
-/** A sub-agent's kelpie tools: only its review threads. */
+/**
+ * The Workbench tools every session has, always as itself: read its round-up's board and post notes.
+ * Agents also set their own entry; the orchestrator keeps the cards.
+ */
+function workbenchTools(mcp: McpServer, orch: Orchestrator, session: Session): void {
+  const agent = session.role === 'agent';
+  mcp.registerTool(
+    'workbench_read',
+    {
+      description:
+        "The Workbench: this round-up's feature cards and its agents, each with status, focus, claimed files or areas, blocker and progress; " +
+        'agents in other round-ups claiming files in the same repo; ' +
+        (agent ? 'where your claims overlap others\'; ' : '') +
+        'notes for you (handed over now) and recent notes. Read it before touching files other agents may be changing.',
+    },
+    () => text(() => orch.workbench.read(session)),
+  );
+  if (agent) {
+    mcp.registerTool(
+      'workbench_update',
+      {
+        description:
+          'Set your own entry on the Workbench, which the person and the other agents see: what you are doing, the files or areas you are changing, ' +
+          'what blocks you, how far you have got. Only the fields given change; null clears one. Call it when you start and at meaningful points, not after every step. ' +
+          'Says whose claims overlap yours.',
+        inputSchema: EntryPatch.shape,
+      },
+      (patch) => text(() => orch.workbench.setEntry(session, patch)),
+    );
+  }
+  mcp.registerTool(
+    'workbench_post',
+    {
+      description:
+        'Post a short note to the Workbench, optionally to one agent (by its title) or to "orchestrator". A note to someone is handed to it with its next turn ' +
+        'or when it reads the board; it never interrupts or wakes anyone. Use it to ask for or offer something another agent needs (an interface, a file to leave alone). ' +
+        'Limited to a few notes per recipient every few minutes; never post just to acknowledge.',
+      inputSchema: {
+        note: z.string().min(1).max(2000).describe('Self-contained: what you need or are telling them, and why.'),
+        to: z.string().optional().describe('An agent\'s title in this round-up (or its id), or "orchestrator". Omit for everyone.'),
+        ...(agent ? {} : { card: z.string().optional().describe('The card it is about (its id). Default: your latest open card.') }),
+      },
+    },
+    (input) =>
+      result(() => {
+        const { note, delivery } = orch.workbench.post(session, session.roundUpId, input);
+        return { posted: note.id, ...(note.toTitle ? { to: note.toTitle } : {}), delivery };
+      }),
+  );
+}
+
+/** A sub-agent's kelpie tools, all as itself: its review threads and the Workbench. */
 function agentServer(orch: Orchestrator, agent: Session): McpServer {
   const mcp = new McpServer({ name: 'kelpie', version: '0.0.0' });
   reviewTools(mcp, orch, agent, 'assigned to you');
+  workbenchTools(mcp, orch, agent);
   return mcp;
 }
 
@@ -223,13 +285,37 @@ function orchestratorServer(orch: Orchestrator, parent: Session): McpServer {
     ({ url }) => result(() => orch.unlinkTicket(parent, url)),
   );
 
+  mcp.registerTool(
+    'create_card',
+    {
+      description:
+        "Put a feature you take on on the person's Workbench: one card per feature (a round-up can have several). It shows the stage, a callout when you need the person, " +
+        "the tickets (default: the round-up's) and an item per deliverable: key it by the agent's id for its writer item. Returns the card's id and link.",
+      inputSchema: CardCreate.shape,
+    },
+    (input) => result(() => orch.workbench.create(parent, input)),
+  );
+
+  mcp.registerTool(
+    'update_card',
+    {
+      description:
+        'Keep a Workbench card current: its stage (blocked, building, review, ready, done), callout (null clears it), tickets, and items (upserted by key; remove: true drops one). ' +
+        "Only the fields given change. Kelpie fills in each item's agent status, approvals and merged by itself.",
+      inputSchema: CardUpdate.shape,
+    },
+    (input) => result(() => orch.workbench.update(parent, input)),
+  );
+
+  workbenchTools(mcp, orch, parent);
+
   return mcp;
 }
 
 /**
  * The kelpie MCP server over Streamable HTTP, stateless: each request gets a fresh server bound
- * to the session its bearer token belongs to (an orchestrator's tools, or an agent's review
- * tools). Loopback only, like the API.
+ * to the session its bearer token belongs to (an orchestrator's tools, or an agent's review and
+ * Workbench tools). Loopback only, like the API.
  */
 export async function handleMcp(c: Context, orch: Orchestrator): Promise<Response> {
   if (!isLocalHost(c.req.header('host'))) return c.text('forbidden host', 403);

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import { attachmentsBlock, findTickets, mergeUsage, type LinkedTicket, type TicketLink, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings } from '@kelpie/protocol';
+import { attachmentsBlock, findTickets, mergeUsage, type LinkedTicket, type TicketLink, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings, type WorkbenchCard } from '@kelpie/protocol';
 import { claudeCode, isChromeTool, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store, TicketRow, TicketSource } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary, type Now } from './agent-summary.js';
@@ -126,7 +126,11 @@ export type ManagerUpdate =
   /** What `GET /api/sessions/:sessionId/changes` returns may have changed (an agent went idle, a muster merged). */
   | { type: 'changes'; roundUpId: string; sessionId: string }
   /** The person changed their settings: all of them, as they are now. */
-  | { type: 'settings'; settings: Settings };
+  | { type: 'settings'; settings: Settings }
+  /** A Workbench card changed (or was made), with what Kelpie derives for it now. */
+  | { type: 'card'; card: WorkbenchCard }
+  /** A Workbench card is gone (its round-up was deleted). */
+  | { type: 'card-removed'; id: string };
 
 /** Run settings a round-up does not decide per process: everything but what `start` fills in. */
 export type SessionDefaults = Omit<RunSpec, 'cwd' | 'prompt' | 'resume' | 'todos' | 'runId' | 'runDir'>;
@@ -156,6 +160,12 @@ export interface SessionHooks {
    * to the person. (Rules the person saved for the round-up are applied before this.) Must not throw.
    */
   decide?(session: Session, request: EventData<'permission.requested'>): PermissionAnswer | undefined;
+  /**
+   * Text to add to a turn Kelpie or the orchestrator sends (never to the person's own words): e.g.
+   * Workbench notes waiting for it. Runs in the transaction that queues the turn, so whatever it
+   * hands over is marked as handed over in it.
+   */
+  inbox?(session: Session): string | undefined;
 }
 
 /** A file sent with a turn, and where the harness finds it. */
@@ -653,9 +663,12 @@ export class Session {
     if (!turn.trim() || together.some((t) => !t.text.trim())) throw new Error('a turn needs some text');
     const meta = files.length ? { ...opts.meta, attachments: files.map(({ path: _, ...a }) => a) } : opts.meta;
     for (const s of all) s.load();
+    let sent = turn;
     this.ctx.store.atomically(() => {
       opts.alsoInTx?.();
-      this.ctx.store.enqueue(this.id, turn, source, Date.now(), meta);
+      const extra = source === 'user' ? undefined : this.ctx.hooks.inbox?.(this);
+      if (extra) sent = `${turn}\n\n${extra}`;
+      this.ctx.store.enqueue(this.id, sent, source, Date.now(), meta);
       for (const t of together) this.ctx.store.enqueue(t.session.id, t.text, t.source, Date.now(), t.meta);
     });
     if (!this.row.title && source === 'user') this.update({ title: titleFrom(text) || titleFrom(files.map((f) => f.name).join(', ')) });
@@ -669,9 +682,9 @@ export class Session {
       }
     }
     // Each is in its outbox now: one that cannot start here is sent on the next start.
-    const sent = await Promise.allSettled([this.dispatch(turn), ...together.map((t) => t.session.dispatch(t.text))]);
-    sent.slice(1).forEach((r, i) => r.status === 'rejected' && console.error(`session ${together[i]!.session.id}: could not start`, r.reason));
-    if (sent[0]!.status === 'rejected') throw sent[0]!.reason;
+    const dispatched = await Promise.allSettled([this.dispatch(sent), ...together.map((t) => t.session.dispatch(t.text))]);
+    dispatched.slice(1).forEach((r, i) => r.status === 'rejected' && console.error(`session ${together[i]!.session.id}: could not start`, r.reason));
+    if (dispatched[0]!.status === 'rejected') throw dispatched[0]!.reason;
   }
 
   /** Waits until a turn can be queued without its process's exit clearing it. */

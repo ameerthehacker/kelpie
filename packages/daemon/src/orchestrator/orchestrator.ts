@@ -13,6 +13,7 @@ import { GitError, type Branch, type Worktrees } from '../worktrees.js';
 import { Changes } from '../review/changes.js';
 import { Reviews, type ReviewClaim } from '../review/reviews.js';
 import { SavedSettings } from '../settings.js';
+import { Workbench } from '../workbench.js';
 import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, musterPrompt, orchestratorPrompt, reviewBrief, type WorkPlace } from './prompt.js';
 
 /**
@@ -189,6 +190,8 @@ export class Orchestrator implements SessionHooks {
   /** What changed in each round-up (diffs), and the person's reviews of it. */
   readonly changes: Changes;
   readonly reviews: Reviews;
+  /** The person's board of features, and where agents say what they are on and leave each other notes. */
+  readonly workbench: Workbench;
 
   constructor(opts: OrchestratorOptions) {
     this.store = opts.store;
@@ -209,10 +212,12 @@ export class Orchestrator implements SessionHooks {
       session: (id) => this.sessions?.get(id),
       claim: (parent, agentId) => this.claimForReview(parent, agentId),
     });
+    this.workbench = new Workbench(this.store, this.worktrees);
   }
 
   attach(sessions: SessionManager): void {
     this.sessions = sessions;
+    this.workbench.attach(sessions);
   }
 
   /** How many of a round-up's agents may work at once: the person's setting, read afresh each time. */
@@ -246,7 +251,7 @@ export class Orchestrator implements SessionHooks {
         tools: session.writes ? DEFAULT_TOOLS : READ_ONLY_TOOLS,
         // No blanket Bash: auto mode's checks or accept-edits' approvals decide what runs.
         permissionMode: agentMode(session.mode),
-        // Its kelpie tools are only its review threads.
+        // Its kelpie tools are its review threads and the Workbench, as itself.
         allowedTools: [...scratchRules, 'mcp__kelpie'],
         mcpConfig,
         ...(scratch ? { addDirs: [scratch] } : {}),
@@ -387,6 +392,11 @@ export class Orchestrator implements SessionHooks {
         ? `You may only use your kelpie tools, read the repo and your feature branch, and write inside your scratch folder (${scratch}). Give changes, commands, and anything else to an agent.`
         : 'You may only use your kelpie tools and read the repo and your feature branch. Give changes, commands, and anything else to an agent.',
     };
+  }
+
+  /** Workbench notes waiting for a session go with the next turn Kelpie or its orchestrator sends it. */
+  inbox(session: Session): string | undefined {
+    return this.workbench.inbox(session);
   }
 
   /**
