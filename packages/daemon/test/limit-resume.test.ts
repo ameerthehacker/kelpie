@@ -57,7 +57,8 @@ const resumes = (s: Session) => sent(s).filter((e) => e.data.resumed === 'limit'
 const turns = (s: Session) => s.events().filter((e): e is EventOf<'turn.ended'> => e.kind === 'turn.ended');
 const idle = (s: Session) => !s.working;
 
-describe('resuming after the usage limit', () => {
+// Real (fake-CLI) processes and real reset times, whole seconds as the CLI reports them: more than vitest's 5s default.
+describe('resuming after the usage limit', { timeout: 20_000 }, () => {
   it('pauses an agent at the limit, keeps its orchestrator out of it, and resumes it after the reset', async () => {
     const { sessions, hit, lift } = start();
     const orch = sessions.create(tmpdir(), { title: 'Round-up' });
@@ -213,7 +214,7 @@ describe('resuming after the usage limit', () => {
   });
 });
 
-describe('cancelling a paused round-up', () => {
+describe('cancelling a paused round-up', { timeout: 20_000 }, () => {
   it("stops its agents resuming too, and holds the orchestrator's notices until its own pause is over", async () => {
     const { sessions, hit, lift, app } = start();
     const orch = sessions.create(tmpdir(), { title: 'Round-up' });
