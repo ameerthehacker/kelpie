@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import { attachmentsBlock, mergeUsage, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
+import { attachmentsBlock, findTickets, mergeUsage, type LinkedTicket, type TicketLink, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
 import { claudeCode, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
-import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
+import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store, TicketRow, TicketSource } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary } from './agent-summary.js';
 
 export type TurnStatus = EventData<'turn.ended'>['status'];
@@ -37,6 +37,8 @@ export interface SessionInfo {
   baseCommit: string | undefined;
   /** The round-up's mode; a sub-agent reports its round-up's. */
   mode: Mode;
+  /** Jira and Asana tickets linked to a top-level round-up, in the order they were linked; none on a sub-agent. */
+  tickets: LinkedTicket[];
 }
 
 /** What subscribers receive. `index` is the event's position in the session log (stable across runs and restarts). */
@@ -199,6 +201,16 @@ interface SessionContext {
   approvalsChanged: (s: Session) => void;
 }
 
+const ticketOf = (r: TicketRow): LinkedTicket => ({
+  provider: r.provider,
+  kind: r.kind,
+  url: r.url,
+  ...(r.key ? { key: r.key } : {}),
+  ...(r.title ? { title: r.title } : {}),
+  source: r.source,
+  addedAt: r.createdAt,
+});
+
 const STOPPED = 'Kelpie stopped while this run was active.';
 const AGENT_UPDATE_MS = 300;
 const TITLE_MAX = 60;
@@ -255,6 +267,8 @@ export class Session {
   private todosState: TodoItem[] = [];
   private nowState = '';
   private modelState: string | undefined;
+  /** A top-level round-up's tickets, read from the store when first asked for. */
+  private ticketsState: LinkedTicket[] | undefined;
 
   constructor(
     row: SessionRow,
@@ -418,7 +432,35 @@ export class Session {
       baseBranch: baseBranch ?? undefined,
       baseCommit: baseCommit ?? undefined,
       mode: this.mode,
+      tickets: this.tickets(),
     };
+  }
+
+  /** The Jira and Asana tickets linked to this round-up; a sub-agent has none of its own. */
+  tickets(): LinkedTicket[] {
+    if (this.row.parentId) return [];
+    return (this.ticketsState ??= this.ctx.store.ticketsOf(this.id).map(ticketOf));
+  }
+
+  /** Links tickets to this round-up (each once; see Store.linkTicket). True, and watchers hear, if anything changed. */
+  linkTickets(links: TicketLink[], source: TicketSource, title?: string): boolean {
+    if (this.row.parentId) throw new Error('tickets are linked to a round-up, not to one of its agents');
+    let changed = false;
+    for (const t of links) changed = this.ctx.store.linkTicket(this.id, t, source, title) || changed;
+    if (changed) this.ticketsChanged();
+    return changed;
+  }
+
+  /** Unlinks a ticket by its `ref`; false if it was not linked. */
+  unlinkTicket(ref: string): boolean {
+    const gone = !this.row.parentId && this.ctx.store.unlinkTicket(this.id, ref);
+    if (gone) this.ticketsChanged();
+    return gone;
+  }
+
+  private ticketsChanged(): void {
+    this.ticketsState = undefined;
+    this.ctx.changed(this);
   }
 
   /** A sub-agent at a glance (see AgentSummary). */
@@ -562,6 +604,15 @@ export class Session {
       this.ctx.store.enqueue(this.id, turn, source, Date.now(), meta);
     });
     if (!this.row.title && source === 'user') this.update({ title: titleFrom(text) || titleFrom(files.map((f) => f.name).join(', ')) });
+    // Tickets the person links to, in their round-up or to one of its agents, are the round-up's.
+    if (source === 'user') {
+      const found = findTickets(text);
+      try {
+        if (found.length) (this.row.parentId ? this.ctx.get(this.row.parentId) : this)?.linkTickets(found, 'auto');
+      } catch (err) {
+        console.error(`session ${this.id}: could not link tickets`, err);
+      }
+    }
     if (this.run && !this.run.exited) this.run.send(turn);
     else await this.launch();
   }
