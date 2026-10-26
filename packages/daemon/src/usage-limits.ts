@@ -14,6 +14,12 @@ export const PROBE_MS = 2 * MINUTE;
 export const MAX_TRIES = 12;
 /** Timers check again at least this often, so a machine waking from sleep catches up. */
 const MAX_WAIT_MS = 5 * MINUTE;
+/** A session due but working (the person sent it something) is looked at again this often. */
+const RECHECK_MS = 30_000;
+/** Refused again only just after its reset (the clocks are a little apart): tried again this soon. */
+export const RECENT_RETRY_MS = 5 * MINUTE;
+/** A reset this far off is not believed (no plan limit lasts longer than a week): it counts as unknown. */
+export const MAX_RESET_AHEAD_MS = 8 * 24 * 60 * MINUTE;
 
 /** When to try again without a reset time: 15 minutes, then 30, then hourly. */
 export const backoff = (attempts: number): number => (attempts <= 0 ? 15 : attempts === 1 ? 30 : 60) * MINUTE;
@@ -94,7 +100,14 @@ export class UsageLimits {
       ...(this.willResume(id) ? { retryAt: row.retryAt } : {}),
       attempts: row.attempts,
       message: row.message,
+      ...(this.gaveUp(id) ? { gaveUp: true } : {}),
     };
+  }
+
+  /** Kelpie ran out of tries without the limit lifting, and left it to the person. */
+  gaveUp(id: string): boolean {
+    const row = this.rows.get(id);
+    return !!row && !row.auto && row.attempts >= MAX_TRIES;
   }
 
   /** Paused, and Kelpie will resume it on its own. */
@@ -135,9 +148,12 @@ export class UsageLimits {
     // A try of Kelpie's that found the limit still there counts; the person's own message doesn't.
     const attempts = (prev?.attempts ?? 0) + (prev && this.resuming.has(session.id) ? 1 : 0);
     this.resuming.delete(session.id);
-    const resetsAt = stop.resetsAt?.getTime();
+    const told = stop.resetsAt?.getTime();
+    const resetsAt = told !== undefined && told - now <= MAX_RESET_AHEAD_MS ? told : undefined;
     const known = resetsAt !== undefined && resetsAt + this.timing.bufferMs > now;
-    const retryAt = known ? resetsAt + this.timing.bufferMs : now + backoff(attempts);
+    // Refused although its reset has only just gone: the clocks differ a little, so soon, not a half-hour backoff.
+    const recent = resetsAt !== undefined && !known && now - resetsAt < 60 * MINUTE;
+    const retryAt = known ? resetsAt + this.timing.bufferMs : now + (recent ? RECENT_RETRY_MS : backoff(attempts));
     // Without a reset time to go by, it stops trying on its own after a while.
     const auto = (prev?.auto ?? true) && (known || attempts < MAX_TRIES);
     const row = this.opts.store.setLimit({ sessionId: session.id, harness: session.harness, message: stop.message, resetsAt: resetsAt ?? null, retryAt, attempts, auto }, now);
@@ -173,7 +189,7 @@ export class UsageLimits {
         clearTimeout(probe.timer);
         this.probes.delete(session.harness);
       }
-      this.fanOut(session.harness);
+      this.fanOut(session.harness, row);
     } else if (event.kind === 'process.exited' && this.resuming.has(session.id)) {
       // It never got as far as an answer (e.g. the harness would not start): later, as if limited again.
       this.resuming.delete(session.id);
@@ -182,8 +198,7 @@ export class UsageLimits {
         clearTimeout(probe.timer);
         this.probes.delete(session.harness);
       }
-      this.update(session.id, { retryAt: this.now() + backoff(row.attempts + 1), attempts: row.attempts + 1 });
-      this.arm();
+      this.retryLater(session.id);
     }
   }
 
@@ -225,6 +240,16 @@ export class UsageLimits {
     this.arm();
   }
 
+  /** A try that came to nothing: later, by the backoff, and not on its own any more once the tries run out. */
+  private retryLater(id: string): void {
+    const row = this.rows.get(id);
+    if (row) {
+      const attempts = row.attempts + 1;
+      this.update(id, { retryAt: this.now() + backoff(attempts), attempts, auto: row.auto && attempts < MAX_TRIES });
+    }
+    this.arm();
+  }
+
   private clear(id: string): void {
     this.resuming.delete(id);
     if (!this.rows.delete(id)) return;
@@ -246,12 +271,20 @@ export class UsageLimits {
     }
   }
 
-  /** Re-arms the timer for the next pause due (or sooner, to catch up after sleep). */
+  /**
+   * Re-arms the timer for the next pause due (or sooner, to catch up after sleep). A harness with a
+   * probe out waits for how it goes (its outcome re-arms); a session due but working is looked at
+   * again in a while, not at once, or the timer would spin.
+   */
   private arm(): void {
     clearTimeout(this.timer);
     this.timer = undefined;
     if (!this.started || this.stopped || !this.opts.enabled()) return;
-    const next = Math.min(...[...this.rows.values()].filter((r) => r.auto && !this.resuming.has(r.sessionId)).map((r) => r.retryAt));
+    const now = this.now();
+    const times = [...this.rows.values()]
+      .filter((r) => r.auto && !this.resuming.has(r.sessionId) && !this.probes.has(r.harness))
+      .map((r) => (r.retryAt <= now && this.opts.get(r.sessionId)?.working ? now + RECHECK_MS : r.retryAt));
+    const next = Math.min(...times);
     if (!Number.isFinite(next)) return;
     this.timer = setTimeout(() => this.tick(), Math.min(MAX_WAIT_MS, Math.max(0, next - this.now())));
     this.timer.unref?.();
@@ -287,18 +320,23 @@ export class UsageLimits {
     const timer = setTimeout(() => {
       if (this.probes.get(session.harness)?.timer !== timer) return;
       this.probes.delete(session.harness);
-      this.fanOut(session.harness);
+      this.fanOut(session.harness, this.rows.get(session.id));
     }, this.timing.probeMs);
     timer.unref?.();
     this.probes.set(session.harness, { id: session.id, timer });
     this.send(session.id);
   }
 
-  /** The limit is over for `harness`: every session of it still paused (and to be resumed) goes, a few seconds apart. */
-  private fanOut(harness: string): void {
+  /**
+   * `lifted`, a pause of `harness`, is over: the sessions paused at the same limit (the same reset
+   * time) go, and any others already due, a few seconds apart. One at another limit (a weekly one,
+   * while a 5-hour one lifted) waits for its own time.
+   */
+  private fanOut(harness: string, lifted: UsageLimitRow | undefined): void {
     if (this.stopped || !this.opts.enabled()) return;
+    const now = this.now();
     const waiting = [...this.rows.values()]
-      .filter((r) => r.harness === harness && r.auto && !this.resuming.has(r.sessionId))
+      .filter((r) => r.harness === harness && r.auto && !this.resuming.has(r.sessionId) && (r.retryAt <= now || (!!lifted && r.resetsAt === lifted.resetsAt)))
       .flatMap((r) => {
         const s = this.opts.get(r.sessionId);
         return s && !s.working ? [s] : [];
@@ -308,8 +346,11 @@ export class UsageLimits {
       this.resuming.add(s.id);
       const t = setTimeout(() => {
         this.staggered.delete(t);
-        // Paused no more, or the person said not to meanwhile.
-        if (!this.rows.get(s.id)?.auto) return void this.resuming.delete(s.id);
+        // Paused no more, the person said not to (or sent it something) meanwhile, or turned auto-resume off.
+        if (this.stopped || !this.opts.enabled() || !this.rows.get(s.id)?.auto || this.opts.get(s.id)?.working !== false) {
+          this.resuming.delete(s.id);
+          return this.arm();
+        }
         this.send(s.id);
       }, i * this.timing.staggerMs);
       t.unref?.();
@@ -329,9 +370,7 @@ export class UsageLimits {
     this.opts.resume(id).catch((err) => {
       console.error(`session ${id}: could not resume after the usage limit`, err);
       this.resuming.delete(id);
-      const row = this.rows.get(id);
-      if (row) this.update(id, { retryAt: this.now() + backoff(row.attempts + 1), attempts: row.attempts + 1 });
-      this.arm();
+      this.retryLater(id);
     });
   }
 }

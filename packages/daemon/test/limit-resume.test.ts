@@ -99,7 +99,8 @@ describe('resuming after the usage limit', () => {
     sessions.startLimits();
     await waitFor(() => agents.some((s) => s.limited?.attempts === 1));
     const [probe, ...rest] = [...agents].sort((x, y) => (y.limited!.attempts - x.limited!.attempts));
-    expect(probe!.title).toBe('A');
+    // (Which one goes first depends on which paused first: they were all made in the same millisecond.)
+    expect(agents.filter((s) => s.limited!.attempts === 1)).toEqual([probe]);
     expect(resumes(probe!)).toHaveLength(1);
     for (const s of rest) {
       expect(resumes(s)).toHaveLength(0);
@@ -108,7 +109,8 @@ describe('resuming after the usage limit', () => {
     // Then it lifts: the probe gets through, and the others follow.
     lift();
     await waitFor(() => agents.every((s) => !s.limited && turns(s).at(-1)?.data.status === 'completed'));
-    expect(agents.map((s) => resumes(s).length)).toEqual([2, 1, 1]);
+    expect(resumes(probe!)).toHaveLength(2);
+    for (const s of rest) expect(resumes(s)).toHaveLength(1);
   });
 
   it('resumes agents no faster than the agent limit allows', async () => {

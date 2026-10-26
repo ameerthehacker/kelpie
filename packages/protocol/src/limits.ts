@@ -13,4 +13,6 @@ export interface UsageLimitPause {
   attempts: number;
   /** The harness's own words. */
   message: string;
+  /** Kelpie tried as often as it will without the limit lifting: it is the person's to resume now. */
+  gaveUp?: boolean;
 }

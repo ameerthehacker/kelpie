@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { openStore, type Store } from '@kelpie/store';
-import { backoff, MAX_TRIES, PROBE_MS, RESET_BUFFER_MS, STAGGER_MS, UsageLimits, type LimitTarget } from '../src/usage-limits.js';
+import { backoff, MAX_TRIES, PROBE_MS, RECENT_RETRY_MS, RESET_BUFFER_MS, STAGGER_MS, UsageLimits, type LimitTarget } from '../src/usage-limits.js';
 
 const MIN = 60_000;
 const T0 = Date.parse('2026-10-26T08:43:20Z');
@@ -19,16 +19,19 @@ interface Fake extends LimitTarget {
   working: boolean;
 }
 
-function setup(store: Store = openStore(':memory:'), opts: { enabled?: () => boolean } = {}) {
+function setup(store: Store = openStore(':memory:'), opts: { enabled?: () => boolean; resume?: (id: string) => Promise<void> } = {}) {
   const targets = new Map<string, Fake>();
   const resumed: string[] = [];
   const changed: string[] = [];
+  let looks = 0;
   const limits = new UsageLimits({
     store,
-    get: (id) => targets.get(id),
-    resume: async (id) => {
-      resumed.push(id);
-    },
+    get: (id) => (looks++, targets.get(id)),
+    resume:
+      opts.resume ??
+      (async (id) => {
+        resumed.push(id);
+      }),
     enabled: opts.enabled ?? (() => true),
     changed: (id) => changed.push(id),
   });
@@ -38,7 +41,9 @@ function setup(store: Store = openStore(':memory:'), opts: { enabled?: () => boo
     targets.set(id, t);
     return t;
   };
-  return { limits, store, targets, resumed, changed, add };
+  /** How often the scheduler has looked a session up: a measure of how busy its timer is. */
+  const looked = () => looks;
+  return { limits, store, targets, resumed, changed, add, looked };
 }
 
 beforeEach(() => {
@@ -124,10 +129,109 @@ describe('UsageLimits', () => {
     expect(resumed).toHaveLength(MAX_TRIES);
   });
 
-  it('takes a reset already gone as unknown: a probe that finds the limit still there waits a backoff', () => {
+  it('tries again soon when refused just after its reset, and backs off when the reset is long gone or past belief', () => {
     const { limits, add } = setup();
+    // The clocks are a little apart: in 5 minutes, not a half-hour backoff.
+    expect(limits.hit(add('a'), { message: MESSAGE, resetsAt: new Date(T0 - 10 * MIN) })).toMatchObject({ retryAt: new Date(T0 + RECENT_RETRY_MS).toISOString() });
+    expect(limits.hit(add('b'), { message: MESSAGE, resetsAt: new Date(T0 - 3 * 60 * MIN) })).toMatchObject({ retryAt: new Date(T0 + 15 * MIN).toISOString() });
+    // A reset weeks away is no plan's: treated as unknown.
+    const far = limits.hit(add('c'), { message: MESSAGE, resetsAt: new Date(T0 + 30 * 24 * 60 * MIN) });
+    expect(far).toMatchObject({ retryAt: new Date(T0 + 15 * MIN).toISOString() });
+    expect(far.resetsAt).toBeUndefined();
+    expect(limits.pause('c')!.resetsAt).toBeUndefined();
+  });
+
+  it("doesn't spin its timer while a probe is out, or while a due session is working", () => {
+    const { limits, add, resumed, targets, looked } = setup();
+    for (const id of ['a', 'b', 'c']) limits.hit(add(id), { message: MESSAGE, resetsAt: new Date(RESET) });
+    limits.start();
+    vi.advanceTimersByTime(RESET + RESET_BUFFER_MS - Date.now());
+    expect(resumed).toEqual(['a']);
+    // B and C are due, but wait on the probe: the timer must not fire again and again meanwhile.
+    let before = looked();
+    vi.advanceTimersByTime(PROBE_MS - 1);
+    expect(looked() - before).toBeLessThan(5);
+    expect(resumed).toEqual(['a']);
+    // A due session the person is working with is looked at every so often, not in a loop.
+    limits.observe(targets.get('a')!, through);
+    targets.get('b')!.working = true;
+    targets.get('c')!.working = true;
+    vi.advanceTimersByTime(STAGGER_MS * 3);
+    before = looked();
+    vi.advanceTimersByTime(60_000);
+    expect(looked() - before).toBeLessThan(20);
+  });
+
+  it('fans out only to sessions at the same limit, or already due: a weekly limit waits for its own reset', () => {
+    const { limits, add, resumed, targets } = setup();
+    const WEEKLY = Date.parse('2026-10-30T08:45:00Z');
+    limits.hit(add('a'), { message: MESSAGE, resetsAt: new Date(RESET) });
+    limits.hit(add('b'), { message: MESSAGE, resetsAt: new Date(RESET) });
+    limits.hit(add('weekly'), { message: "You've hit your weekly limit · resets Oct 30, 2:15pm (Asia/Calcutta)", resetsAt: new Date(WEEKLY) });
+    limits.start();
+    vi.advanceTimersByTime(RESET + RESET_BUFFER_MS - Date.now());
+    expect(resumed).toEqual(['a']);
+    limits.observe(targets.get('a')!, through);
+    vi.advanceTimersByTime(STAGGER_MS * 5);
+    expect(resumed).toEqual(['a', 'b']);
+    expect(limits.pause('weekly')).toMatchObject({ retryAt: WEEKLY + RESET_BUFFER_MS });
+    vi.advanceTimersByTime(WEEKLY + RESET_BUFFER_MS - Date.now());
+    expect(resumed).toEqual(['a', 'b', 'weekly']);
+  });
+
+  it('gives up after its tries when the harness keeps exiting without an answer', () => {
+    const { limits, add, resumed, targets } = setup();
     const a = add('a');
-    expect(limits.hit(a, { message: MESSAGE, resetsAt: new Date(T0 - 10 * MIN) })).toMatchObject({ retryAt: new Date(T0 + 15 * MIN).toISOString() });
+    limits.hit(a, { message: MESSAGE, resetsAt: new Date(RESET) });
+    limits.start();
+    vi.advanceTimersByTime(RESET + RESET_BUFFER_MS - Date.now());
+    for (let tries = 1; tries <= MAX_TRIES; tries++) {
+      expect(resumed).toHaveLength(tries);
+      limits.observe(targets.get('a')!, event('process.exited', { code: 1, signal: null, stderrTail: 'claude: not found' }));
+      vi.advanceTimersByTime(backoff(tries));
+    }
+    expect(limits.pause('a')).toMatchObject({ attempts: MAX_TRIES, gaveUp: true });
+    expect(limits.pause('a')!.retryAt).toBeUndefined();
+    vi.advanceTimersByTime(24 * 60 * MIN);
+    expect(resumed).toHaveLength(MAX_TRIES);
+  });
+
+  it('gives up after its tries when resuming keeps failing', async () => {
+    let calls = 0;
+    const { limits, add } = setup(openStore(':memory:'), {
+      resume: async () => {
+        calls++;
+        throw new Error('worktree is gone');
+      },
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    limits.hit(add('a'), { message: MESSAGE, resetsAt: new Date(RESET) });
+    limits.start();
+    await vi.advanceTimersByTimeAsync(RESET + RESET_BUFFER_MS - Date.now());
+    for (let tries = 1; tries < MAX_TRIES; tries++) await vi.advanceTimersByTimeAsync(backoff(tries));
+    expect(calls).toBe(MAX_TRIES);
+    expect(limits.pause('a')).toMatchObject({ attempts: MAX_TRIES, gaveUp: true });
+    await vi.advanceTimersByTimeAsync(24 * 60 * MIN);
+    expect(calls).toBe(MAX_TRIES);
+  });
+
+  it('drops a staggered resume when the person picked the session up, or turned auto-resume off, meanwhile', () => {
+    let on = true;
+    const { limits, add, resumed, targets } = setup(openStore(':memory:'), { enabled: () => on });
+    for (const id of ['a', 'b', 'c', 'd']) limits.hit(add(id), { message: MESSAGE, resetsAt: new Date(RESET) });
+    limits.start();
+    vi.advanceTimersByTime(RESET + RESET_BUFFER_MS - Date.now());
+    limits.observe(targets.get('a')!, through);
+    vi.advanceTimersByTime(0);
+    expect(resumed).toEqual(['a', 'b']);
+    // The person sends C something before its turn comes.
+    targets.get('c')!.working = true;
+    vi.advanceTimersByTime(STAGGER_MS);
+    expect(resumed).toEqual(['a', 'b']);
+    // And turns auto-resume off before D's.
+    on = false;
+    vi.advanceTimersByTime(STAGGER_MS);
+    expect(resumed).toEqual(['a', 'b']);
   });
 
   it("stops on the person's say-so, and resumes now when asked", () => {
@@ -190,6 +294,7 @@ describe('UsageLimits', () => {
     vi.setSystemTime(T0);
     const first = setup(openStore(db));
     first.limits.hit(first.add('soon'), { message: MESSAGE, resetsAt: new Date(T0 + 10 * MIN) });
+    first.limits.hit(first.add('same'), { message: MESSAGE, resetsAt: new Date(T0 + 10 * MIN) });
     first.limits.hit(first.add('later'), { message: MESSAGE, resetsAt: new Date(T0 + 60 * MIN) }, undefined);
     first.limits.start();
     first.limits.stop();
@@ -199,7 +304,8 @@ describe('UsageLimits', () => {
     vi.setSystemTime(T0 + 30 * MIN);
     const second = setup(openStore(db));
     second.targets.set('soon', { id: 'soon', harness: 'claude-code', role: 'agent', working: false, createdAt: 0 });
-    second.targets.set('later', { id: 'later', harness: 'claude-code', role: 'agent', working: false, createdAt: 1 });
+    second.targets.set('same', { id: 'same', harness: 'claude-code', role: 'agent', working: false, createdAt: 1 });
+    second.targets.set('later', { id: 'later', harness: 'claude-code', role: 'agent', working: false, createdAt: 2 });
     expect(second.limits.pause('soon')).toMatchObject({ resetsAt: T0 + 10 * MIN, retryAt: T0 + 10 * MIN + RESET_BUFFER_MS });
     // Nothing goes before it is started (Kelpie checks the harness can start first).
     vi.advanceTimersByTime(0);
@@ -208,9 +314,11 @@ describe('UsageLimits', () => {
     vi.advanceTimersByTime(0);
     expect(second.resumed).toEqual(['soon']);
     second.limits.observe(second.targets.get('soon')!, through);
-    vi.advanceTimersByTime(0);
-    // The limit is over: the other one need not wait for its own time.
-    expect(second.resumed).toEqual(['soon', 'later']);
+    vi.advanceTimersByTime(STAGGER_MS);
+    // That limit is over: the other session at it follows (it was due too); the one at a later reset waits for it.
+    expect(second.resumed).toEqual(['soon', 'same']);
+    vi.advanceTimersByTime(T0 + 60 * MIN + RESET_BUFFER_MS - Date.now());
+    expect(second.resumed).toEqual(['soon', 'same', 'later']);
     second.store.close();
   });
 });
