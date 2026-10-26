@@ -360,7 +360,8 @@ describe('orchestrator round-ups', () => {
     expect((await call('spawn_agent', { title: 'R1', task: 'read', writes: false })).error).toBeUndefined();
     expect((await call('spawn_agent', { title: 'R2', task: 'read', writes: false })).error).toBeUndefined();
     expect((await call('spawn_agent', { title: 'R3', task: 'read', writes: false })).error).toMatch(/3 agents are already working/);
-    const writerArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
+    // The writer and readers start at once, in either order: find the writer's by its prompt.
+    const writerArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile).find((a) => a[a.indexOf('--append-system-prompt') + 1]?.includes('You may change files')));
     expect(writerArgv[writerArgv.indexOf('--tools') + 1]).toContain('Edit');
   });
 

@@ -36,7 +36,7 @@ export function ApprovalsPage({ roundUps }: { roundUps: RoundUp[] | undefined })
                 <ClipboardListIcon className="text-vio size-4" strokeWidth={2} />A plan is waiting for your approval. Open the round-up to review it.
               </Link>
             )}
-            <ApprovalTray approvals={approvals} roundUpId={roundUpId} />
+            <ApprovalTray approvals={approvals} roundUpId={roundUpId} openFirst />
           </section>
         );
       })}

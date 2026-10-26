@@ -196,6 +196,7 @@ describe('approvals', () => {
       // The log keeps what was chosen, for the chat's summary of it.
       const resolved = await waitFor(() => agent.events().find((e) => e.kind === 'permission.resolved'));
       expect(resolved.kind === 'permission.resolved' && resolved.data).toMatchObject({ decision: 'allow', by: 'person', answers: { [QUESTION]: 'Blue' } });
+      await waitFor(() => ctx.sessions.approvals(parent.id).length === 1);
       expect(ctx.sessions.approvals(parent.id).map((p) => p.sessionId)).toEqual([parent.id]);
     });
 
@@ -214,7 +215,7 @@ describe('approvals', () => {
       expect(((await res.json()) as { results: { ok: boolean }[] }).results[0]!.ok).toBe(true);
       const answer = await waitFor(() => jsonLines<{ behavior: string; message?: string }>(ctx.answers)[0]);
       expect(answer).toEqual({ behavior: 'deny', message: SKIPPED });
-      expect(ctx.sessions.approvals()).toEqual([]);
+      await waitFor(() => ctx.sessions.approvals().length === 0);
     });
 
     it('lists questions again after a reconnect, and closes them when Kelpie restarts', async () => {

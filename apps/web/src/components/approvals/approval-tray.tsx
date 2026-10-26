@@ -37,8 +37,9 @@ export function useGroupAnswers() {
  * the same thing are one row, however many agents ask; questions queue after them, oldest first,
  * each answered on its own. Keys, with the request rows focused: j/k to move, a to allow, r to allow
  * for the round-up, d to deny. `inChat`: the session whose chat is on screen, its questions shown there.
+ * `openFirst`: open the oldest question's card (where there is room for it, as on the approvals page).
  */
-export function ApprovalTray({ approvals, roundUpId, inChat }: { approvals: PendingApproval[]; roundUpId: string; inChat?: string | undefined }) {
+export function ApprovalTray({ approvals, roundUpId, inChat, openFirst = false }: { approvals: PendingApproval[]; roundUpId: string; inChat?: string | undefined; openFirst?: boolean }) {
   const groups = useMemo(() => groupApprovals(approvals), [approvals]);
   const questions = useMemo(() => pendingQuestions(approvals).filter((q) => q.sessionId !== inChat), [approvals, inChat]);
   const rules = useRules(groups.length ? roundUpId : undefined);
@@ -102,7 +103,7 @@ export function ApprovalTray({ approvals, roundUpId, inChat }: { approvals: Pend
           {questions.length > 0 && (
             <ul aria-label="Questions" className="flex flex-col gap-0.5">
               {questions.map((q, i) => (
-                <QuestionRow key={`${q.sessionId}:${q.requestId}`} item={q} defaultOpen={i === 0 && !groups.length} />
+                <QuestionRow key={`${q.sessionId}:${q.requestId}`} item={q} defaultOpen={openFirst && i === 0} />
               ))}
             </ul>
           )}

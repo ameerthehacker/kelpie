@@ -88,8 +88,8 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
   const choose = (i: number) => {
     const next = pick(q, draft, i);
     setRow(i);
-    // Picking "Other" means typing it.
-    if (i === otherIndex(q) && next.other) requestAnimationFrame(() => other.current?.focus());
+    // Picking "Other" means typing it: the field takes focus as it appears, or now if it is there already.
+    if (i === otherIndex(q) && next.other) other.current?.focus();
     return update(next);
   };
   /** Enter: on to the first question still unanswered, or submit once none is. */
@@ -212,6 +212,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
                     {isOther && draft.other && (
                       <input
                         ref={other}
+                        autoFocus
                         value={draft.text}
                         onChange={(e) => update({ ...draft, text: e.target.value })}
                         placeholder="Your answer"
