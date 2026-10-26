@@ -1,7 +1,7 @@
 import type { EventSourceMessage } from '@microsoft/fetch-event-source';
 import type { QueryClient } from '@tanstack/react-query';
 import { differenceInCalendarDays, format, isSameDay } from 'date-fns';
-import { DONE_FOR, workbenchPath, type CardRemoved, type ItemStatus, type Stage, type WorkbenchCard, type WorkbenchItem } from '@kelpie/protocol';
+import { DONE_FOR, workbenchPath, type CardRemoved, type ItemStatus, type Stage, type WorkbenchCard, type WorkbenchItem, type WorkbenchNote } from '@kelpie/protocol';
 import { api, isGone } from './api.js';
 import type { PendingApproval } from './approvals.js';
 
@@ -185,3 +185,35 @@ export const dropCard = (list: WorkbenchCard[] | undefined, id: string) => list?
 /** The turn "Review with Kelpie" sends to the card's round-up. */
 export const reviewTurn = (card: Pick<WorkbenchCard, 'id' | 'title'>) =>
   `Walk me through reviewing “${card.title}” (${workbenchPath(card.id)}): what changed, what I should check first, and anything you're unsure of.`;
+
+/** What an item's agent says it is on, as its row shows it: focus, the first claims, and a blocker. */
+export function entryOf(item: Pick<WorkbenchItem, 'entry'>, shown = 2): { focus?: string; claims: string[]; more: number; blocker?: string } | undefined {
+  const e = item.entry;
+  if (!e || (!e.focus && !e.claims.length && !e.blocker && !e.progress)) return undefined;
+  const focus = e.focus ?? e.progress;
+  return { ...(focus ? { focus } : {}), claims: e.claims.slice(0, shown), more: Math.max(0, e.claims.length - shown), ...(e.blocker ? { blocker: e.blocker } : {}) };
+}
+
+/** Who wrote a note, as the board names them: the person is "You", an orchestrator "Kelpie". */
+export const noteFrom = (n: Pick<WorkbenchNote, 'from'>) => (n.from.kind === 'person' ? 'You' : n.from.kind === 'orchestrator' ? 'Kelpie' : n.from.title);
+
+/** Whom a note is for, if anyone: "Kelpie" for an orchestrator. */
+export const noteTo = (n: Pick<WorkbenchNote, 'to'>) => (n.to ? (n.to.title === 'Orchestrator' ? 'Kelpie' : n.to.title) : undefined);
+
+/**
+ * Where a note to someone stands: handed over (with a turn, or as they read the board; whether they
+ * acted on it is theirs to say), or waiting for their next turn. Nothing for a note to everyone.
+ */
+export const noteState = (n: Pick<WorkbenchNote, 'to' | 'deliveredAt'>) => (n.to ? (n.deliveredAt ? 'Handed over' : 'Waiting for their next turn') : undefined);
+
+/** The agents a person's note can go to: the card's, once each, in item order. */
+export function noteTargets(card: Pick<WorkbenchCard, 'items'>): { id: string; title: string }[] {
+  const out = new Map<string, string>();
+  for (const i of card.items) if (i.agentId && !out.has(i.agentId)) out.set(i.agentId, i.agentTitle ?? i.title);
+  return [...out].map(([id, title]) => ({ id, title }));
+}
+
+/** What Merge lands where: the feature branch onto the local base branch (`landsOn`), never pushed. */
+export function landing(card: Pick<WorkbenchCard, 'branch' | 'base' | 'landsOn'>): { from?: string; into: string } {
+  return { ...(card.branch ? { from: card.branch } : {}), into: card.landsOn ?? card.base ?? 'base' };
+}

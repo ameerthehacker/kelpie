@@ -6,18 +6,19 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE, type SSEMessage } from 'hono/streaming';
 import { getMimeType } from 'hono/utils/mime';
-import { Answers, Mode } from '@kelpie/protocol';
+import { Answers, CardArchive, Mode, NotePost } from '@kelpie/protocol';
 import { checkHarnesses, shared, type HarnessStatus } from './harness-status.js';
 import type { Connections } from './connectors/connector.js';
 import { connectionRoutes } from './connectors/routes.js';
 import { isLocalHost, isLocalOrigin } from './local.js';
 import { handleMcp } from './orchestrator/mcp.js';
-import { BaseFixedError, type Orchestrator } from './orchestrator/orchestrator.js';
+import { BaseFixedError, ToolError, type Orchestrator } from './orchestrator/orchestrator.js';
 import { ReviewError } from './errors.js';
 import { NoSuchRound } from './review/changes.js';
 import type { NewAnchor } from './review/reviews.js';
 import type { SessionManager } from './sessions.js';
 import { SettingsError } from './settings.js';
+import { WorkbenchError } from './workbench.js';
 
 
 const MODEL_ERROR = 'model must be a model name or alias, like "sonnet" or "claude-opus-5-5"';
@@ -141,6 +142,8 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
       send({ event: 'usage', data: JSON.stringify(sessions.usage()) });
       send({ event: 'approvals-snapshot', data: JSON.stringify(sessions.approvals()) });
       if (orch) send({ event: 'settings', data: JSON.stringify(orch.settings.get()) });
+      // Every card on the board (it names repos, which may take git a moment), then each as it changes.
+      if (orch) void orch.workbench.board().then((cards) => send({ event: 'workbench', data: JSON.stringify(cards) }), (err) => console.error('could not send the Workbench', err));
       return sessions.watch((u) => {
         if (u.type === 'session') send({ event: 'session', data: JSON.stringify(u.session) });
         else if (u.type === 'deleted') send({ event: 'deleted', data: JSON.stringify({ id: u.id }) });
@@ -150,6 +153,8 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
         else if (u.type === 'review') send({ event: 'review', data: JSON.stringify({ roundUpId: u.roundUpId, state: u.state }) });
         else if (u.type === 'changes') send({ event: 'changes', data: JSON.stringify({ roundUpId: u.roundUpId, sessionId: u.sessionId }) });
         else if (u.type === 'settings') send({ event: 'settings', data: JSON.stringify(u.settings) });
+        else if (u.type === 'card') send({ event: 'card', data: JSON.stringify(u.card) });
+        else if (u.type === 'card-removed') send({ event: 'card-removed', data: JSON.stringify({ id: u.id }) });
       });
     }),
   );
@@ -167,6 +172,46 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
         throw err;
       }
       return c.json(orch.settings.withLimits());
+    });
+  }
+
+  // ── the Workbench ───────────────────────────────────────────────────
+  // Every feature card on the board; `/api/events` sends a `workbench` snapshot, then `card` and `card-removed`.
+  if (orch) {
+    const wb = orch.workbench;
+    const refused = (c: Context, err: unknown) => {
+      if (err instanceof WorkbenchError) return c.json({ error: err.message }, err.status);
+      throw err;
+    };
+    app.get('/api/workbench', async (c) => c.json(await wb.board()));
+    // { archived }: the person takes a card off the board, or puts it back.
+    app.patch('/api/workbench/:cardId', async (c) => {
+      const body = CardArchive.safeParse(await c.req.json<unknown>().catch(() => undefined));
+      if (!body.success) return c.json({ error: 'send { archived: true | false }' }, 400);
+      try {
+        return c.json(wb.archive(c.req.param('cardId'), body.data.archived));
+      } catch (err) {
+        return refused(c, err);
+      }
+    });
+    // Lands the card's work (its feature branch into its base); a refusal says why (a `MergeError`).
+    app.post('/api/workbench/:cardId/merge', async (c) => {
+      try {
+        return c.json(await wb.merge(c.req.param('cardId')));
+      } catch (err) {
+        return refused(c, err);
+      }
+    });
+    // The person's note on a card: { body, to? (an agent's id) }. Answers with the card.
+    app.post('/api/workbench/:cardId/notes', async (c) => {
+      const body = NotePost.safeParse(await c.req.json<unknown>().catch(() => undefined));
+      if (!body.success) return c.json({ error: 'send { body: 1-2000 characters, to?: an agent id }' }, 400);
+      try {
+        return c.json(wb.postByPerson(c.req.param('cardId'), body.data.body, body.data.to), 201);
+      } catch (err) {
+        if (err instanceof ToolError) return c.json({ error: err.message }, 400);
+        return refused(c, err);
+      }
     });
   }
 

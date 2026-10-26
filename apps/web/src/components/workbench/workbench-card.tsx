@@ -1,4 +1,4 @@
-import { ArchiveIcon, MessageCircleIcon, MoreHorizontalIcon, SquareArrowOutUpRightIcon } from 'lucide-react';
+import { ArchiveIcon, MessageCircleIcon, MessageSquareTextIcon, MoreHorizontalIcon, SquareArrowOutUpRightIcon } from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import type { WorkbenchCard } from '@kelpie/protocol';
@@ -8,13 +8,16 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useCardActions } from '@/hooks/use-workbench';
 import type { PendingApproval } from '@/lib/approvals';
 import { roundUpPath } from '@/lib/round-ups';
-import { calloutOf, cardApprovals, chatWhen, footer, PRIMARY_LABEL, primaryAction, reviewTurn, tally, topItems } from '@/lib/workbench';
+import { calloutOf, cardApprovals, chatWhen, footer, landing, PRIMARY_LABEL, primaryAction, reviewTurn, tally, topItems } from '@/lib/workbench';
 import { cn } from '@/lib/utils';
 import { AnswerSheet } from './answer-sheet';
 import { ItemRow } from './item-row';
+import { NoteRow, NotesSheet } from './notes';
 import { TicketChips } from '@/components/shell/tickets';
 
 const SHOWN = 3;
+/** Notes the card itself shows; the rest are in its notes sheet. */
+const NOTES_SHOWN = 2;
 
 const ACTION_STYLE = {
   answer: 'bg-fg text-background hover:bg-fg/85',
@@ -46,7 +49,10 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
   const items = topItems(card.items, SHOWN);
   const more = tally(card.items, SHOWN);
   const foot = footer(card);
+  const land = landing(card);
+  const notes = card.notes.slice(-NOTES_SHOWN);
   const [answering, setAnswering] = useState(false);
+  const [noting, setNoting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -115,6 +121,9 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
               <SquareArrowOutUpRightIcon /> Open the chat
             </Link>
           </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setNoting(true)}>
+            <MessageSquareTextIcon /> Notes
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void run('remove it', () => archive(card.id))}>
             <ArchiveIcon /> Remove from Workbench
           </DropdownMenuItem>
@@ -151,8 +160,29 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
         </div>
       )}
 
+      {notes.length > 0 && (
+        // The list stays a list: a button laid over it opens the notes.
+        <div className="hover:bg-hov relative -mx-1.5 rounded-lg px-1.5 py-1">
+          <ul aria-label="Latest notes" className="flex flex-col gap-1">
+            {notes.map((n) => (
+              <NoteRow key={n.id} note={n} now={now} compact />
+            ))}
+          </ul>
+          <button type="button" onClick={() => setNoting(true)} aria-label={`All notes on ${card.title}`} className="absolute inset-0 rounded-lg" />
+        </div>
+      )}
+
       <div className="border-ln flex items-center gap-2 border-t pt-3 text-xs">
         <span className="text-mu min-w-0 flex-1 truncate">{foot.agents}</span>
+        <button
+          type="button"
+          onClick={() => setNoting(true)}
+          aria-label={card.noteCount ? `${card.noteCount} note${card.noteCount === 1 ? '' : 's'}` : 'Leave a note'}
+          className="text-mu2 hover:text-fg flex shrink-0 items-center gap-1"
+        >
+          <MessageSquareTextIcon className="size-3.5" strokeWidth={1.9} />
+          {card.noteCount > 0 && <span className="font-mono text-[11px]">{card.noteCount}</span>}
+        </button>
         {foot.needsYou && (
           <span className="text-wait shrink-0 font-medium">
             <span aria-hidden="true">◆ </span>
@@ -166,21 +196,31 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
           {PRIMARY_LABEL[action]}
         </button>
       )}
-      {error && <p className="text-fail -mt-1 text-xs">{error}</p>}
+      {error && (
+        <p role="alert" className="text-fail -mt-1 text-xs">
+          {error}
+        </p>
+      )}
 
       <AnswerSheet card={card} approvals={approvals} callout={callout} open={answering} onOpenChange={setAnswering} />
+      <NotesSheet card={card} now={now} open={noting} onOpenChange={setNoting} />
 
       <Dialog open={confirming} onOpenChange={(open) => !busy && setConfirming(open)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Merge “{card.title}”?</DialogTitle>
             <DialogDescription>
-              Kelpie merges {card.branch ? <span className="font-mono">{card.branch}</span> : 'this card’s work'} into{' '}
-              {card.base ? <span className="font-mono">{card.base}</span> : 'its base branch'}
-              {card.repo ? ` in ${card.repo}` : ''}.
+              Kelpie merges {land.from ? <span className="font-mono">{land.from}</span> : 'this card’s work'} into your local{' '}
+              <span className="font-mono">{land.into}</span> branch{card.repo ? ` in ${card.repo}` : ''}: in the checkout that has it out, which must have
+              no uncommitted changes, or in a temporary worktree if none does. Nothing is pushed; push{' '}
+              <span className="font-mono">{land.into}</span> yourself when you’re ready.
             </DialogDescription>
           </DialogHeader>
-          {mergeError && <p className="text-fail text-sm">Couldn’t merge: {mergeError}</p>}
+          {mergeError && (
+            <p role="alert" className="text-fail text-sm">
+              Couldn’t merge: {mergeError}
+            </p>
+          )}
           <DialogFooter>
             <DialogClose asChild>
               <Button variant="outline" disabled={busy}>

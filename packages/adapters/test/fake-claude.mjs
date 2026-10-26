@@ -18,6 +18,8 @@
 // FAKE_HOLD_FILE takes each user turn in (FAKE_STDIN_FILE gets it) but holds its answer for as long as that
 // file exists; stdin is read in order, so whatever comes after a held turn (control requests, interrupts,
 // further turns) waits with it.
+// FAKE_ARGS_FILE has an --mcp-config file's contents in place of its path (as tests read the config);
+// FAKE_RAW_ARGS_FILE gets the argv as given.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -26,7 +28,9 @@ const hang = process.env.FAKE_HANG === '1';
 let printed = false;
 const out = (o) => process.stdout.write((typeof o === 'string' ? o : JSON.stringify(o)) + '\n');
 const args = process.argv.slice(2);
-if (process.env.FAKE_ARGS_FILE) appendFileSync(process.env.FAKE_ARGS_FILE, JSON.stringify(args) + '\n');
+const logged = args.map((a, i) => (args[i - 1] === '--mcp-config' && existsSync(a) ? readFileSync(a, 'utf8') : a));
+if (process.env.FAKE_ARGS_FILE) appendFileSync(process.env.FAKE_ARGS_FILE, JSON.stringify(logged) + '\n');
+if (process.env.FAKE_RAW_ARGS_FILE) appendFileSync(process.env.FAKE_RAW_ARGS_FILE, JSON.stringify(args) + '\n');
 if (process.env.FAKE_ENV_FILE) {
   appendFileSync(process.env.FAKE_ENV_FILE, JSON.stringify({ GH_TOKEN: process.env.GH_TOKEN ?? null, GITHUB_TOKEN: process.env.GITHUB_TOKEN ?? null }) + '\n');
 }

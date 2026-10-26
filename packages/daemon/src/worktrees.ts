@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import type { Store, WorktreeRow } from '@kelpie/store';
 
@@ -99,6 +100,15 @@ export interface WorktreeStats {
 }
 
 export type MergeResult = { ok: true } | { ok: false; conflicts: string[] };
+
+/** The local branch a base lands on: `origin/main` (a remote's branch) lands on `main`, a local base on itself. */
+export function localBranch(base: string, remotes: string[]): string {
+  const remote = remotes.find((r) => base.startsWith(`${r}/`));
+  return remote ? base.slice(remote.length + 1) : base;
+}
+
+/** A landed feature: the branch it went into, and the merge commit; or why it didn't. */
+export type LandResult = { ok: true; into: string; commit: string } | { ok: false; error: string };
 
 export interface WorktreesOptions {
   store: Store;
@@ -326,6 +336,71 @@ export class Worktrees {
       const conflicts = (await git(home.path, ['diff', '--name-only', '--diff-filter=U'])).stdout.split('\n').filter(Boolean);
       await git(home.path, ['merge', '--abort']);
       return { ok: false, conflicts: conflicts.length ? conflicts : [r.stderr.trim() || 'merge failed'] };
+    });
+  }
+
+  /**
+   * Lands a feature: merges `branch` into the local branch named by `base` (`origin/main` lands on
+   * `main`, made from it if there is none; see `localBranch`). Where that branch is checked out, the
+   * merge happens there, only if it is clean; otherwise in a worktree of Kelpie's own, made for it and
+   * removed after. The repo's hooks run. Nothing is pushed. `check`, run first under the repo's lock
+   * (so no muster or other merge runs meanwhile), may refuse with a reason. On any failure the repo is
+   * left as it was: the merge aborted, the temporary worktree and a branch made for it gone.
+   * Throws a `GitError` when git itself fails.
+   */
+  land(repo: string, branch: string, base: string, message: string, check?: () => Promise<string | undefined>): Promise<LandResult> {
+    return this.locked(repo, async () => {
+      const refused = await check?.();
+      if (refused) return { ok: false, error: refused };
+      const into = localBranch(base, (await ok(repo, ['remote'])).split('\n').filter(Boolean));
+      if (!SAFE_REF.test(into) || into.includes('..')) return { ok: false, error: `can't merge into ${into}: not a branch name` };
+      const exists = (await git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${into}`])).code === 0;
+      const target = exists ? `refs/heads/${into}` : `refs/remotes/${base}`;
+      const ahead = await git(repo, ['rev-list', '--count', `${target}..refs/heads/${branch}`]);
+      if (ahead.code !== 0) return { ok: false, error: `can't compare ${branch} with ${into}: ${ahead.stderr.trim()}` };
+      if (Number(ahead.stdout.trim()) === 0) return { ok: false, error: `nothing to merge: ${into} already has everything on ${branch}` };
+      const listed = (await ok(repo, ['worktree', 'list', '--porcelain'])).split('\n\n');
+      const at = exists ? listed.find((w) => w.split('\n').includes(`branch refs/heads/${into}`))?.match(/^worktree (.+)$/m)?.[1] : undefined;
+      if (at && (await this.dirty(at))) return { ok: false, error: `${at} has uncommitted changes on ${into}: commit or stash them, then merge again` };
+      // Outside the root: it is nobody's worktree, and the sweep must never take it for one.
+      const temp = at ? undefined : join(tmpdir(), `kelpie-land-${createHash('sha256').update(`${repo}\n${branch}`).digest('hex').slice(0, 12)}`);
+      const cwd = at ?? temp!;
+      let made = false;
+      let landed = false;
+      try {
+        if (!exists) {
+          await ok(repo, ['branch', into, `refs/remotes/${base}`]);
+          made = true;
+        }
+        if (temp) {
+          rmSync(temp, { recursive: true, force: true });
+          await git(repo, ['worktree', 'prune']);
+          await ok(repo, ['worktree', 'add', '--quiet', temp, into]);
+        }
+        const r = await git(cwd, [...(await this.identity(cwd)), 'merge', '--no-ff', '-m', message, branch]);
+        if (r.code !== 0) {
+          const conflicts = (await git(cwd, ['diff', '--name-only', '--diff-filter=U'])).stdout.split('\n').filter(Boolean);
+          await git(cwd, ['merge', '--abort']);
+          const why = (r.stderr.trim() || r.stdout.trim()).split('\n').slice(-3).join(' ');
+          return {
+            ok: false,
+            error: conflicts.length
+              ? `${branch} conflicts with ${into} in ${conflicts.join(', ')}: ask Kelpie to bring ${into} into the feature first`
+              : `the merge was refused: ${why || 'git gave no reason'}`,
+          };
+        }
+        const commit = await ok(cwd, ['rev-parse', 'HEAD']);
+        landed = true;
+        return { ok: true, into, commit };
+      } finally {
+        if (temp) {
+          await git(repo, ['worktree', 'remove', '--force', temp]);
+          rmSync(temp, { recursive: true, force: true });
+          await git(repo, ['worktree', 'prune']);
+        }
+        // Made only to land on: it goes again if nothing landed.
+        if (made && !landed) await git(repo, ['branch', '-D', into]);
+      }
     });
   }
 

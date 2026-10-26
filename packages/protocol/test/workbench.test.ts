@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CardArchive, CardCreate, CardPatch, CardUpdate, workbenchPath } from '../src/index.js';
+import { CardArchive, CardCreate, CardPatch, CardUpdate, EntryPatch, NotePost, workbenchPath } from '../src/index.js';
 
 describe('CardPatch', () => {
   it('accepts a typical patch', () => {
@@ -55,5 +55,19 @@ describe('workbenchPath', () => {
     expect(workbenchPath()).toBe('/workbench');
     expect(workbenchPath('c1')).toBe('/workbench/c1');
     expect(workbenchPath('a/b')).toBe('/workbench/a%2Fb');
+  });
+});
+
+describe('EntryPatch and NotePost', () => {
+  it('takes only the fields given, null to clear, and trims claims', () => {
+    expect(EntryPatch.parse({ focus: 'Checkout API', claims: [' packages/api/** '], blocker: null })).toEqual({ focus: 'Checkout API', claims: ['packages/api/**'], blocker: null });
+    expect(EntryPatch.parse({})).toEqual({});
+    expect(EntryPatch.safeParse({ claims: [''] }).success).toBe(false);
+    expect(EntryPatch.safeParse({ claims: Array.from({ length: 31 }, (_, i) => `f${i}`) }).success).toBe(false);
+  });
+
+  it('needs a note with some text', () => {
+    expect(NotePost.parse({ body: '  Please hold off on api/  ', to: 'agent-1' })).toEqual({ body: 'Please hold off on api/', to: 'agent-1' });
+    expect(NotePost.safeParse({ body: '   ' }).success).toBe(false);
   });
 });

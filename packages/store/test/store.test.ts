@@ -368,3 +368,109 @@ describe('reviews', () => {
     expect(store.deliveriesOf('r').map((x) => x.tipCommit)).toEqual(['t', 't2']);
   });
 });
+
+describe('workbench', () => {
+  const base = () => {
+    const store = openStore(':memory:');
+    store.createSession({ id: 'r', cwd: '/r' });
+    store.createSession({ id: 'a', cwd: '/r', parentId: 'r', role: 'agent' });
+    store.createSession({ id: 'b', cwd: '/r', parentId: 'r', role: 'agent' });
+    return store;
+  };
+
+  it('adds the workbench tables to a store made before them, keeping its round-ups', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
+    const before = join(dir, 'drizzle');
+    cpSync(join(import.meta.dirname, '../drizzle'), before, { recursive: true });
+    const journal = join(before, 'meta/_journal.json');
+    const j = JSON.parse(readFileSync(journal, 'utf8')) as { entries: { tag: string }[] };
+    expect(j.entries.map((e) => e.tag)).toContain('0017_workbench');
+    j.entries = j.entries.filter((e) => e.tag < '0017');
+    writeFileSync(journal, JSON.stringify(j));
+    const path = join(dir, 'kelpie.db');
+    const old = openStore(path, { migrationsFolder: before });
+    old.createSession({ id: 'r', cwd: '/r' });
+    expect(() => old.cards()).toThrow(/no such table/);
+    old.close();
+    const store = openStore(path);
+    expect(store.getSession('r')).toBeDefined();
+    expect(store.createCard({ roundUpId: 'r', title: 'Checkout', stage: 'building' }).title).toBe('Checkout');
+    store.close();
+  });
+
+  it('creates and patches cards, keeping tickets as JSON and stamping done', () => {
+    const store = base();
+    const card = store.createCard({ roundUpId: 'r', title: 'Checkout', stage: 'building', tickets: [{ provider: 'jira', url: 'https://x.atlassian.net/browse/A-1' }] }, 1000);
+    expect(card).toMatchObject({ roundUpId: 'r', stage: 'building', callout: null, doneAt: null, archivedAt: null, createdAt: 1000, updatedAt: 1000 });
+    expect(card.tickets).toEqual([{ provider: 'jira', url: 'https://x.atlassian.net/browse/A-1' }]);
+    expect(store.updateCard(card.id, { stage: 'review', callout: 'Look at #412' }, 2000)).toMatchObject({ stage: 'review', callout: 'Look at #412', title: 'Checkout', updatedAt: 2000 });
+    expect(store.createCard({ roundUpId: 'r', title: 'Done already', stage: 'done' }, 3000).doneAt).toBe(3000);
+    expect(store.cards('r').map((c) => c.title)).toEqual(['Checkout', 'Done already']);
+    expect(store.updateCard('nope', { title: 'x' })).toBeUndefined();
+  });
+
+  it('upserts items by key, changing only the fields given', () => {
+    const store = base();
+    const card = store.createCard({ roundUpId: 'r', title: 'Checkout', stage: 'building' });
+    expect(store.upsertItem(card.id, { key: 'a', agentId: 'a' }, 1000)).toMatchObject({ title: 'a', status: 'draft', agentId: 'a' });
+    store.upsertItem(card.id, { key: 'a', title: 'Checkout API', ref: '#412' }, 2000);
+    const item = store.upsertItem(card.id, { key: 'a', status: 'review', ref: null }, 3000);
+    expect(item).toMatchObject({ title: 'Checkout API', ref: null, status: 'review', agentId: 'a', createdAt: 1000, updatedAt: 3000 });
+    store.upsertItem(card.id, { key: 'docs', title: 'Docs' });
+    expect(store.itemsOf([card.id]).map((i) => i.key)).toEqual(['a', 'docs']);
+    expect(store.itemsOfAgent('a')).toHaveLength(1);
+    expect(store.removeItem(card.id, 'docs')).toBe(true);
+    expect(store.removeItem(card.id, 'docs')).toBe(false);
+  });
+
+  it("keeps one entry per agent, with its claims, and clears fields set to null", () => {
+    const store = base();
+    store.setEntry('a', 'r', { focus: 'Checkout API', claims: ['packages/api/**'], blocker: 'needs the schema' }, 1000);
+    expect(store.setEntry('a', 'r', { blocker: null, progress: 'routes done' }, 2000)).toEqual({
+      sessionId: 'a',
+      roundUpId: 'r',
+      focus: 'Checkout API',
+      claims: ['packages/api/**'],
+      blocker: null,
+      progress: 'routes done',
+      updatedAt: 2000,
+    });
+    store.setEntry('b', 'r', { claims: [] });
+    expect(store.entriesOf(['r']).map((e) => e.sessionId).sort()).toEqual(['a', 'b']);
+    expect(store.entriesOf([])).toEqual([]);
+  });
+
+  it('keeps notes, hands over the undelivered ones, and counts what a sender posted', () => {
+    const store = base();
+    const card = store.createCard({ roundUpId: 'r', title: 'Checkout', stage: 'building' });
+    const note = (body: string, at: number, to?: string) =>
+      store.addNote({ roundUpId: 'r', cardId: card.id, fromKind: 'agent', fromId: 'a', fromTitle: 'A', toId: to ?? null, toTitle: to ? to.toUpperCase() : null, body }, at);
+    note('hello all', 1000);
+    const n2 = note('b, your types?', 2000, 'b');
+    note('and again', 3000, 'b');
+    expect(store.notesOf('r').map((n) => n.body)).toEqual(['hello all', 'b, your types?', 'and again']);
+    expect(store.notesOf('r', { limit: 2 }).map((n) => n.body)).toEqual(['b, your types?', 'and again']);
+    expect(store.undeliveredNotes('b').map((n) => n.id)).toHaveLength(2);
+    store.markNotesDelivered([n2.id], 4000);
+    expect(store.undeliveredNotes('b').map((n) => n.body)).toEqual(['and again']);
+    expect(store.notesFromSince('a', 2000)).toBe(2);
+    expect(store.notesFromSince('a', 0, 'b')).toBe(2);
+    expect(store.noteCount(card.id)).toBe(3);
+  });
+
+  it('drops cards, items, entries and notes with their round-up; a deleted agent leaves its item and notes', () => {
+    const store = base();
+    const card = store.createCard({ roundUpId: 'r', title: 'Checkout', stage: 'building' });
+    store.upsertItem(card.id, { key: 'a', agentId: 'a' });
+    store.setEntry('a', 'r', { focus: 'x' });
+    store.addNote({ roundUpId: 'r', cardId: card.id, fromKind: 'agent', fromId: 'a', fromTitle: 'A', toId: 'b', toTitle: 'B', body: 'hi' });
+    store.deleteSession('a');
+    expect(store.itemsOf([card.id])[0]).toMatchObject({ key: 'a', agentId: null });
+    expect(store.notesOf('r')[0]).toMatchObject({ fromId: null, fromTitle: 'A' });
+    expect(store.entriesOf(['r'])).toEqual([]);
+    store.deleteSession('r');
+    expect(store.cards()).toEqual([]);
+    expect(store.itemsOf([card.id])).toEqual([]);
+    expect(store.notesOf('r')).toEqual([]);
+  });
+});

@@ -39,6 +39,21 @@ export interface ConnectionRow extends Omit<typeof schema.connections.$inferSele
 export type NewConnection = Omit<ConnectionRow, 'createdAt' | 'updatedAt'>;
 export type TicketRow = typeof schema.tickets.$inferSelect;
 export type TicketSource = TicketRow['source'];
+export interface CardRow extends Omit<typeof schema.workbenchCards.$inferSelect, 'tickets'> {
+  tickets: unknown[];
+}
+export type NewCard = Pick<CardRow, 'roundUpId' | 'title' | 'stage'> & Partial<Pick<CardRow, 'id' | 'callout' | 'tickets'>>;
+export type CardPatchRow = Partial<Pick<CardRow, 'title' | 'stage' | 'callout' | 'tickets' | 'archivedAt' | 'doneAt'>>;
+export type ItemRow = typeof schema.workbenchItems.$inferSelect;
+export type ItemStatusRow = ItemRow['status'];
+/** An item's fields to change, by key; on a new item, `title` defaults to the key and `status` to draft. */
+export type ItemUpsert = Pick<ItemRow, 'key'> & Partial<Pick<ItemRow, 'title' | 'ref' | 'url' | 'status' | 'agentId'>>;
+export interface EntryRow extends Omit<typeof schema.workbenchEntries.$inferSelect, 'claims'> {
+  claims: string[];
+}
+export type EntryPatch = Partial<Pick<EntryRow, 'focus' | 'claims' | 'blocker' | 'progress'>>;
+export type NoteRow = typeof schema.workbenchNotes.$inferSelect;
+export type NewNote = Omit<NoteRow, 'id' | 'createdAt' | 'deliveredAt'>;
 
 const MIGRATIONS = join(import.meta.dirname, '../drizzle');
 
@@ -571,10 +586,142 @@ export class Store {
     return this.db.delete(schema.tickets).where(and(eq(schema.tickets.roundUpId, roundUpId), eq(schema.tickets.ref, ref))).run().changes > 0;
   }
 
+  // ── workbench ────────────────────────────────────────────────────────
+
+  createCard(c: NewCard, now = Date.now()): CardRow {
+    const row = this.db
+      .insert(schema.workbenchCards)
+      .values({ ...c, id: c.id ?? randomUUID(), tickets: JSON.stringify(c.tickets ?? []), doneAt: c.stage === 'done' ? now : null, createdAt: now, updatedAt: now })
+      .returning()
+      .get();
+    return cardOf(row);
+  }
+
+  card(id: string): CardRow | undefined {
+    const row = this.db.select().from(schema.workbenchCards).where(eq(schema.workbenchCards.id, id)).get();
+    return row && cardOf(row);
+  }
+
+  /** Every card, or one round-up's; oldest first. */
+  cards(roundUpId?: string): CardRow[] {
+    return this.db
+      .select()
+      .from(schema.workbenchCards)
+      .where(roundUpId ? eq(schema.workbenchCards.roundUpId, roundUpId) : undefined)
+      .orderBy(asc(schema.workbenchCards.createdAt), asc(sql`rowid`))
+      .all()
+      .map(cardOf);
+  }
+
+  /** Changes the fields given, and the card's `updatedAt`. */
+  updateCard(id: string, patch: CardPatchRow, now = Date.now()): CardRow | undefined {
+    const { tickets, ...rest } = patch;
+    const row = this.db
+      .update(schema.workbenchCards)
+      .set({ ...rest, ...(tickets ? { tickets: JSON.stringify(tickets) } : {}), updatedAt: now })
+      .where(eq(schema.workbenchCards.id, id))
+      .returning()
+      .get();
+    return row && cardOf(row);
+  }
+
+  /** Inserts the item, or changes only the fields given on the one with its key. */
+  upsertItem(cardId: string, item: ItemUpsert, now = Date.now()): ItemRow {
+    const set = Object.fromEntries(Object.entries(item).filter(([k, v]) => k !== 'key' && v !== undefined));
+    return this.db
+      .insert(schema.workbenchItems)
+      .values({ title: item.key, status: 'draft', ...set, cardId, key: item.key, createdAt: now, updatedAt: now })
+      .onConflictDoUpdate({ target: [schema.workbenchItems.cardId, schema.workbenchItems.key], set: { ...set, updatedAt: now } })
+      .returning()
+      .get();
+  }
+
+  removeItem(cardId: string, key: string): boolean {
+    return this.db.delete(schema.workbenchItems).where(and(eq(schema.workbenchItems.cardId, cardId), eq(schema.workbenchItems.key, key))).run().changes > 0;
+  }
+
+  /** The items of these cards, oldest first. */
+  itemsOf(cardIds: string[]): ItemRow[] {
+    if (!cardIds.length) return [];
+    return this.db.select().from(schema.workbenchItems).where(inArray(schema.workbenchItems.cardId, cardIds)).orderBy(asc(schema.workbenchItems.createdAt), asc(sql`rowid`)).all();
+  }
+
+  /** The items an agent is behind, on any card. */
+  itemsOfAgent(agentId: string): ItemRow[] {
+    return this.db.select().from(schema.workbenchItems).where(eq(schema.workbenchItems.agentId, agentId)).all();
+  }
+
+  /** Sets the fields given of an agent's own entry, making it if it has none. */
+  setEntry(sessionId: string, roundUpId: string, patch: EntryPatch, now = Date.now()): EntryRow {
+    const { claims, ...rest } = patch;
+    const set = { ...Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)), ...(claims ? { claims: JSON.stringify(claims) } : {}), updatedAt: now };
+    const row = this.db
+      .insert(schema.workbenchEntries)
+      .values({ sessionId, roundUpId, ...set })
+      .onConflictDoUpdate({ target: schema.workbenchEntries.sessionId, set })
+      .returning()
+      .get();
+    return entryOf(row);
+  }
+
+  /** The entries of these round-ups' agents. */
+  entriesOf(roundUpIds: string[]): EntryRow[] {
+    if (!roundUpIds.length) return [];
+    return this.db.select().from(schema.workbenchEntries).where(inArray(schema.workbenchEntries.roundUpId, roundUpIds)).all().map(entryOf);
+  }
+
+  addNote(n: NewNote, now = Date.now()): NoteRow {
+    return this.db.insert(schema.workbenchNotes).values({ ...n, createdAt: now }).returning().get();
+  }
+
+  /** A round-up's latest notes (or one card's), oldest first. */
+  notesOf(roundUpId: string, opts: { cardId?: string; limit?: number } = {}): NoteRow[] {
+    const n = schema.workbenchNotes;
+    return this.db
+      .select()
+      .from(n)
+      .where(and(eq(n.roundUpId, roundUpId), opts.cardId ? eq(n.cardId, opts.cardId) : undefined))
+      .orderBy(desc(n.id))
+      .limit(opts.limit ?? 20)
+      .all()
+      .reverse();
+  }
+
+  /** How many notes a card has. */
+  noteCount(cardId: string): number {
+    return this.db.select({ n: sql<number>`count(*)` }).from(schema.workbenchNotes).where(eq(schema.workbenchNotes.cardId, cardId)).get()?.n ?? 0;
+  }
+
+  /** Notes to a session it has not been handed yet, oldest first. */
+  undeliveredNotes(toId: string): NoteRow[] {
+    const n = schema.workbenchNotes;
+    return this.db.select().from(n).where(and(eq(n.toId, toId), isNull(n.deliveredAt))).orderBy(asc(n.id)).all();
+  }
+
+  markNotesDelivered(ids: number[], now = Date.now()): void {
+    if (!ids.length) return;
+    this.db.update(schema.workbenchNotes).set({ deliveredAt: now }).where(inArray(schema.workbenchNotes.id, ids)).run();
+  }
+
+  /** Notes `fromId` posted since `since` (epoch ms): to `toId` only, when given. */
+  notesFromSince(fromId: string, since: number, toId?: string): number {
+    const n = schema.workbenchNotes;
+    return (
+      this.db
+        .select({ n: sql<number>`count(*)` })
+        .from(n)
+        .where(and(eq(n.fromId, fromId), sql`${n.createdAt} >= ${since}`, toId ? eq(n.toId, toId) : undefined))
+        .get()?.n ?? 0
+    );
+  }
+
   close(): void {
     this.sqlite.close();
   }
 }
+
+const cardOf = (row: typeof schema.workbenchCards.$inferSelect): CardRow => ({ ...row, tickets: JSON.parse(row.tickets) as unknown[] });
+const entryOf = (row: typeof schema.workbenchEntries.$inferSelect): EntryRow => ({ ...row, claims: JSON.parse(row.claims) as string[] });
 
 /** Opens (creating if needed) the store at `path`, or an in-memory one for ':memory:', and migrates it. */
 export function openStore(path: string, opts: StoreOptions = {}): Store {

@@ -6,6 +6,10 @@ import { LinkedTicket } from './tickets.js';
  * it takes on (`create_card`) and keeps each current (`update_card`); one round-up can have
  * several. Kelpie derives the live parts (agents, approvals, merged) itself.
  *
+ * Agents coordinate on it too: each sets its own entry (`workbench_update`: focus, claimed files or
+ * areas, blocker, progress), reads everyone's (`workbench_read`), and posts notes (`workbench_post`),
+ * which show on the card's items and in its feed.
+ *
  * The board hides archived cards and cards done for over 24 hours (`DONE_FOR`): the daemon leaves
  * them out of `GET /api/workbench` and the `workbench` snapshot, and the web app filters too.
  */
@@ -76,6 +80,55 @@ export const CardUpdate = CardPatch.extend({
 });
 export type CardUpdate = z.infer<typeof CardUpdate>;
 
+/**
+ * The `workbench_update` input: what an agent says about its own work, for the other agents and the
+ * person. Only the fields given change; `null` clears one.
+ */
+export const EntryPatch = z.object({
+  /** What it is doing now, in a few words. */
+  focus: z.string().max(200).nullable().optional(),
+  /** Files, globs or areas it is changing (`packages/api/src/routes/**`, `the checkout schema`); replaces the list. */
+  claims: z.array(z.string().trim().min(1).max(200)).max(30).optional(),
+  /** What it is stuck on, if anything. */
+  blocker: z.string().max(280).nullable().optional(),
+  /** One line on how far it has got. */
+  progress: z.string().max(280).nullable().optional(),
+});
+export type EntryPatch = z.infer<typeof EntryPatch>;
+
+/** An agent's own entry, as it last set it (see `EntryPatch`). */
+export interface WorkbenchEntry {
+  focus?: string;
+  claims: string[];
+  blocker?: string;
+  progress?: string;
+  /** Epoch ms. */
+  updatedAt: number;
+}
+
+/** A note on the board: from an agent, a round-up's orchestrator or the person, maybe to one of them. */
+export interface WorkbenchNote {
+  id: number;
+  from: { kind: 'agent' | 'orchestrator' | 'person'; title: string; agentId?: string; harness?: string };
+  /** Whom it is for; none: everyone on the card. */
+  to?: { title: string; agentId?: string };
+  body: string;
+  /** Epoch ms. */
+  createdAt: number;
+  /** A note to someone: when it was handed to them (with a turn, or as they read the board). */
+  deliveredAt?: number;
+}
+
+/**
+ * Body of `POST /api/workbench/:cardId/notes`, the person's note, which answers with the card. A note
+ * to an agent (`to`, its id) is handed to it with its next turn; it never starts one.
+ */
+export const NotePost = z.object({
+  body: z.string().trim().min(1).max(2000),
+  to: z.string().min(1).optional(),
+});
+export type NotePost = z.infer<typeof NotePost>;
+
 /** An agent's status as the UI groups it (the daemon's agent summary). */
 export type WorkbenchAgentStatus = 'working' | 'needs-approval' | 'done' | 'failed' | 'stopped' | 'idle';
 
@@ -95,6 +148,11 @@ export interface WorkbenchItem {
   agentStatus?: WorkbenchAgentStatus;
   /** Open approvals the writer is waiting on. */
   waiting: number;
+  /** The agent's own title and harness, for its icon. */
+  agentTitle?: string;
+  harness?: string;
+  /** What the agent says about its work (`workbench_update`). */
+  entry?: WorkbenchEntry;
   /** Epoch ms. */
   updatedAt: number;
 }
@@ -114,6 +172,8 @@ export interface WorkbenchCard {
   branch?: string;
   /** The branch it will be merged into. */
   base?: string;
+  /** The local branch Merge lands it on: the base without its remote (`origin/main` lands on `main`). Merge never pushes. */
+  landsOn?: string;
   stage: Stage;
   callout?: string;
   tickets: CardTicket[];
@@ -122,6 +182,9 @@ export interface WorkbenchCard {
   agents: { total: number; working: number };
   /** Open approvals of the agents linked to this card's items. */
   needsYou: number;
+  /** The card's latest notes, oldest first (at most 20), and how many it has in all. */
+  notes: WorkbenchNote[];
+  noteCount: number;
   /**
    * The person removed it from the board. The daemon clears it (its `archivedAt`) when an update
    * sets a stage other than `done`, so the card comes back.
@@ -141,8 +204,10 @@ export interface WorkbenchCard {
 /**
  * Body of `PATCH /api/workbench/:cardId`, which answers with the card (or 404).
  *
- * `POST /api/workbench/:cardId/merge` (no body) lands the card's work and answers 200 with the
- * updated `WorkbenchCard`, or 4xx with a `MergeError`.
+ * `POST /api/workbench/:cardId/merge` (no body) lands the card's work on its local base branch
+ * (`landsOn`; nothing is pushed) and answers 200 with the updated `WorkbenchCard`, 404 for no such
+ * card, 409 with a `MergeError` when it won't (agents working, work not mustered, uncommitted
+ * changes, a conflict, a hook said no), or 500 with one when git itself failed.
  */
 export const CardArchive = z.object({ archived: z.boolean() });
 export type CardArchive = z.infer<typeof CardArchive>;

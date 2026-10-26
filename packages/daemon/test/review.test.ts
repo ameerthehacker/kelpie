@@ -75,7 +75,10 @@ describe('reviews', () => {
     const ctx = start();
     const { parent, api, head } = await mustered(ctx);
     const orchestrator = await mcpClient(ctx, await startWith(ctx, "You are Kelpie's orchestrator"));
-    expect(await orchestrator.tools()).toEqual(['assign_threads', 'interrupt_agent', 'link_ticket', 'list_agents', 'list_branches', 'list_review_threads', 'message_agent', 'muster_agents', 'read_agent', 'read_review', 'reply_to_thread', 'resolve_thread', 'set_base_branch', 'spawn_agent', 'unlink_ticket']);
+    expect(await orchestrator.tools()).toEqual([
+      'assign_threads', 'create_card', 'interrupt_agent', 'link_ticket', 'list_agents', 'list_branches', 'list_review_threads', 'message_agent', 'muster_agents', 'read_agent', 'read_review',
+      'reply_to_thread', 'resolve_thread', 'set_base_branch', 'spawn_agent', 'unlink_ticket', 'update_card', 'workbench_post', 'workbench_read',
+    ]);
     const t1 = (await comment(ctx, parent, head(), { path: 'app.txt', side: 'additions', line: 2, lineText: 'L2 api' }, 'rename this')).body.thread as ReviewThread;
     const t2 = (await comment(ctx, parent, head(), { path: 'app.txt', side: 'additions', line: 5, lineText: 'l5' }, 'why is this here?')).body.thread as ReviewThread;
     expect((await orchestrator.call('list_review_threads', { status: 'all' })).data).toEqual([]);
@@ -297,7 +300,7 @@ describe('reviews', () => {
     // Mustered before, so it was started afresh in a recreated worktree, with a token of its own.
     expect(ctx.store.worktreeOf(api.id)!.state).toBe('active');
     const agent = await mcpClient(ctx, await startWith(ctx, ctx.store.worktreeOf(api.id)!.branch));
-    expect(await agent.tools()).toEqual(['list_review_threads', 'reply_to_thread', 'resolve_thread']);
+    expect(await agent.tools()).toEqual(['list_review_threads', 'reply_to_thread', 'resolve_thread', 'workbench_post', 'workbench_read', 'workbench_update']);
     const listed = (await agent.call('list_review_threads')).data;
     expect(listed.map((t: { threadId: string }) => t.threadId)).toEqual([mine.id]);
     expect(listed[0]).toMatchObject({ path: 'app.txt', line: 2, currentLine: 2, outdated: false, comments: [{ author: 'person', body: 'rename it' }] });

@@ -20,6 +20,9 @@ export function useCardActions() {
     archive: (id: string) => api<WorkbenchCard>('PATCH', `/api/workbench/${encodeURIComponent(id)}`, { archived: true }).then(put),
     /** Lands its work; rejects with the daemon's reason (a conflict, uncommitted changes…). */
     merge: (id: string) => api<WorkbenchCard>('POST', `/api/workbench/${encodeURIComponent(id)}/merge`).then(put),
+    /** The person's note on the card, maybe to one of its agents (handed over with its next turn). */
+    note: (id: string, body: string, to?: string) =>
+      api<WorkbenchCard>('POST', `/api/workbench/${encodeURIComponent(id)}/notes`, { body, ...(to ? { to } : {}) }).then(put),
     /** A turn to the card's round-up, as if typed in its chat. */
     say: (roundUpId: string, text: string) => api('POST', `/api/sessions/${encodeURIComponent(roundUpId)}/messages`, { text }),
   };
