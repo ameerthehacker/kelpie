@@ -5,6 +5,7 @@ import { getMimeType } from 'hono/utils/mime';
 import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
 import { Harness, parseTicketUrl, type AgentUpdate, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
+import type { Connections } from '../connectors/connector.js';
 import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
 import { logLines, report, type AgentReport, type LogPage } from './digest.js';
 import { ToolError } from '../errors.js';
@@ -74,6 +75,8 @@ export interface OrchestratorOptions {
   notifyDelayMs?: number;
   /** Git worktrees for writing agents. Without it (or outside a git repo) writers share the round-up's cwd, one at a time. */
   worktrees?: Worktrees;
+  /** Connected services (GitHub): every harness Kelpie starts gets their env, e.g. GH_TOKEN. */
+  connections?: Pick<Connections, 'env'>;
 }
 
 /** The harness mode an agent runs in: plan mode only stops new work that writes, so readers (and work under way) run in auto. */
@@ -168,6 +171,9 @@ export class Orchestrator implements SessionHooks {
   /** Orchestrators with a browser writer cleared but not made yet: it has the browser meanwhile. */
   private readonly startingBrowser = new Set<string>();
   private readonly worktrees: Worktrees | undefined;
+  private readonly connections: Pick<Connections, 'env'> | undefined;
+  /** Each session's connection env, read by `prepare` (it can wait) for the `specFor` right after it. */
+  private readonly envs = new Map<string, Record<string, string>>();
   private warnedUnfenced = false;
   /** What changed in each round-up (diffs), and the person's reviews of it. */
   readonly changes: Changes;
@@ -176,6 +182,7 @@ export class Orchestrator implements SessionHooks {
   constructor(opts: OrchestratorOptions) {
     this.store = opts.store;
     this.worktrees = opts.worktrees;
+    this.connections = opts.connections;
     // A process left running in a worktree that goes would outlive its directory.
     if (this.worktrees) this.worktrees.beforeRemove = (row) => this.release(row);
     this.mcpUrl = opts.mcpUrl;
@@ -208,6 +215,9 @@ export class Orchestrator implements SessionHooks {
     this.tokens.set(token, session.id);
     this.tokenOfRun.set(run.runId, token);
     const mcpConfig = [JSON.stringify({ mcpServers: { kelpie: { type: 'http', url: this.mcpUrl, headers: { Authorization: `Bearer ${token}` } } } })];
+    const env = this.envs.get(session.id);
+    this.envs.delete(session.id);
+    const connected = env && Object.keys(env).length ? { env } : {};
     if (session.role === 'agent') {
       const place = this.placeOf(session);
       // Every agent may read the scratch folder (its brief's files are there); writers may leave files in it.
@@ -220,6 +230,7 @@ export class Orchestrator implements SessionHooks {
         allowedTools: [...scratchRules, 'mcp__kelpie'],
         mcpConfig,
         ...(scratch ? { addDirs: [scratch] } : {}),
+        ...connected,
         // The person's one browser, shared by every agent given it: only when the orchestrator asked.
         // Its tools are asked about like any other (auto mode's checks, or the person); none is allowed by rule.
         browser: session.browser,
@@ -253,6 +264,7 @@ export class Orchestrator implements SessionHooks {
       // a request before `decide` sees it: never in the repo or in a worktree.
       ...(denied.length && scratch ? { disallowedTools: denied.flatMap((dir) => SCRATCH_TOOLS.map((t) => `${t}(${under(dir)})`)) } : {}),
       mcpConfig,
+      ...connected,
       appendSystemPrompt: orchestratorPrompt(scratch, session.mode) + preface,
     };
   }
@@ -275,16 +287,21 @@ export class Orchestrator implements SessionHooks {
     }
   }
 
-  /** Before a harness starts: its worktree is on disk, at its one path (a swept one comes back). */
+  /**
+   * Before a harness starts: its worktree is on disk, at its one path (a swept one comes back), and
+   * the connected services' credentials are read afresh (a gh login may have changed since).
+   */
   async prepare(session: Session): Promise<void> {
     const row = this.worktreeAt(session);
-    if (!row || !this.worktrees) return;
-    // A reader looking at another agent's worktree must not bring back one whose work was mustered:
-    // that would cut a fresh, empty branch in its place.
-    if (row.kind === 'agent' && row.sessionId !== session.id && row.state === 'mustered') {
-      throw new Error(`the worktree "${session.title}" was reading has been mustered into the feature branch; look there instead`);
+    if (row && this.worktrees) {
+      // A reader looking at another agent's worktree must not bring back one whose work was mustered:
+      // that would cut a fresh, empty branch in its place.
+      if (row.kind === 'agent' && row.sessionId !== session.id && row.state === 'mustered') {
+        throw new Error(`the worktree "${session.title}" was reading has been mustered into the feature branch; look there instead`);
+      }
+      await this.worktrees.ensure(row);
     }
-    await this.worktrees.ensure(row);
+    if (this.connections) this.envs.set(session.id, await this.connections.env());
   }
 
   /**

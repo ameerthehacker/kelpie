@@ -33,6 +33,10 @@ export interface ThreadFilter {
   assignedTo?: string;
   ids?: string[];
 }
+export interface ConnectionRow extends Omit<typeof schema.connections.$inferSelect, 'scopes'> {
+  scopes: string[] | null;
+}
+export type NewConnection = Omit<ConnectionRow, 'createdAt' | 'updatedAt'>;
 export type TicketRow = typeof schema.tickets.$inferSelect;
 export type TicketSource = TicketRow['source'];
 
@@ -480,6 +484,26 @@ export class Store {
       }
       return done!;
     });
+  }
+
+  /** Saves a connector's secret, replacing the one it had. */
+  setConnection(c: NewConnection, now = Date.now()): void {
+    const row = { ...c, scopes: c.scopes ? JSON.stringify(c.scopes) : null, updatedAt: now };
+    this.db
+      .insert(schema.connections)
+      .values({ ...row, createdAt: now })
+      .onConflictDoUpdate({ target: schema.connections.provider, set: row })
+      .run();
+  }
+
+  getConnection(provider: string): ConnectionRow | undefined {
+    const row = this.db.select().from(schema.connections).where(eq(schema.connections.provider, provider)).get();
+    return row && { ...row, scopes: row.scopes ? (JSON.parse(row.scopes) as string[]) : null };
+  }
+
+  /** Forgets a connector's secret; false if it had none. */
+  deleteConnection(provider: string): boolean {
+    return this.db.delete(schema.connections).where(eq(schema.connections.provider, provider)).run().changes > 0;
   }
 
   /**

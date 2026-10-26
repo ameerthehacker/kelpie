@@ -67,6 +67,16 @@ describe('store', () => {
     expect(store.listUsage().map((u) => u.harness)).toEqual(['claude-code']);
   });
 
+  it('keeps one secret per connector, replacing it when connected again', () => {
+    const store = openStore(':memory:');
+    store.setConnection({ provider: 'github', method: 'token', secret: 'ghp_one', account: 'octo', scopes: ['repo'] }, 1000);
+    store.setConnection({ provider: 'github', method: 'token', secret: 'ghp_two', account: 'octo', scopes: null }, 2000);
+    expect(store.getConnection('github')).toEqual({ provider: 'github', method: 'token', secret: 'ghp_two', account: 'octo', scopes: null, createdAt: 1000, updatedAt: 2000 });
+    expect(store.deleteConnection('github')).toBe(true);
+    expect(store.getConnection('github')).toBeUndefined();
+    expect(store.deleteConnection('github')).toBe(false);
+  });
+
   it('adds the tickets table to a store made before it, keeping its round-ups', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
     const before = join(dir, 'drizzle');

@@ -20,6 +20,7 @@ export {
   type TurnStatus,
 } from './sessions.js';
 export { createApp, localOnly, type AppOptions } from './server.js';
+export { canStart, checkHarnesses, claudeCodeStatus, installDirs, parseVersion, type CheckOptions, type HarnessStatus } from './harness-status.js';
 export { Orchestrator, ToolError, BaseFixedError, ORCHESTRATOR_TOOLS, READ_ONLY_TOOLS, type AgentInfo, type AgentList, type OrchestratorOptions } from './orchestrator/orchestrator.js';
 export { Worktrees, GitError, runGit, slug, type Branch, type Git, type GitOptions, type WorktreesOptions } from './worktrees.js';
 export { ReviewError } from './errors.js';
@@ -30,3 +31,5 @@ export { report, logLines, type AgentReport, type LogPage } from './orchestrator
 export { NOTIFICATION_TAG, reviewBrief } from './orchestrator/prompt.js';
 export { nowOf, type AgentSummary } from './agent-summary.js';
 export { startDaemon, envNumber, limitsFromEnv, HomeInUseError, PortInUseError, type Daemon, type DaemonOptions } from './start.js';
+export { Connections, ConnectError, type Connector, type ConnectionAccount, type ConnectionStatus } from './connectors/connector.js';
+export { GitHubConnector, githubEnv, type GitHubOptions, type RunGh } from './connectors/github.js';

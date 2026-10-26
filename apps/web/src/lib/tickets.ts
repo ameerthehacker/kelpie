@@ -1,4 +1,7 @@
-import { TICKET_PROVIDER_NAME, ticketLabel, type LinkedTicket } from '@kelpie/protocol';
+import { TICKET_PROVIDER_NAME, ticketLabel, type CardTicket } from '@kelpie/protocol';
+
+/** What showing a ticket needs: a round-up's linked ticket, or a Workbench card's. */
+export type ShownTicket = CardTicket;
 
 /** One linked ticket as the title block shows it. */
 export interface TicketView {
@@ -27,7 +30,7 @@ const safeHref = (url: string) => {
   }
 };
 
-export function ticketView(t: LinkedTicket): TicketView {
+export function ticketView(t: ShownTicket): TicketView {
   const label = ticketLabel(t);
   const provider = TICKET_PROVIDER_NAME[t.provider];
   const mono = !!t.key && label === t.key;
@@ -44,12 +47,12 @@ export function ticketView(t: LinkedTicket): TicketView {
 }
 
 /**
- * How the title block shows a round-up's tickets: nothing, one ticket's chip, or an
+ * How the title block (or a Workbench card) shows its tickets: nothing, one ticket's chip, or an
  * "N tickets" chip that opens the list. Pure.
  */
 export type TicketsDisplay = { kind: 'none' } | { kind: 'one'; ticket: TicketView } | { kind: 'many'; label: string; tickets: TicketView[] };
 
-export function ticketsDisplay(tickets: readonly LinkedTicket[] | undefined): TicketsDisplay {
+export function ticketsDisplay(tickets: readonly ShownTicket[] | undefined): TicketsDisplay {
   const views = (tickets ?? []).map(ticketView);
   if (!views.length) return { kind: 'none' };
   if (views.length === 1) return { kind: 'one', ticket: views[0]! };

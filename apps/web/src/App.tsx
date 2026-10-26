@@ -16,12 +16,15 @@ import { TabStrip } from '@/components/changes/tab-strip';
 import { AttachmentChips } from '@/components/chat/attachments';
 import { ChatLog } from '@/components/chat/chat-log';
 import { Composer } from '@/components/chat/composer';
+import { HarnessSetupDialog } from '@/components/settings/setup-dialog';
+import { SettingsPage } from '@/components/settings/settings-page';
 import { WorkingStatus } from '@/components/chat/working-status';
 import { AgentCrumb } from '@/components/shell/agent-crumb';
 import { KelpieLogo } from '@/components/shell/brand';
 import { Search } from '@/components/shell/search';
 import { TicketChips } from '@/components/shell/tickets';
 import { AppSidebar } from '@/components/shell/sidebar';
+import { WorkbenchPage } from '@/components/workbench/workbench-page';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useAgents } from '@/hooks/use-agents';
@@ -39,6 +42,7 @@ import type { AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
 import { isRequestKind } from '@/lib/attention';
 import { ROUND_UP_ROUTE, roundUpPath, roundUpSummary, shortPath, titleOf, type RoundUp } from '@/lib/round-ups';
+import { WORKBENCH_ROUTE } from '@/lib/workbench';
 
 const NO_AGENTS: AgentSummary[] = [];
 const NAV_KEY = 'kelpie.nav';
@@ -123,6 +127,9 @@ function EmptyState({ cwd }: { cwd: string | undefined }) {
 export function App() {
   const roundUpId = useMatch(ROUND_UP_ROUTE)?.params.roundUpId;
   const onApprovals = !!useMatch('/approvals');
+  const linkedCard = useMatch(WORKBENCH_ROUTE)?.params.cardId;
+  const onWorkbench = !!useMatch('/workbench') || !!linkedCard;
+  const onSettings = !!useMatch('/settings');
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const isMobile = useIsMobile();
@@ -176,9 +183,9 @@ export function App() {
   const waiting = allApprovals.length + unseen.filter((i) => !isRequestKind(i.kind)).length;
 
   useEffect(() => {
-    const title = roundUpId ? `${titleOf(current)} · kelpie` : 'kelpie';
+    const title = roundUpId ? `${titleOf(current)} · kelpie` : onWorkbench ? 'Workbench · kelpie' : 'kelpie';
     document.title = waiting ? `(${waiting}) ${title}` : title;
-  }, [roundUpId, current, waiting]);
+  }, [roundUpId, current, waiting, onWorkbench]);
   useEffect(() => setModelError(undefined), [roundUpId]);
 
   const changeModel = (next: string) => {
@@ -281,6 +288,10 @@ export function App() {
                   <ApprovalTray approvals={approvals} roundUpId={roundUpId} />
                 </div>
               </>
+            ) : onWorkbench ? (
+              <WorkbenchPage cardId={linkedCard} />
+            ) : onSettings ? (
+              <SettingsPage />
             ) : (
               <>
                 <ChatLog key={roundUpId ?? 'new'} id={roundUpId} content={items} className="min-h-0 flex-1">
@@ -335,6 +346,8 @@ export function App() {
           <AgentPaneSlot />
         </div>
         {reviewable && nav.full && <FullScreen roundUpId={roundUpId} roundUpTitle={titleOf(current)} which={nav.full} />}
+        {/* First run: until Claude Code is installed and signed in. Settings shows the same, so not there. */}
+        <HarnessSetupDialog hidden={onSettings} />
       </AgentPaneProvider>
     </TooltipProvider>
   );
