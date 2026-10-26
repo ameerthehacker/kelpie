@@ -30,12 +30,12 @@ export class SavedSettings {
   update(patch: unknown): Settings {
     const parsed = SettingsPatch.safeParse(patch);
     if (!parsed.success) throw new SettingsError(parsed.error.issues.map((i) => (i.code === 'unrecognized_keys' ? `unknown setting: ${i.keys.join(', ')}` : i.message)).join('; '));
-    if (!Object.keys(parsed.data).length) throw new SettingsError('nothing to change: send maxAgents');
+    if (!Object.keys(parsed.data).length) throw new SettingsError('nothing to change: send maxAgents or autoResume');
     const prev = this.current;
     this.store.setSettings(parsed.data);
-    const next = { ...prev };
-    for (const [key, v] of Object.entries(parsed.data) as [keyof Settings, number | null][]) next[key] = v ?? this.defaults[key];
-    this.current = next;
+    const next: Record<string, unknown> = { ...prev };
+    for (const [key, v] of Object.entries(parsed.data) as [keyof Settings, unknown][]) next[key] = v ?? this.defaults[key];
+    this.current = next as Settings;
     for (const listener of this.listeners) {
       try {
         listener(this.current, prev);
@@ -63,7 +63,7 @@ export class SavedSettings {
     const out = { ...this.defaults };
     for (const key of Object.keys(Settings.shape) as (keyof Settings)[]) {
       const v = Settings.shape[key].safeParse(saved[key]);
-      if (v.success) out[key] = v.data;
+      if (v.success) (out as Record<string, unknown>)[key] = v.data;
     }
     return out;
   }
