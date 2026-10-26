@@ -313,3 +313,95 @@ export const settings = sqliteTable('settings', {
   value: text('value').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
+
+/**
+ * The Workbench's cards: one per feature an orchestrator takes on (`create_card`), kept current by
+ * it (`update_card`). See `WorkbenchCard` in @kelpie/protocol for what Kelpie derives on top.
+ */
+export const workbenchCards = sqliteTable(
+  'workbench_cards',
+  {
+    id: text('id').primaryKey(),
+    roundUpId: text('round_up_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    stage: text('stage', { enum: ['blocked', 'building', 'review', 'ready', 'done'] }).notNull(),
+    callout: text('callout'),
+    /** The card's ticket chips (`CardTicket[]`), as JSON. */
+    tickets: text('tickets').notNull().default('[]'),
+    /** Set when the person removes it from the board; cleared when an update moves it to a stage other than done. */
+    archivedAt: integer('archived_at'),
+    /** When its stage became done; cleared when it leaves done. */
+    doneAt: integer('done_at'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [index('workbench_cards_round_up_idx').on(t.roundUpId)],
+);
+
+/** A card's deliverables, upserted by `key` (an agent's id for its writer item, or a name the orchestrator picks). */
+export const workbenchItems = sqliteTable(
+  'workbench_items',
+  {
+    cardId: text('card_id')
+      .notNull()
+      .references(() => workbenchCards.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    title: text('title').notNull(),
+    ref: text('ref'),
+    url: text('url'),
+    status: text('status', { enum: ['draft', 'checks', 'review', 'approved', 'merged', 'blocked', 'closed'] }).notNull(),
+    /** The round-up's agent behind it, when its key is one of their ids. */
+    agentId: text('agent_id').references(() => sessions.id, { onDelete: 'set null' }),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.cardId, t.key] }), index('workbench_items_agent_idx').on(t.agentId)],
+);
+
+/** What an agent says about its own work on the Workbench (`workbench_update`): one row per agent. */
+export const workbenchEntries = sqliteTable(
+  'workbench_entries',
+  {
+    sessionId: text('session_id')
+      .primaryKey()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    roundUpId: text('round_up_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    focus: text('focus'),
+    /** Files or areas it is touching (`string[]`), as JSON. */
+    claims: text('claims').notNull().default('[]'),
+    blocker: text('blocker'),
+    progress: text('progress'),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [index('workbench_entries_round_up_idx').on(t.roundUpId)],
+);
+
+/**
+ * Notes on the Workbench, from an agent, the orchestrator or the person (no sender), optionally to
+ * one agent or the orchestrator. One to someone is handed over with its next turn, or when it reads
+ * the board, whichever comes first (`deliveredAt`); a note never starts a turn by itself.
+ */
+export const workbenchNotes = sqliteTable(
+  'workbench_notes',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    roundUpId: text('round_up_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    /** The card it shows on, if the round-up had one. */
+    cardId: text('card_id').references(() => workbenchCards.id, { onDelete: 'set null' }),
+    /** Null: the person. */
+    fromId: text('from_id').references(() => sessions.id, { onDelete: 'set null' }),
+    fromTitle: text('from_title').notNull(),
+    toId: text('to_id').references(() => sessions.id, { onDelete: 'set null' }),
+    toTitle: text('to_title'),
+    body: text('body').notNull(),
+    createdAt: integer('created_at').notNull(),
+    deliveredAt: integer('delivered_at'),
+  },
+  (t) => [index('workbench_notes_round_up_idx').on(t.roundUpId, t.id), index('workbench_notes_to_idx').on(t.toId, t.deliveredAt)],
+);
