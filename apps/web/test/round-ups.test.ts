@@ -48,6 +48,8 @@ describe('round-up status', () => {
     expect(roundUpStatus(r({ id: 'top', busy: true }), [sub({ busy: true })], [{ roundUpId: 'top' }])).toBe('needs-approval');
     expect(roundUpStatus(top, [sub({ lastTurn: 'failed' })], [{ roundUpId: 'top' }])).toBe('needs-approval');
     expect(roundUpStatus(top, [], [{ roundUpId: 'other' }])).toBe('done');
+    // A question waiting is as much the person's as an approval.
+    expect(roundUpStatus(top, [sub({ busy: true })], [{ roundUpId: 'top', tool: 'AskUserQuestion', questions: [{ question: 'Which?', options: [] }] }] as never)).toBe('needs-approval');
   });
 
   it('shows a failed turn over work, unless that agent is trying again', () => {

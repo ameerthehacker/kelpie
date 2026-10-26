@@ -1,5 +1,711 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`fixture ask > matches the golden snapshot 1`] = `
+[
+  {
+    "data": {
+      "cwd": "/work/repo",
+      "harnessSessionId": "241af392-7b9e-4e56-94a9-5f7069cf712d",
+      "harnessVersion": "2.1.308",
+      "model": "claude-haiku-5-5",
+      "permissionMode": "acceptEdits",
+      "tools": [
+        "AskUserQuestion",
+      ],
+    },
+    "harness": "claude-code",
+    "id": "run:0",
+    "kind": "session.started",
+    "rawLine": 1,
+    "runId": "run",
+    "seq": 0,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "role": "user",
+      "sent": true,
+      "text": "Use AskUserQuestion to ask me one question, "Which color should the button be?", header "Color", options "Red" and "Blue", each with a short description. Then tell me in one line which color I picked.",
+    },
+    "harness": "claude-code",
+    "id": "run:1",
+    "kind": "message",
+    "rawLine": 2,
+    "runId": "run",
+    "seq": 1,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": true,
+    },
+    "harness": "claude-code",
+    "id": "run:2",
+    "kind": "activity",
+    "rawLine": 2,
+    "runId": "run",
+    "seq": 2,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "callId": "toolu_01XWRDKLPn16HHA2hgoiLySD",
+      "category": "other",
+      "input": {
+        "questions": [
+          {
+            "header": "Color",
+            "multiSelect": false,
+            "options": [
+              {
+                "description": "A bold, high-contrast red button.",
+                "label": "Red",
+              },
+              {
+                "description": "A calm, neutral blue button.",
+                "label": "Blue",
+              },
+            ],
+            "question": "Which color should the button be?",
+          },
+        ],
+      },
+      "name": "AskUserQuestion",
+      "title": "AskUserQuestion",
+    },
+    "harness": "claude-code",
+    "id": "run:3",
+    "kind": "tool.started",
+    "rawLine": 3,
+    "runId": "run",
+    "seq": 3,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "callId": "toolu_01XWRDKLPn16HHA2hgoiLySD",
+      "input": {
+        "questions": [
+          {
+            "header": "Color",
+            "multiSelect": false,
+            "options": [
+              {
+                "description": "A bold, high-contrast red button.",
+                "label": "Red",
+              },
+              {
+                "description": "A calm, neutral blue button.",
+                "label": "Blue",
+              },
+            ],
+            "question": "Which color should the button be?",
+          },
+        ],
+      },
+      "questions": [
+        {
+          "header": "Color",
+          "options": [
+            {
+              "description": "A bold, high-contrast red button.",
+              "label": "Red",
+            },
+            {
+              "description": "A calm, neutral blue button.",
+              "label": "Blue",
+            },
+          ],
+          "question": "Which color should the button be?",
+        },
+      ],
+      "requestId": "ce5e8ab2-8b9a-4dce-8af7-6dc2c66f2ba2",
+      "title": "Which color should the button be?",
+      "tool": "AskUserQuestion",
+    },
+    "harness": "claude-code",
+    "id": "run:4",
+    "kind": "permission.requested",
+    "rawLine": 4,
+    "runId": "run",
+    "seq": 4,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "callId": "toolu_01XWRDKLPn16HHA2hgoiLySD",
+      "name": "AskUserQuestion",
+      "ok": true,
+      "output": "Your questions have been answered: "Which color should the button be?"="Blue". You can now continue with these answers in mind.",
+      "truncated": false,
+    },
+    "harness": "claude-code",
+    "id": "run:5",
+    "kind": "tool.finished",
+    "rawLine": 6,
+    "runId": "run",
+    "seq": 5,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "resetsAt": "2026-10-25T16:30:00.000Z",
+      "status": "allowed",
+      "utilization": 0.81,
+      "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-25T16:30:00.000Z",
+          "utilization": 0.81,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.07,
+        },
+      },
+    },
+    "harness": "claude-code",
+    "id": "run:6",
+    "kind": "rate_limit",
+    "rawLine": 7,
+    "runId": "run",
+    "seq": 6,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "role": "assistant",
+      "text": "You picked Blue.",
+    },
+    "harness": "claude-code",
+    "id": "run:7",
+    "kind": "message",
+    "rawLine": 8,
+    "runId": "run",
+    "seq": 7,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "cacheReadTokens": 8066,
+      "cacheWriteTokens": 3429,
+      "costUsd": 0.0008418600000000002,
+      "inputTokens": 4,
+      "outputTokens": 150,
+    },
+    "harness": "claude-code",
+    "id": "run:8",
+    "kind": "usage",
+    "rawLine": 9,
+    "runId": "run",
+    "seq": 8,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "durationMs": 2841,
+      "numTurns": 2,
+      "resultText": "You picked Blue.",
+      "status": "completed",
+    },
+    "harness": "claude-code",
+    "id": "run:9",
+    "kind": "turn.ended",
+    "rawLine": 9,
+    "runId": "run",
+    "seq": 9,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": false,
+    },
+    "harness": "claude-code",
+    "id": "run:10",
+    "kind": "activity",
+    "rawLine": 9,
+    "runId": "run",
+    "seq": 10,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+]
+`;
+
+exports[`fixture ask-auto > matches the golden snapshot 1`] = `
+[
+  {
+    "data": {
+      "cwd": "/work/repo",
+      "harnessSessionId": "c5791797-604a-43ec-8643-1a53b2b90be8",
+      "harnessVersion": "2.1.308",
+      "model": "claude-haiku-5-5",
+      "permissionMode": "auto",
+      "tools": [
+        "AskUserQuestion",
+      ],
+    },
+    "harness": "claude-code",
+    "id": "run:0",
+    "kind": "session.started",
+    "rawLine": 1,
+    "runId": "run",
+    "seq": 0,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "role": "user",
+      "sent": true,
+      "text": "Use AskUserQuestion to ask me one question, "Which color should the button be?", header "Color", options "Red" and "Blue", each with a short description. Then tell me in one line which color I picked.",
+    },
+    "harness": "claude-code",
+    "id": "run:1",
+    "kind": "message",
+    "rawLine": 2,
+    "runId": "run",
+    "seq": 1,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": true,
+    },
+    "harness": "claude-code",
+    "id": "run:2",
+    "kind": "activity",
+    "rawLine": 2,
+    "runId": "run",
+    "seq": 2,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "callId": "toolu_01GokTEHTd2fepQWiNipFMkS",
+      "category": "other",
+      "input": {
+        "questions": [
+          {
+            "header": "Color",
+            "multiSelect": false,
+            "options": [
+              {
+                "description": "A bold, high-attention red button.",
+                "label": "Red",
+              },
+              {
+                "description": "A calm, neutral blue button.",
+                "label": "Blue",
+              },
+            ],
+            "question": "Which color should the button be?",
+          },
+        ],
+      },
+      "name": "AskUserQuestion",
+      "title": "AskUserQuestion",
+    },
+    "harness": "claude-code",
+    "id": "run:3",
+    "kind": "tool.started",
+    "rawLine": 3,
+    "runId": "run",
+    "seq": 3,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "callId": "toolu_01GokTEHTd2fepQWiNipFMkS",
+      "input": {
+        "questions": [
+          {
+            "header": "Color",
+            "multiSelect": false,
+            "options": [
+              {
+                "description": "A bold, high-attention red button.",
+                "label": "Red",
+              },
+              {
+                "description": "A calm, neutral blue button.",
+                "label": "Blue",
+              },
+            ],
+            "question": "Which color should the button be?",
+          },
+        ],
+      },
+      "questions": [
+        {
+          "header": "Color",
+          "options": [
+            {
+              "description": "A bold, high-attention red button.",
+              "label": "Red",
+            },
+            {
+              "description": "A calm, neutral blue button.",
+              "label": "Blue",
+            },
+          ],
+          "question": "Which color should the button be?",
+        },
+      ],
+      "requestId": "944dc56e-28d8-4dd6-9fcb-823247ddb43f",
+      "title": "Which color should the button be?",
+      "tool": "AskUserQuestion",
+    },
+    "harness": "claude-code",
+    "id": "run:4",
+    "kind": "permission.requested",
+    "rawLine": 4,
+    "runId": "run",
+    "seq": 4,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "callId": "toolu_01GokTEHTd2fepQWiNipFMkS",
+      "name": "AskUserQuestion",
+      "ok": true,
+      "output": "Your questions have been answered: "Which color should the button be?"="Blue". You can now continue with these answers in mind.",
+      "truncated": false,
+    },
+    "harness": "claude-code",
+    "id": "run:5",
+    "kind": "tool.finished",
+    "rawLine": 6,
+    "runId": "run",
+    "seq": 5,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "resetsAt": "2026-10-25T16:30:00.000Z",
+      "status": "allowed",
+      "utilization": 0.82,
+      "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-25T16:30:00.000Z",
+          "utilization": 0.82,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.07,
+        },
+      },
+    },
+    "harness": "claude-code",
+    "id": "run:6",
+    "kind": "rate_limit",
+    "rawLine": 7,
+    "runId": "run",
+    "seq": 6,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "role": "assistant",
+      "text": "You picked Blue.",
+    },
+    "harness": "claude-code",
+    "id": "run:7",
+    "kind": "message",
+    "rawLine": 8,
+    "runId": "run",
+    "seq": 7,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "cacheReadTokens": 8059,
+      "cacheWriteTokens": 3421,
+      "costUsd": 0.00083969,
+      "inputTokens": 4,
+      "outputTokens": 149,
+    },
+    "harness": "claude-code",
+    "id": "run:8",
+    "kind": "usage",
+    "rawLine": 9,
+    "runId": "run",
+    "seq": 8,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "durationMs": 4239,
+      "numTurns": 2,
+      "resultText": "You picked Blue.",
+      "status": "completed",
+    },
+    "harness": "claude-code",
+    "id": "run:9",
+    "kind": "turn.ended",
+    "rawLine": 9,
+    "runId": "run",
+    "seq": 9,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": false,
+    },
+    "harness": "claude-code",
+    "id": "run:10",
+    "kind": "activity",
+    "rawLine": 9,
+    "runId": "run",
+    "seq": 10,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+]
+`;
+
+exports[`fixture ask-skip > matches the golden snapshot 1`] = `
+[
+  {
+    "data": {
+      "cwd": "/work/repo",
+      "harnessSessionId": "bd342700-95ec-43a5-9df8-ce467093184c",
+      "harnessVersion": "2.1.308",
+      "model": "claude-haiku-5-5",
+      "permissionMode": "acceptEdits",
+      "tools": [
+        "AskUserQuestion",
+      ],
+    },
+    "harness": "claude-code",
+    "id": "run:0",
+    "kind": "session.started",
+    "rawLine": 1,
+    "runId": "run",
+    "seq": 0,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "role": "user",
+      "sent": true,
+      "text": "Use AskUserQuestion to ask me one question, "Which color should the button be?", header "Color", options "Red" and "Blue", each with a short description. If I do not answer, do not ask again; say so in one line.",
+    },
+    "harness": "claude-code",
+    "id": "run:1",
+    "kind": "message",
+    "rawLine": 2,
+    "runId": "run",
+    "seq": 1,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": true,
+    },
+    "harness": "claude-code",
+    "id": "run:2",
+    "kind": "activity",
+    "rawLine": 2,
+    "runId": "run",
+    "seq": 2,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "callId": "toolu_019F3wMggDr6W4T4MEHkpc2z",
+      "category": "other",
+      "input": {
+        "questions": [
+          {
+            "header": "Color",
+            "multiSelect": false,
+            "options": [
+              {
+                "description": "A bold, high-contrast red button.",
+                "label": "Red",
+              },
+              {
+                "description": "A calm, neutral blue button.",
+                "label": "Blue",
+              },
+            ],
+            "question": "Which color should the button be?",
+          },
+        ],
+      },
+      "name": "AskUserQuestion",
+      "title": "AskUserQuestion",
+    },
+    "harness": "claude-code",
+    "id": "run:3",
+    "kind": "tool.started",
+    "rawLine": 3,
+    "runId": "run",
+    "seq": 3,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "callId": "toolu_019F3wMggDr6W4T4MEHkpc2z",
+      "input": {
+        "questions": [
+          {
+            "header": "Color",
+            "multiSelect": false,
+            "options": [
+              {
+                "description": "A bold, high-contrast red button.",
+                "label": "Red",
+              },
+              {
+                "description": "A calm, neutral blue button.",
+                "label": "Blue",
+              },
+            ],
+            "question": "Which color should the button be?",
+          },
+        ],
+      },
+      "questions": [
+        {
+          "header": "Color",
+          "options": [
+            {
+              "description": "A bold, high-contrast red button.",
+              "label": "Red",
+            },
+            {
+              "description": "A calm, neutral blue button.",
+              "label": "Blue",
+            },
+          ],
+          "question": "Which color should the button be?",
+        },
+      ],
+      "requestId": "6539243c-91c2-4dcd-9508-58f4aba21321",
+      "title": "Which color should the button be?",
+      "tool": "AskUserQuestion",
+    },
+    "harness": "claude-code",
+    "id": "run:4",
+    "kind": "permission.requested",
+    "rawLine": 4,
+    "runId": "run",
+    "seq": 4,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "callId": "toolu_019F3wMggDr6W4T4MEHkpc2z",
+      "name": "AskUserQuestion",
+      "ok": false,
+      "output": "The person denied this.",
+      "truncated": false,
+    },
+    "harness": "claude-code",
+    "id": "run:5",
+    "kind": "tool.finished",
+    "rawLine": 6,
+    "runId": "run",
+    "seq": 5,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "resetsAt": "2026-10-25T16:30:00.000Z",
+      "status": "allowed",
+      "utilization": 0.81,
+      "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-25T16:30:00.000Z",
+          "utilization": 0.81,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.07,
+        },
+      },
+    },
+    "harness": "claude-code",
+    "id": "run:6",
+    "kind": "rate_limit",
+    "rawLine": 7,
+    "runId": "run",
+    "seq": 6,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "redacted": true,
+      "text": "",
+    },
+    "harness": "claude-code",
+    "id": "run:7",
+    "kind": "thinking",
+    "rawLine": 10,
+    "runId": "run",
+    "seq": 7,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "role": "assistant",
+      "text": "The question was declined, so I won't ask again and no color has been chosen.",
+    },
+    "harness": "claude-code",
+    "id": "run:8",
+    "kind": "message",
+    "rawLine": 11,
+    "runId": "run",
+    "seq": 8,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "cacheReadTokens": 8067,
+      "cacheWriteTokens": 3405,
+      "costUsd": 0.0008745700000000001,
+      "inputTokens": 4,
+      "outputTokens": 225,
+    },
+    "harness": "claude-code",
+    "id": "run:9",
+    "kind": "usage",
+    "rawLine": 12,
+    "runId": "run",
+    "seq": 9,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "durationMs": 2989,
+      "numTurns": 2,
+      "resultText": "The question was declined, so I won't ask again and no color has been chosen.",
+      "status": "completed",
+    },
+    "harness": "claude-code",
+    "id": "run:10",
+    "kind": "turn.ended",
+    "rawLine": 12,
+    "runId": "run",
+    "seq": 10,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": false,
+    },
+    "harness": "claude-code",
+    "id": "run:11",
+    "kind": "activity",
+    "rawLine": 12,
+    "runId": "run",
+    "seq": 11,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+]
+`;
+
 exports[`fixture background-agent > matches the golden snapshot 1`] = `
 [
   {
@@ -1575,6 +2281,7 @@ exports[`fixture permission > matches the golden snapshot 1`] = `
   },
   {
     "data": {
+      "callId": "toolu_01PmomrAuQ7NxsXyupaKKDPv",
       "input": {
         "command": "node -e "console.log(41+1)"",
         "description": "Run node command printing 41+1",
@@ -1773,6 +2480,7 @@ exports[`fixture permission-deny > matches the golden snapshot 1`] = `
   },
   {
     "data": {
+      "callId": "toolu_01ANy4ULCLrFPxtRKszpKsxM",
       "input": {
         "command": "node -e "console.log(41+1)"",
         "description": "Evaluate 41+1 with Node.js",
@@ -2263,6 +2971,7 @@ Run \`node -e "import('./src/math.js').then(m => console.log(m.sub(5, 3)))"\` an
   },
   {
     "data": {
+      "callId": "toolu_01VGnvXH1wU3HCV5bBaie8SX",
       "input": {
         "plan": "# Plan: add \`sub(a, b)\` to src/math.js
 
@@ -2556,6 +3265,7 @@ export function sub(a, b) {
   },
   {
     "data": {
+      "callId": "toolu_01RNRChRjSx3j4AYUCFQprkQ",
       "input": {
         "content": "export function add(a, b) {
   return a + b;

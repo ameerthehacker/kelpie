@@ -31,6 +31,7 @@ import { useRoundUps } from '@/hooks/use-round-ups';
 import { useSession } from '@/hooks/use-session';
 import type { AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
+import { isRequestKind } from '@/lib/attention';
 import { ROUND_UP_ROUTE, roundUpPath, roundUpSummary, shortPath, titleOf, type RoundUp } from '@/lib/round-ups';
 
 const NO_AGENTS: AgentSummary[] = [];
@@ -136,7 +137,7 @@ export function App() {
   // notified of while away (cleared as they come back).
   const unseen = useAttention();
   const allApprovals = useApprovals();
-  const waiting = allApprovals.length + unseen.filter((i) => i.kind !== 'approval' && i.kind !== 'plan').length;
+  const waiting = allApprovals.length + unseen.filter((i) => !isRequestKind(i.kind)).length;
 
   useEffect(() => {
     const title = roundUpId ? `${titleOf(current)} · kelpie` : 'kelpie';
@@ -256,7 +257,7 @@ export function App() {
                 <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
                   {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
                   {/* The plan sits outside the chat flow, always in view while agents work. */}
-                  {roundUpId && <ApprovalTray approvals={approvals} roundUpId={current?.role === 'agent' ? (current.parentId ?? roundUpId) : roundUpId} />}
+                  {roundUpId && <ApprovalTray approvals={approvals} roundUpId={current?.role === 'agent' ? (current.parentId ?? roundUpId) : roundUpId} inChat={roundUpId} />}
                   {agents?.length ? <PlanDock /> : <TodoDock todos={todos} />}
                   <Composer
                     status={status}

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openStore } from '@kelpie/store';
-import { createApp, DENIED, Orchestrator, SessionManager } from '../src/index.js';
+import { createApp, DENIED, Orchestrator, SessionManager, SKIPPED } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
 const FIXTURE = join(import.meta.dirname, '../../adapters/fixtures/claude-code/plain.jsonl');
@@ -157,6 +157,89 @@ describe('approvals', () => {
     expect(approved!.ok).toBe(true);
     expect(parent.mode).toBe('acceptEdits');
     await waitFor(() => jsonLines<{ behavior: string }>(ctx.answers).some((a) => a.behavior === 'allow'));
+  });
+
+  describe('questions', () => {
+    const QUESTION = 'Which color should the button be?';
+    const asking = () => setup(openStore(':memory:'), { FAKE_ASK_TOOL: 'AskUserQuestion', FAKE_ASK: QUESTION });
+
+    it('puts what an agent asks to the person, and hands their answers back to its harness', async () => {
+      const ctx = asking();
+      const parent = ctx.sessions.create();
+      await parent.send('Go');
+      const agent = ctx.sessions.get((await ctx.orch.spawn(parent, { title: 'Picker', task: 'pick', writes: false })).agentId)!;
+      // The orchestrator's own question comes to the person too, never to Kelpie's policy.
+      const pending = await waitFor(() => ctx.sessions.approvals(parent.id).length === 2 && ctx.sessions.approvals(parent.id));
+      const q = pending.find((p) => p.sessionId === agent.id)!;
+      expect(q).toMatchObject({
+        tool: 'AskUserQuestion',
+        title: QUESTION,
+        agentTitle: 'Picker',
+        questions: [{ question: QUESTION, header: 'Color', options: [{ label: 'Red', description: 'Bold' }, { label: 'Blue', description: 'Calm' }] }],
+      });
+      expect(q.rule).toBeUndefined();
+      expect(agent.summary().status).toBe('needs-approval');
+      // The orchestrator and its agents may ask.
+      const argv = jsonLines<string[]>(ctx.argsFile);
+      expect(argv.every((a) => a[a.indexOf('--tools') + 1]!.split(',').includes('AskUserQuestion'))).toBe(true);
+
+      const item = { sessionId: q.sessionId, requestId: q.requestId };
+      // A bare yes, or answers to something else, would tell the agent nothing.
+      expect((await ctx.sessions.answerApprovals({ items: [item], allow: true }))[0]).toMatchObject({ ok: false, error: /needs the answers/ });
+      expect((await ctx.sessions.answerApprovals({ items: [item], allow: true, answers: { 'Something else?': 'Red' } }))[0]).toMatchObject({ ok: false, error: /not one of the questions/ });
+      expect((await ctx.sessions.answerApprovals({ items: [item], allow: true, answers: { [QUESTION]: ['Red', 'Blue'] } }))[0]).toMatchObject({ ok: false, error: /takes one answer/ });
+
+      const [ok] = await ctx.sessions.answerApprovals({ items: [item], allow: true, answers: { [QUESTION]: 'Blue' } });
+      expect(ok!.ok).toBe(true);
+      const answer = await waitFor(() => jsonLines<{ behavior: string; updatedInput?: { answers?: unknown } }>(ctx.answers).find((a) => a.updatedInput?.answers));
+      expect(answer).toMatchObject({ behavior: 'allow', updatedInput: { questions: [{ question: QUESTION }], answers: { [QUESTION]: 'Blue' } } });
+      // The log keeps what was chosen, for the chat's summary of it.
+      const resolved = await waitFor(() => agent.events().find((e) => e.kind === 'permission.resolved'));
+      expect(resolved.kind === 'permission.resolved' && resolved.data).toMatchObject({ decision: 'allow', by: 'person', answers: { [QUESTION]: 'Blue' } });
+      await waitFor(() => ctx.sessions.approvals(parent.id).length === 1);
+      expect(ctx.sessions.approvals(parent.id).map((p) => p.sessionId)).toEqual([parent.id]);
+    });
+
+    it('takes answers over the API, one question at a time, and skips them with a deny', async () => {
+      const ctx = asking();
+      const parent = ctx.sessions.create();
+      await parent.send('Go');
+      const [q] = await waitFor(() => ctx.sessions.approvals(parent.id).length === 1 && ctx.sessions.approvals(parent.id));
+      const item = { sessionId: q!.sessionId, requestId: q!.requestId };
+      const post = (body: unknown) => ctx.app.request('/api/approvals', { method: 'POST', headers: { host: '127.0.0.1:7317', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      expect((await post({ items: [item], decision: 'allow', answers: { [QUESTION]: 3 } })).status).toBe(400);
+      expect((await post({ items: [item, item], decision: 'allow', answers: { [QUESTION]: 'Red' } })).status).toBe(400);
+      expect((await post({ items: [item], decision: 'deny', answers: { [QUESTION]: 'Red' } })).status).toBe(400);
+
+      const res = await post({ items: [item], decision: 'deny' });
+      expect(((await res.json()) as { results: { ok: boolean }[] }).results[0]!.ok).toBe(true);
+      const answer = await waitFor(() => jsonLines<{ behavior: string; message?: string }>(ctx.answers)[0]);
+      expect(answer).toEqual({ behavior: 'deny', message: SKIPPED });
+      await waitFor(() => ctx.sessions.approvals().length === 0);
+    });
+
+    it('lists questions again after a reconnect, and closes them when Kelpie restarts', async () => {
+      const store = openStore(':memory:');
+      const ctx = setup(store, { FAKE_ASK_TOOL: 'AskUserQuestion', FAKE_ASK: QUESTION });
+      const parent = ctx.sessions.create();
+      await parent.send('Go');
+      await waitFor(() => ctx.sessions.approvals(parent.id).length === 1);
+      // What a page that (re)connects is sent.
+      const res = await ctx.app.request('/api/approvals', { headers: { host: '127.0.0.1:7317' } });
+      expect(((await res.json()) as { approvals: unknown[] }).approvals).toMatchObject([{ tool: 'AskUserQuestion', questions: [{ question: QUESTION }] }]);
+      // Kelpie stops while it waits: the next start expires the question and resumes the round-up, whose harness asks again.
+      ctx.sessions.prepareShutdown();
+      await ctx.sessions.stopAll();
+      managers.splice(managers.indexOf(ctx.sessions), 1);
+      expect(parent.resumePending).toBe(true);
+      const logged = parent.events().filter((e) => e.kind === 'permission.requested');
+      expect(logged.map((e) => e.kind === 'permission.requested' && e.data.questions?.[0]?.question)).toEqual([QUESTION]);
+      const again = new SessionManager({ store, defaultCwd: tmpdir() });
+      managers.push(again);
+      const closed = again.get(parent.id)!.events().filter((e) => e.kind === 'permission.resolved');
+      expect(closed.map((e) => e.kind === 'permission.resolved' && e.data.by)).toEqual(['expired']);
+      expect(again.approvals()).toEqual([]);
+    });
   });
 
   it('checks a batch before answering any of it', async () => {

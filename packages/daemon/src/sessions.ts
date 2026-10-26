@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import { attachmentsBlock, mergeUsage, type Attachment, type EventOf, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
+import { attachmentsBlock, mergeUsage, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
 import { claudeCode, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary } from './agent-summary.js';
@@ -57,6 +57,8 @@ export interface PendingApproval {
   input: unknown;
   rule?: string;
   plan?: string;
+  /** Questions it puts to the person (AskUserQuestion), answered with `answers` rather than a yes. */
+  questions?: Question[];
   /** When it was asked (ISO). */
   ts: string;
 }
@@ -71,6 +73,29 @@ export interface ApprovalResult {
 
 /** The message an agent gets when the person says no without one. */
 export const DENIED = "The person declined this. Don't retry it or work around it; say in your report what you needed it for.";
+
+/** The message an agent gets when the person skips its questions. */
+export const SKIPPED =
+  "The person skipped these questions without answering. Don't ask them again; go with your best judgment, and say in your report what you assumed.";
+
+/**
+ * Why `answers` can't answer `questions`, or undefined if they can: every answer is to one of the
+ * questions, non-empty, and a list only for a multi-select one; at least one question is answered.
+ */
+export function answersError(questions: Question[], answers: Answers): string | undefined {
+  const byText = new Map(questions.map((q) => [q.question, q]));
+  const entries = Object.entries(answers);
+  if (!entries.length) return 'answer at least one of the questions';
+  for (const [text, answer] of entries) {
+    const q = byText.get(text);
+    if (!q) return `not one of the questions: ${text}`;
+    const parts = Array.isArray(answer) ? answer : [answer];
+    if (Array.isArray(answer) && !q.multiSelect) return `"${text}" takes one answer`;
+    if (!parts.length || parts.some((p) => typeof p !== 'string' || !p.trim() || p.length > 4000)) return `"${text}" needs an answer (at most 4000 characters each)`;
+    if (parts.length > q.options.length + 1) return `"${text}" has more answers than options`;
+  }
+  return undefined;
+}
 
 /** What the round-up list stream carries. */
 export type ManagerUpdate =
@@ -965,9 +990,17 @@ export class SessionManager {
    * The person's answer to a batch of approvals. Each is answered on its own: one already answered
    * or gone is reported, and the rest still go through. `remember` saves each one's rule for its
    * round-up, so its agents are no longer asked (and others asking the same now are answered too).
-   * `mode`, for a plan, takes the round-up out of plan mode as the plan is approved.
+   * `mode`, for a plan, takes the round-up out of plan mode as the plan is approved. Questions are
+   * allowed with `answers` (one at a time); denying them is the person skipping them.
    */
-  async answerApprovals(opts: { items: { sessionId: string; requestId: string }[]; allow: boolean; message?: string; remember?: boolean; mode?: Mode }): Promise<ApprovalResult[]> {
+  async answerApprovals(opts: {
+    items: { sessionId: string; requestId: string }[];
+    allow: boolean;
+    message?: string;
+    remember?: boolean;
+    mode?: Mode;
+    answers?: Answers;
+  }): Promise<ApprovalResult[]> {
     const results: ApprovalResult[] = [];
     const saved = new Map<string, Set<string>>();
     for (const { sessionId, requestId } of opts.items) {
@@ -987,10 +1020,21 @@ export class SessionManager {
         const roundUp = this.sessions.get(session.roundUpId);
         if (roundUp) await this.setMode(roundUp, opts.mode);
       }
+      // Questions take their answers: a bare yes would tell the agent the person said nothing.
+      const answers = pending.questions && opts.allow ? opts.answers : undefined;
+      if (pending.questions && opts.allow) {
+        const error = answers ? answersError(pending.questions, answers) : 'answering questions needs the answers';
+        if (error) {
+          results.push({ sessionId, requestId, ok: false, error });
+          continue;
+        }
+      }
       const rule = opts.allow && opts.remember && session.parentId ? pending.rule : undefined;
       const ok = session.answer(
         requestId,
-        opts.allow ? { allow: true, by: 'person', ...(rule ? { rules: [rule] } : {}) } : { allow: false, by: 'person', message: opts.message?.trim() || DENIED },
+        opts.allow
+          ? { allow: true, by: 'person', ...(rule ? { rules: [rule] } : {}), ...(answers ? { answers } : {}) }
+          : { allow: false, by: 'person', message: opts.message?.trim() || (pending.questions ? SKIPPED : DENIED) },
       );
       // Saved only once it went through: a rule for a request nobody was asking any more is not the person's choice.
       if (ok && rule) {

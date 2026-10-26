@@ -224,6 +224,55 @@ export const Other = ev(
   }),
 );
 
+/** One choice a structured question offers. */
+export const QuestionOption = z.object({
+  label: z.string(),
+  description: z.string().optional(),
+});
+export type QuestionOption = z.infer<typeof QuestionOption>;
+
+/**
+ * A structured question an agent puts to the person (Claude Code's AskUserQuestion): pick one
+ * option, or several with `multiSelect`; the person may always write their own answer instead.
+ */
+export const Question = z.object({
+  question: z.string(),
+  /** A short label for it ("Auth method"). */
+  header: z.string().optional(),
+  options: z.array(QuestionOption),
+  multiSelect: z.boolean().optional(),
+});
+export type Question = z.infer<typeof Question>;
+
+/**
+ * The person's answers to a set of questions, by question text: an option's label or their own
+ * words, and for a multi-select question a list of them.
+ */
+export const Answers = z.record(z.string(), z.union([z.string(), z.array(z.string())]));
+export type Answers = z.infer<typeof Answers>;
+
+/** The questions in an AskUserQuestion call's input, as far as they are well formed; undefined if none is. */
+export function questionsOf(input: unknown): Question[] | undefined {
+  const list = (input as { questions?: unknown } | null | undefined)?.questions;
+  const qs: Question[] = [];
+  for (const q of Array.isArray(list) ? (list as unknown[]) : []) {
+    const o = (q ?? {}) as Record<string, unknown>;
+    if (typeof o.question !== 'string') continue;
+    const options = (Array.isArray(o.options) ? (o.options as unknown[]) : []).flatMap((opt) => {
+      const x = (opt ?? {}) as Record<string, unknown>;
+      if (typeof x.label !== 'string') return [];
+      return [{ label: x.label, ...(typeof x.description === 'string' && x.description ? { description: x.description } : {}) }];
+    });
+    qs.push({
+      question: o.question,
+      ...(typeof o.header === 'string' && o.header ? { header: o.header } : {}),
+      options,
+      ...(o.multiSelect === true ? { multiSelect: true } : {}),
+    });
+  }
+  return qs.length ? qs : undefined;
+}
+
 /**
  * The harness asks before using a tool (accept-edits mode, or anything its rules don't cover). The
  * turn waits until it is answered: by the person, by Kelpie's own rules, or not at all (the process
@@ -237,6 +286,8 @@ export const PermissionRequested = ev(
     /** One line on what it wants to do: a command, a path, a URL. */
     title: z.string(),
     input: z.unknown(),
+    /** The tool call it is about, when the harness says. */
+    callId: z.string().optional(),
     /**
      * The permission rule that would allow this and requests like it, e.g. `Bash(pnpm install)`, as
      * the harness suggests it. Requests with the same rule are grouped, and answered together.
@@ -244,6 +295,8 @@ export const PermissionRequested = ev(
     rule: z.string().optional(),
     /** For a plan put to the person (ExitPlanMode): the plan, as markdown. */
     plan: z.string().optional(),
+    /** For questions put to the person (AskUserQuestion): what it asks. Allowing it takes their answers. */
+    questions: z.array(Question).optional(),
   }),
 );
 
@@ -255,6 +308,8 @@ export const PermissionResolved = ev(
     /** The person; Kelpie's rules (or a rule the person saved); or nobody: the run ended or the turn was cancelled. */
     by: z.enum(['person', 'kelpie', 'expired', 'cancelled']),
     message: z.string().optional(),
+    /** Questions the person answered: what they chose. A deny of questions is the person skipping them. */
+    answers: Answers.optional(),
   }),
 );
 

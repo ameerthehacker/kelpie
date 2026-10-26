@@ -1,4 +1,4 @@
-import type { EventData, EventKind, KelpieEvent, TodoItem, UsageWindow } from '@kelpie/protocol';
+import { questionsOf, type EventData, type EventKind, type KelpieEvent, type TodoItem, type UsageWindow } from '@kelpie/protocol';
 import { applyTodoTool, fileDelta, flattenContent, toolCategory, toolTitle } from './tools.js';
 
 type Obj = Record<string, any>;
@@ -157,11 +157,35 @@ export class ClaudeCodeParser {
     const tool = String(req.tool_name ?? '');
     const input: Obj = req.input ?? {};
     this.permissions.set(requestId, input);
-    const rule = suggestedRule(req.permission_suggestions);
+    const questions = tool === 'AskUserQuestion' ? questionsOf(input) : undefined;
+    // A question is the person's to answer each time: never a rule to allow by.
+    const rule = questions ? undefined : suggestedRule(req.permission_suggestions);
     // The plan is in the call, or (when the model wrote it out first) its latest message.
     const plan = tool === 'ExitPlanMode' ? (typeof input.plan === 'string' && input.plan.trim() ? input.plan : this.lastText) || undefined : undefined;
-    const title = tool === 'ExitPlanMode' ? 'Approve the plan' : toolTitle(tool, input, this.cwd) || String(req.description ?? tool);
-    return [this.emit('permission.requested', { requestId, tool, title, input, ...(rule ? { rule } : {}), ...(plan ? { plan } : {}) }, x)];
+    const title =
+      tool === 'ExitPlanMode'
+        ? 'Approve the plan'
+        : questions
+          ? questions.length === 1
+            ? questions[0]!.question
+            : `Answer ${questions.length} questions`
+          : toolTitle(tool, input, this.cwd) || String(req.description ?? tool);
+    return [
+      this.emit(
+        'permission.requested',
+        {
+          requestId,
+          tool,
+          title,
+          input,
+          ...(typeof req.tool_use_id === 'string' ? { callId: req.tool_use_id } : {}),
+          ...(rule ? { rule } : {}),
+          ...(plan ? { plan } : {}),
+          ...(questions ? { questions } : {}),
+        },
+        x,
+      ),
+    ];
   }
 
   private system(o: Obj, x: EmitExtra): KelpieEvent[] {

@@ -9,7 +9,9 @@
 // each later turn too (echo, "ok", result), and FAKE_STDIN_FILE gets a line of JSON
 // { resume, text } per user turn received. FAKE_ASK=<command> asks permission to run that Bash
 // command (can_use_tool) before the first turn's output, and goes on once answered; FAKE_ANSWER_FILE
-// gets a line of JSON per answer. FAKE_ASK_TOOL=ExitPlanMode asks to put FAKE_ASK as a plan instead.
+// gets a line of JSON per answer. FAKE_ASK_TOOL=ExitPlanMode asks to put FAKE_ASK as a plan instead;
+// FAKE_ASK_TOOL=AskUserQuestion asks FAKE_ASK as a question (options "Red" and "Blue"), or FAKE_ASK_INPUT's
+// questions (the tool's input, as JSON) if set.
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -53,10 +55,14 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (process.env.FAKE_ASK && !hang) {
       const command = process.env.FAKE_ASK;
       asking = true;
+      const tool = process.env.FAKE_ASK_TOOL;
+      const question = { question: command, header: 'Color', options: [{ label: 'Red', description: 'Bold' }, { label: 'Blue', description: 'Calm' }], multiSelect: false };
       const request =
-        process.env.FAKE_ASK_TOOL === 'ExitPlanMode'
+        tool === 'ExitPlanMode'
           ? { subtype: 'can_use_tool', tool_name: 'ExitPlanMode', input: { plan: command } }
-          : { subtype: 'can_use_tool', tool_name: 'Bash', input: { command }, permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: command }], behavior: 'allow', destination: 'localSettings' }] };
+          : tool === 'AskUserQuestion'
+            ? { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', input: process.env.FAKE_ASK_INPUT ? JSON.parse(process.env.FAKE_ASK_INPUT) : { questions: [question] }, requires_user_interaction: true }
+            : { subtype: 'can_use_tool', tool_name: 'Bash', input: { command }, permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: command }], behavior: 'allow', destination: 'localSettings' }] };
       out({ type: 'control_request', request_id: ASK_ID, request });
     } else if (hang) {
       lines.filter((l) => !l.includes('"type":"result"')).slice(0, 3).forEach(out);

@@ -32,6 +32,8 @@ export const DEFAULT_TOOLS = [
   'TaskUpdate',
   'TaskList',
   'TaskGet',
+  // Structured questions for the person; they come to us as permission requests and wait for the answers.
+  'AskUserQuestion',
 ];
 
 const STDERR_TAIL = 8 * 1024;
@@ -143,12 +145,18 @@ class ClaudeCodeRun implements Run {
   answer(requestId: string, answer: PermissionAnswer): boolean {
     const input = this.parser.permissionInput(requestId);
     if (!input || this.exit || this.stopping) return false;
+    // A question's answers go back as part of its input, which is how the CLI hands them to the tool.
+    const updatedInput = answer.allow && answer.answers ? { ...input, answers: answer.answers } : input;
     const response = answer.allow
-      ? { behavior: 'allow', updatedInput: input, ...(answer.rules?.length ? { updatedPermissions: [{ type: 'addRules', rules: answer.rules.map(ruleParts), behavior: 'allow', destination: 'session' }] } : {}) }
+      ? { behavior: 'allow', updatedInput, ...(answer.rules?.length ? { updatedPermissions: [{ type: 'addRules', rules: answer.rules.map(ruleParts), behavior: 'allow', destination: 'session' }] } : {}) }
       : { behavior: 'deny', message: answer.message };
     this.child.stdin.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response } }) + '\n');
     this.parser
-      .noteAnswered(requestId, { decision: answer.allow ? 'allow' : 'deny', by: answer.by, ...(answer.allow ? {} : { message: answer.message }) })
+      .noteAnswered(requestId, {
+        decision: answer.allow ? 'allow' : 'deny',
+        by: answer.by,
+        ...(answer.allow ? (answer.answers ? { answers: answer.answers } : {}) : { message: answer.message }),
+      })
       .forEach((ev) => this.emit(ev));
     return true;
   }
