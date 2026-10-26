@@ -16,6 +16,7 @@ import { harnessOf } from '@/lib/harnesses';
 import { relativeTime, roundUpPath, statusLine, titleOf, type RoundUp } from '@/lib/round-ups';
 import { GROUP_LABEL, type PlanGroup } from '@/lib/status';
 import { metersOf } from '@/lib/usage';
+import { pausedStatus } from '@/lib/limits';
 import { needsYouTotal } from '@/lib/workbench';
 import { cn } from '@/lib/utils';
 import { KelpieLogo, Wordmark } from './brand';
@@ -50,6 +51,8 @@ function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, wait
       ? `${GROUP_LABEL[status]} · ${waiting} waiting`
       : status === 'working'
         ? GROUP_LABEL[status]
+        : status === 'paused' && roundUp.limited
+          ? pausedStatus(roundUp.limited, now)
         : status
           ? `${GROUP_LABEL[status]} · ${relativeTime(roundUp.updatedAt, now)}`
           : statusLine(roundUp, now).text;

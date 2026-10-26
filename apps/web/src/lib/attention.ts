@@ -1,4 +1,5 @@
 import { isPlan, isQuestion, type PendingApproval } from './approvals.js';
+import { clock } from './limits.js';
 import { roundUpPath, titleOf as roundUpTitle, type RoundUp } from './round-ups.js';
 
 /**
@@ -37,9 +38,26 @@ export function parseSettings(raw: string | null): AttentionSettings {
   }
 }
 
-/** In priority order: what a mixed bundle leads with and where clicking it goes. */
-export const ATTENTION_KINDS = ['approval', 'question', 'plan', 'failed', 'reply', 'finished'] as const;
+/**
+ * In priority order: what a mixed bundle leads with and where clicking it goes. Of the usage limit:
+ * `gave-up`, Kelpie stopped resuming work on its own and it needs the person; `paused`, work stopped
+ * at the limit and Kelpie will resume it; `resumed`, it picked up again.
+ */
+export const ATTENTION_KINDS = ['approval', 'question', 'plan', 'gave-up', 'failed', 'paused', 'reply', 'finished', 'resumed'] as const;
 export type AttentionKind = (typeof ATTENTION_KINDS)[number];
+
+/**
+ * How a bundle is put to the person. `alert`: a banner and the chime (within the cooldown). `quiet`:
+ * a notification, never the chime: work paused at the limit needs nothing of them, maybe at night.
+ * `update`: only an update of a notification already showing (a resume): nothing new appears.
+ */
+export type Loudness = 'alert' | 'quiet' | 'update';
+
+/** The loudness a bundle of `kinds` calls for: its loudest. */
+export function loudness(kinds: readonly AttentionKind[]): Loudness {
+  if (kinds.some((k) => k !== 'paused' && k !== 'resumed')) return 'alert';
+  return kinds.includes('paused') ? 'quiet' : 'update';
+}
 
 export interface Attention {
   kind: AttentionKind;
@@ -49,6 +67,8 @@ export interface Attention {
   who: string;
   /** One per thing: the same thing again replaces it rather than counting twice. */
   key: string;
+  /** For `paused`: when Kelpie resumes it (epoch ms), if it will on its own. */
+  until?: number;
 }
 
 /** Close-together things are bundled: a window opens with the first and closes this long after. */
@@ -56,7 +76,7 @@ export const BUNDLE_MS = 3_000;
 /** A banner and the chime at most this often; bundles in between update the notification quietly. */
 export const ALERT_COOLDOWN_MS = 30_000;
 
-type SessionLike = Pick<RoundUp, 'id' | 'title' | 'busy' | 'lastTurn' | 'parentId'>;
+type SessionLike = Pick<RoundUp, 'id' | 'title' | 'busy' | 'lastTurn' | 'parentId' | 'limited'>;
 
 /**
  * A session's turn that has just ended, from two consecutive updates: busy, then not. The daemon
@@ -82,13 +102,18 @@ export function fullyIdle(roundUpId: string, sessions: Iterable<SessionLike>): b
  * What a session update asks of the person. Kelpie's finished turn is a reply to them if `idle`
  * (its round-up has gone fully idle, see `fullyIdle`); turns in between — "I've started 5 agents",
  * one agent's report while others work — are not. A sub-agent finishing is not either — Kelpie
- * hears of it and rolls it up — unless they asked for every agent. Failures always are.
+ * hears of it and rolls it up — unless they asked for every agent. Failures always are. A turn that
+ * stopped at the usage limit is no failure: work paused (once per pause, its `since`), and a paused
+ * session picking up again is news too, both quietly. Kelpie giving up on resuming it needs the person.
  */
 export function classifySession(prev: SessionLike | undefined, next: SessionLike, level: AttentionLevel, idle: boolean): Attention | undefined {
-  const ended = endedTurn(prev, next);
-  if (!ended) return undefined;
   const top = !next.parentId;
   const base = { roundUpId: next.parentId ?? next.id, sessionId: next.id, who: top ? 'Kelpie' : next.title || 'An agent' };
+  if (prev?.limited && !next.limited && next.busy) return { ...base, kind: 'resumed', key: `resumed:${next.id}:${prev.limited.since}` };
+  if (next.limited?.gaveUp && !prev?.limited?.gaveUp) return { ...base, kind: 'gave-up', key: `gave-up:${next.id}:${next.limited.since}` };
+  const ended = endedTurn(prev, next);
+  if (!ended) return undefined;
+  if (ended === 'failed' && next.limited) return { ...base, kind: 'paused', key: `paused:${next.id}:${next.limited.since}`, ...(next.limited.retryAt ? { until: next.limited.retryAt } : {}) };
   if (ended === 'failed') return { ...base, kind: 'failed', key: `failed:${next.id}` };
   if (top) return idle ? { ...base, kind: 'reply', key: `reply:${next.id}` } : undefined;
   return level === 'all' ? { ...base, kind: 'finished', key: `finished:${next.id}` } : undefined;
@@ -146,6 +171,11 @@ export function summarize(items: readonly Attention[], titleOf: (roundUpId: stri
   }
   const plans = of('plan');
   if (plans.length) lines.push(plural(plans.length, 'A plan is ready for review', `${plans.length} plans are ready for review`));
+  const gaveUp = of('gave-up');
+  if (gaveUp.length) {
+    const n = distinct(gaveUp, (i) => i.sessionId);
+    lines.push(n === 1 ? `${gaveUp[0]!.who} is still at the usage limit: resume it when you can` : `${n} agents are still at the usage limit: resume them when you can`);
+  }
   const failed = of('failed');
   if (failed.length) {
     const f = failed[0]!;
@@ -158,12 +188,25 @@ export function summarize(items: readonly Attention[], titleOf: (roundUpId: stri
   }
   const finished = of('finished');
   if (finished.length) lines.push(finished.length === 1 ? `${finished[0]!.who} finished` : `${finished.length} agents finished`);
+  const paused = of('paused');
+  if (paused.length) {
+    const who = distinct(paused, (i) => i.sessionId) === 1 && paused[0]!.who !== 'Kelpie' ? `${paused[0]!.who} paused` : 'Paused';
+    const at = paused.map((i) => i.until).filter((t): t is number => !!t).sort((a, b) => a - b)[0];
+    lines.push(at ? `${who} until ${clock(at, Date.now())} · Kelpie will resume automatically` : `${who} at the usage limit`);
+  }
+  const resumed = of('resumed');
+  if (resumed.length) {
+    const n = distinct(resumed, (i) => i.sessionId);
+    lines.push(n === 1 ? `${resumed[0]!.who} resumed after the usage limit` : `${n} agents resumed after the usage limit`);
+  }
 
   const lead = ATTENTION_KINDS.map(of).find((list) => list.length)!;
   const queued = lead[0]!.kind === 'approval' || lead[0]!.kind === 'question';
   const path = queued && distinct(lead, (i) => i.roundUpId) > 1 ? '/approvals' : roundUpPath(lead[0]!.roundUpId);
+  // Only work waiting on the usage limit: nothing for the person to do.
+  const waitingOnLimit = items.every((i) => i.kind === 'paused' || i.kind === 'resumed');
   return {
-    title: one ? titleOf(roundUps[0]!) : `${roundUps.length} round-ups need you`,
+    title: one ? titleOf(roundUps[0]!) : `${roundUps.length} round-ups${waitingOnLimit ? '' : ' need you'}`,
     body: lines.join(' · '),
     path,
   };
@@ -232,12 +275,17 @@ export function createAttention(opts: AttentionOptions): AttentionTracker {
   // Kelpie (or an agent) started again within the bundle window: the reply was one in between.
   const settled = (i: Attention) => i.kind !== 'reply' || fullyIdle(i.roundUpId, known.values());
 
-  /** Puts everything unseen to the person: a banner and the chime, or a quiet update inside the cooldown. */
-  const notify = () => {
+  /**
+   * Puts everything unseen to the person: a banner and the chime, or a quiet update inside the
+   * cooldown. Quiet news (see `Loudness`) never chimes, and leaves the cooldown be.
+   */
+  const notify = (how: Loudness = 'alert') => {
     for (const [k, i] of unseen) if (!live(i)) unseen.delete(k);
     changed();
     const summary = summarize(unseenList, titleOf);
     if (!summary) return;
+    if (how === 'update') return (opts.showing?.() ?? true) ? opts.deliver({ summary, alert: false }) : undefined;
+    if (how === 'quiet') return opts.deliver({ summary, alert: false });
     const t = Date.now();
     const wait = lastAlert + ALERT_COOLDOWN_MS - t;
     if (wait <= 0) {
@@ -259,13 +307,18 @@ export function createAttention(opts: AttentionOptions): AttentionTracker {
     bundle = [];
     if (!fresh.length || !opts.away()) return;
     for (const i of fresh) unseen.set(i.key, i);
-    notify();
+    notify(loudness(fresh.map((i) => i.kind)));
   };
 
+  /** Pauses (and give-ups) already put to the person, by key: a session limited again keeps its pause, and is not news twice. */
+  const told = new Set<string>();
+  const once = (i: Attention) => i.kind === 'paused' || i.kind === 'gave-up';
   const add = (items: Attention[]) => {
     const { enabled } = opts.settings();
-    if (!enabled || !items.length) return;
-    bundle.push(...items);
+    const fresh = items.filter((i) => !once(i) || !told.has(i.key));
+    if (!enabled || !fresh.length) return;
+    for (const i of fresh) if (once(i)) told.add(i.key);
+    bundle.push(...fresh);
     timer ??= setTimeout(flush, BUNDLE_MS);
   };
 

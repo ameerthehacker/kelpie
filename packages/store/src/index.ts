@@ -35,6 +35,8 @@ export {
   type ThreadStatus,
   type TicketRow,
   type TicketSource,
+  type NewUsageLimit,
+  type UsageLimitRow,
   type WorktreePatch,
   type WorktreeRow,
 } from './store.js';

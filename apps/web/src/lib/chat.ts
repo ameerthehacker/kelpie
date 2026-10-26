@@ -1,4 +1,4 @@
-import { questionsOf, stripAttachments, stripTicketsNote, type AgentUpdate, type Answers, type Attachment, type EventOf, type KelpieEvent, type Question, type TodoItem, type ToolCategory } from '@kelpie/protocol';
+import { questionsOf, stripAttachments, stripTicketsNote, type AgentUpdate, type Answers, type Attachment, type EventOf, type KelpieEvent, type Question, type TodoItem, type ToolCategory, type TurnLimit } from '@kelpie/protocol';
 
 export interface ToolView {
   type: 'tool';
@@ -29,7 +29,11 @@ export type AssistantPart =
   /** A plan put to the person (ExitPlanMode), and what became of it. */
   | PlanView
   /** Questions put to the person (AskUserQuestion), and their answers. */
-  | QuestionView;
+  | QuestionView
+  /** A turn that stopped at the usage limit (not a failure), and when Kelpie was to pick it up; the harness's words in `message`. */
+  | { type: 'limit'; limit: TurnLimit; message: string; ts: string }
+  /** Kelpie picked the work up again after the usage limit reset. */
+  | { type: 'resumed'; ts: string };
 
 export interface QuestionView {
   type: 'question';
@@ -185,7 +189,8 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
     switch (ev.kind) {
       case 'message':
         // Turns Kelpie sent itself (notifications, restarts) are not the person speaking.
-        if (ev.data.role === 'user' && fromKelpie(ev.data)) assistant(ev.id).push(...kelpieTurn(ev.data, ev.ts));
+        if (ev.data.role === 'user' && fromKelpie(ev.data) && ev.data.resumed === 'limit') assistant(ev.id).push({ type: 'resumed', ts: ev.ts });
+        else if (ev.data.role === 'user' && fromKelpie(ev.data)) assistant(ev.id).push(...kelpieTurn(ev.data, ev.ts));
         else if (ev.data.role === 'user')
           items.push({
             role: 'user',
@@ -273,6 +278,14 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
         break;
       }
       case 'turn.ended':
+        if (ev.data.limit) {
+          // The harness's own message ("You've hit your session limit · resets 6pm") is what the line says better.
+          const parts = assistant(ev.id);
+          const last = parts.at(-1);
+          if (last?.type === 'text' && last.text.trim() === ev.data.error?.trim()) parts.pop();
+          parts.push({ type: 'limit', limit: ev.data.limit, message: ev.data.error ?? '', ts: ev.ts });
+          break;
+        }
         if (ev.data.status === 'failed') assistant(ev.id).push({ type: 'notice', tone: 'error', text: ev.data.error ?? 'The turn failed.', ts: ev.ts });
         if (ev.data.status === 'interrupted') assistant(ev.id).push({ type: 'notice', tone: 'info', text: 'Interrupted.', ts: ev.ts });
         break;

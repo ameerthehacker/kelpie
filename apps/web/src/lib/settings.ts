@@ -47,6 +47,7 @@ export function saveSettingsOptions(queryClient: QueryClient): MutationOptions<S
       await queryClient.cancelQueries({ queryKey: SETTINGS });
       const before = queryClient.getQueryData<SettingsWithLimits>(SETTINGS);
       if (before && 'maxAgents' in patch) queryClient.setQueryData<SettingsWithLimits>(SETTINGS, { ...before, maxAgents: patch.maxAgents ?? defaultAgents(before) });
+      if (before && 'autoResume' in patch) queryClient.setQueryData<SettingsWithLimits>(SETTINGS, (s) => s && { ...s, autoResume: patch.autoResume ?? true });
       return { before };
     },
     onError: (_err, _patch, context) => {

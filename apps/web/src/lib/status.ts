@@ -5,13 +5,14 @@ import type { RoundUp } from './round-ups.js';
 /**
  * Where an agent sits in the plan, and so what its round-up's dot shows. `needs-you`: waiting on
  * the person (an approval, a question or a plan). `to-merge`: finished, but its branch still waits
- * to be mustered, so not done yet. `stopped`: interrupted, never finished a turn, or failed in a way
- * the orchestrator has since moved on from. Mustered, standalone and read-only agents that finished are `done`.
+ * to be mustered, so not done yet. `paused`: stopped at the usage limit, until Kelpie resumes it after the
+ * reset (not a failure). `stopped`: interrupted, never finished a turn, or failed in a way the
+ * orchestrator has since moved on from. Mustered, standalone and read-only agents that finished are `done`.
  */
-export type PlanGroup = 'needs-you' | 'failed' | 'working' | 'to-merge' | 'stopped' | 'done';
+export type PlanGroup = 'needs-you' | 'failed' | 'working' | 'paused' | 'to-merge' | 'stopped' | 'done';
 
 /** Most urgent first. */
-export const GROUP_ORDER: PlanGroup[] = ['needs-you', 'failed', 'working', 'to-merge', 'stopped', 'done'];
+export const GROUP_ORDER: PlanGroup[] = ['needs-you', 'failed', 'working', 'paused', 'to-merge', 'stopped', 'done'];
 const RANK = Object.fromEntries(GROUP_ORDER.map((g, i) => [g, i])) as Record<PlanGroup, number>;
 export const groupRank = (g: PlanGroup) => RANK[g];
 
@@ -20,6 +21,7 @@ export const GROUP_LABEL: Record<PlanGroup, string> = {
   'needs-you': 'Needs you',
   failed: 'Failed',
   working: 'Working',
+  paused: 'Paused',
   'to-merge': 'Ready to merge',
   stopped: 'Stopped',
   done: 'Done',
@@ -52,6 +54,8 @@ export function planGroup(a: Placed, settledAt?: number): PlanGroup {
       return settledAt !== undefined && a.updatedAt <= settledAt ? 'stopped' : 'failed';
     case 'working':
       return 'working';
+    case 'paused':
+      return 'paused';
     case 'stopped':
     case 'idle':
       return 'stopped';
@@ -67,11 +71,12 @@ export const mostUrgent = (groups: Iterable<PlanGroup>): PlanGroup | undefined =
   return top;
 };
 
-type StatusSession = Pick<RoundUp, 'id' | 'busy' | 'lastTurn' | 'parentId' | 'updatedAt' | 'kind' | 'branch' | 'deliver' | 'worktree'>;
+type StatusSession = Pick<RoundUp, 'id' | 'busy' | 'lastTurn' | 'parentId' | 'updatedAt' | 'kind' | 'branch' | 'deliver' | 'worktree' | 'limited'>;
 
 /** A session's status as an agent's (as the daemon's AgentSummary works it out); undefined until it has run. */
-export function sessionStatus(s: Pick<RoundUp, 'busy' | 'lastTurn'>, asking: boolean): AgentStatus | undefined {
+export function sessionStatus(s: Pick<RoundUp, 'busy' | 'lastTurn' | 'limited'>, asking: boolean): AgentStatus | undefined {
   if (s.busy) return asking ? 'needs-approval' : 'working';
+  if (s.limited) return 'paused';
   switch (s.lastTurn) {
     case 'completed':
       return 'done';

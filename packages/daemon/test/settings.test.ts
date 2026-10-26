@@ -43,14 +43,14 @@ describe('settings', () => {
     let store = openStore(db);
     expect(store.settings()).toEqual({});
     const first = new SavedSettings(store);
-    expect(first.get()).toEqual({ maxAgents: 4 });
-    expect(first.update({ maxAgents: 9 })).toEqual({ maxAgents: 9 });
+    expect(first.get()).toEqual({ maxAgents: 4, autoResume: true });
+    expect(first.update({ maxAgents: 9 })).toEqual({ maxAgents: 9, autoResume: true });
     store.close();
     store = openStore(db);
     expect(store.settings()).toEqual({ maxAgents: 9 });
-    expect(new SavedSettings(store).get()).toEqual({ maxAgents: 9 });
+    expect(new SavedSettings(store).get()).toEqual({ maxAgents: 9, autoResume: true });
     // A saved setting wins over the one Kelpie was started with (KELPIE_MAX_AGENTS).
-    expect(new SavedSettings(store, { maxAgents: 2 }).get()).toEqual({ maxAgents: 9 });
+    expect(new SavedSettings(store, { maxAgents: 2 }).get()).toEqual({ maxAgents: 9, autoResume: true });
     store.close();
   });
 
@@ -76,10 +76,10 @@ describe('settings', () => {
     expect(() => settings.update({})).toThrow('nothing to change');
     expect(() => settings.update(null)).toThrow();
     expect(() => settings.update({ maxAgents: undefined, extra: null })).toThrow('unknown setting: extra');
-    expect(settings.get()).toEqual({ maxAgents: 4 });
+    expect(settings.get()).toEqual({ maxAgents: 4, autoResume: true });
     expect(changed).not.toHaveBeenCalled();
     settings.update({ maxAgents: 16 });
-    expect(changed).toHaveBeenCalledWith({ maxAgents: 16 }, { maxAgents: 4 });
+    expect(changed).toHaveBeenCalledWith({ maxAgents: 16, autoResume: true }, { maxAgents: 4, autoResume: true });
   });
 
   it('forgets a saved limit on null, so the default (KELPIE_MAX_AGENTS) applies again', () => {
@@ -87,7 +87,7 @@ describe('settings', () => {
     const settings = new SavedSettings(store, { maxAgents: 6 });
     settings.update({ maxAgents: 2 });
     expect(store.settings()).toEqual({ maxAgents: 2 });
-    expect(settings.update({ maxAgents: null })).toEqual({ maxAgents: 6 });
+    expect(settings.update({ maxAgents: null })).toEqual({ maxAgents: 6, autoResume: true });
     expect(store.settings()).toEqual({});
     expect(new SavedSettings(store, { maxAgents: 9 }).get().maxAgents).toBe(9);
   });
@@ -96,7 +96,7 @@ describe('settings', () => {
     const ctx = start(undefined, 3);
     const got = await ctx.app.request('/api/settings', { headers: LOCAL });
     // The default a reset puts back is the one Kelpie was started with.
-    expect(await got.json()).toEqual({ maxAgents: 3, limits: { maxAgents: { min: 1, max: 16, default: 3 } } });
+    expect(await got.json()).toEqual({ maxAgents: 3, autoResume: true, limits: { maxAgents: { min: 1, max: 16, default: 3 } } });
 
     const ok = await put(ctx.app, JSON.stringify({ maxAgents: 8 }));
     expect(ok.status).toBe(200);
@@ -110,7 +110,8 @@ describe('settings', () => {
       [{ maxAgents: 1.5 }, 'maxAgents must be a whole number'],
       [{ maxAgents: '5' }, 'maxAgents must be a whole number'],
       [{ other: 1 }, 'unknown setting: other'],
-      [{}, 'nothing to change: send maxAgents'],
+      [{}, 'nothing to change: send maxAgents or autoResume'],
+      [{ autoResume: 'yes' }, 'autoResume must be true or false'],
     ] as const) {
       const res = await put(ctx.app, JSON.stringify(body));
       expect(res.status).toBe(400);
@@ -138,9 +139,11 @@ describe('settings', () => {
         text += new TextDecoder().decode(value);
       }
     })();
-    await waitFor(() => text.includes('event: settings\ndata: {"maxAgents":4}'));
+    await waitFor(() => text.includes('event: settings\ndata: {"maxAgents":4,"autoResume":true}'));
     await put(ctx.app, JSON.stringify({ maxAgents: 12 }));
-    await waitFor(() => text.includes('event: settings\ndata: {"maxAgents":12}'));
+    await waitFor(() => text.includes('event: settings\ndata: {"maxAgents":12,"autoResume":true}'));
+    await put(ctx.app, JSON.stringify({ autoResume: false }));
+    await waitFor(() => text.includes('event: settings\ndata: {"maxAgents":12,"autoResume":false}'));
     await reader.cancel();
     await pump.catch(() => {});
   });

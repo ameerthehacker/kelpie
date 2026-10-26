@@ -9,6 +9,7 @@ import { QuestionCard } from '@/components/chat/question-card';
 import { StepGroup } from '@/components/chat/steps';
 import { useChangesNav } from '@/hooks/use-changes-nav';
 import type { AssistantPart, SpawnView, ToolView } from '@/lib/chat';
+import { LimitLine, ResumedLine } from './limit-banner';
 
 type Block = Exclude<AssistantPart, ToolView | SpawnView> | { type: 'tools'; tools: ToolView[] } | { type: 'spawns'; spawns: SpawnView[] };
 
@@ -78,6 +79,10 @@ function BlockView({
       return <PlanCard plan={part} sessionId={sessionId} />;
     case 'question':
       return <QuestionCard questions={part.questions} state={part.state} answers={part.answers} sessionId={sessionId} requestId={part.requestId} autoFocus />;
+    case 'limit':
+      return <LimitLine limit={part.limit} message={part.message} ts={part.ts} />;
+    case 'resumed':
+      return <ResumedLine ts={part.ts} />;
     case 'notice':
       if (part.link === 'changes') return <ChangesNotice text={part.text} ts={part.ts} />;
       return (

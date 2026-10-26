@@ -43,7 +43,7 @@ describe('the agent limit', () => {
 
 /** A PUT the test answers by hand: resolve with the daemon's answer, or reject with its refusal. */
 function deferredPuts() {
-  const calls: { method: string; body: Partial<Record<keyof Settings, number | null>>; answer: (status: number, body: unknown) => void }[] = [];
+  const calls: { method: string; body: Partial<Record<keyof Settings, number | boolean | null>>; answer: (status: number, body: unknown) => void }[] = [];
   vi.stubGlobal(
     'fetch',
     vi.fn((_url: string, init?: RequestInit) => {
@@ -62,7 +62,7 @@ describe('saving settings', () => {
 
   const setup = () => {
     const client = new QueryClient();
-    client.setQueryData<Settings>(SETTINGS, { maxAgents: 4 });
+    client.setQueryData<Settings>(SETTINGS, { maxAgents: 4, autoResume: true });
     const save = (patch: SettingsPatch) => new MutationObserver(client, saveSettingsOptions(client)).mutate(patch).catch(() => undefined);
     return { client, save, shown: () => client.getQueryData<Settings>(SETTINGS)?.maxAgents };
   };
@@ -139,7 +139,7 @@ describe('saving settings', () => {
   it('puts a reset’s default in at once: the daemon’s, from limits', async () => {
     const puts = deferredPuts();
     const { client, save, shown } = setup();
-    client.setQueryData<SettingsWithLimits>(SETTINGS, { maxAgents: 9, limits: { maxAgents: { min: 1, max: 16, default: 6 } } });
+    client.setQueryData<SettingsWithLimits>(SETTINGS, { maxAgents: 9, autoResume: true, limits: { maxAgents: { min: 1, max: 16, default: 6 } } });
     const done = save({ maxAgents: null });
     await flush();
     expect(shown()).toBe(6);
@@ -154,15 +154,28 @@ describe('saving settings', () => {
     const { client, save, shown } = setup();
     const on = settingsStream(client);
     const event = (s: Settings) => on.settings!({ id: '', event: 'settings', data: JSON.stringify(s), retry: undefined });
-    event({ maxAgents: 8 });
+    event({ maxAgents: 8, autoResume: true });
     expect(shown()).toBe(8);
     const done = save({ maxAgents: 10 });
     await flush();
-    event({ maxAgents: 2 });
+    event({ maxAgents: 2, autoResume: true });
     expect(shown()).toBe(10);
     puts[0]!.answer(200, { maxAgents: 10 });
     await done;
-    event({ maxAgents: 3 });
+    event({ maxAgents: 3, autoResume: true });
     expect(shown()).toBe(3);
+  });
+
+  it('shows auto-resume flipped at once, and puts it back if the daemon refuses', async () => {
+    const puts = deferredPuts();
+    const { client, save } = setup();
+    const auto = () => client.getQueryData<Settings>(SETTINGS)?.autoResume;
+    const done = save({ autoResume: false });
+    await flush();
+    expect(auto()).toBe(false);
+    expect(puts[0]!.body).toEqual({ autoResume: false });
+    puts[0]!.answer(500, { error: 'disk full' });
+    await done;
+    expect(auto()).toBe(true);
   });
 });

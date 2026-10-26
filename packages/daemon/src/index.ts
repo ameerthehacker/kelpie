@@ -29,7 +29,8 @@ export { Changes, NoSuchRound, excerpt, findLine, type View } from './review/cha
 export { Reviews, type CommentInput, type NewAnchor, type ReviewGroup, type ToolThread } from './review/reviews.js';
 export type { AgentRef, ChangedFile, Changes as ChangesDto, Review, ReviewComment, ReviewState, ReviewThread, Round, Side, Verdict } from './review/types.js';
 export { report, logLines, type AgentReport, type LogPage } from './orchestrator/digest.js';
-export { NOTIFICATION_TAG, reviewBrief } from './orchestrator/prompt.js';
+export { NOTIFICATION_TAG, limitResumed, reviewBrief } from './orchestrator/prompt.js';
+export { UsageLimits, LIMIT_RESUMED, backoff, type LimitTarget, type LimitTiming, type UsageLimitsOptions } from './usage-limits.js';
 export { nowOf, type AgentSummary } from './agent-summary.js';
 export { startDaemon, envNumber, limitsFromEnv, HomeInUseError, PortInUseError, type Daemon, type DaemonOptions } from './start.js';
 export { Connections, ConnectError, type Connector, type ConnectionAccount, type ConnectionStatus } from './connectors/connector.js';

@@ -5,6 +5,7 @@ import { HarnessMark } from '@/components/harness-mark';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { useApprovals } from '@/hooks/use-approvals';
 import { useMaxAgents } from '@/hooks/use-settings';
+import { useNow } from '@/hooks/use-now';
 import { planProgress, type AgentSummary } from '@/lib/agents';
 import { isPlan, isQuestion } from '@/lib/approvals';
 import { planBar, planLabel, planSections, type PlanBar, type PlanOpts } from '@/lib/plan';
@@ -63,11 +64,12 @@ export function PlanDock({ settledAt }: { settledAt?: number }) {
   const approvals = useApprovals();
   const agents = pane?.agents ?? NO_AGENTS;
   const limit = useMaxAgents();
+  const now = useNow();
   const opts = useMemo((): PlanOpts => {
     const titles = new Map(agents.map((a) => [a.id, a.title]));
     const asking = (is: typeof isPlan) => new Set(approvals.filter(is).map((a) => a.sessionId));
-    return { plans: asking(isPlan), questions: asking(isQuestion), nameOf: (id: string) => titles.get(id), settledAt };
-  }, [agents, approvals, settledAt]);
+    return { plans: asking(isPlan), questions: asking(isQuestion), nameOf: (id: string) => titles.get(id), settledAt, now };
+  }, [agents, approvals, settledAt, now]);
   if (!pane || agents.length === 0) return null;
   const bar = planBar(agents, opts);
   const { active, done } = planSections(agents, settledAt);
@@ -139,8 +141,8 @@ function Dots({ bar }: { bar: PlanBar }) {
 
 function AgentRow({ agent: a, group, label, onOpen }: { agent: AgentSummary; group: PlanGroup; label: string; onOpen: () => void }) {
   const done = a.todos.filter((t) => t.status === 'completed').length;
-  // Todos only while they are live; a finished agent's are in its tab.
-  const live = group === 'needs-you' || group === 'failed' || group === 'working';
+  // Todos only while they are live (paused ones pick up again); a finished agent's are in its tab.
+  const live = group === 'needs-you' || group === 'failed' || group === 'working' || group === 'paused';
   return (
     <li className="flex flex-col">
       <button

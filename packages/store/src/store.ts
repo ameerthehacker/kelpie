@@ -54,6 +54,8 @@ export interface EntryRow extends Omit<typeof schema.workbenchEntries.$inferSele
 export type EntryPatch = Partial<Pick<EntryRow, 'focus' | 'claims' | 'blocker' | 'progress'>>;
 export type NoteRow = typeof schema.workbenchNotes.$inferSelect;
 export type NewNote = Omit<NoteRow, 'id' | 'createdAt' | 'deliveredAt'>;
+export type UsageLimitRow = typeof schema.usageLimits.$inferSelect;
+export type NewUsageLimit = Omit<UsageLimitRow, 'createdAt' | 'attempts' | 'auto'> & Partial<Pick<UsageLimitRow, 'attempts' | 'auto'>>;
 
 const MIGRATIONS = join(import.meta.dirname, '../drizzle');
 
@@ -713,6 +715,38 @@ export class Store {
         .where(and(eq(n.fromId, fromId), sql`${n.createdAt} >= ${since}`, toId ? eq(n.toId, toId) : undefined))
         .get()?.n ?? 0
     );
+  }
+
+  // ── usage limits ─────────────────────────────────────────────────────
+
+  /** Records (or updates) a session's pause at its usage limit; when it first paused is kept. */
+  setLimit(l: NewUsageLimit, now = Date.now()): UsageLimitRow {
+    const { sessionId, ...set } = l;
+    return this.db
+      .insert(schema.usageLimits)
+      .values({ ...l, createdAt: now })
+      .onConflictDoUpdate({ target: schema.usageLimits.sessionId, set })
+      .returning()
+      .get();
+  }
+
+  /** Changes a pause; undefined if the session has none. */
+  updateLimit(sessionId: string, patch: Partial<Pick<UsageLimitRow, 'retryAt' | 'attempts' | 'auto'>>): UsageLimitRow | undefined {
+    return this.db.update(schema.usageLimits).set(patch).where(eq(schema.usageLimits.sessionId, sessionId)).returning().get();
+  }
+
+  limitOf(sessionId: string): UsageLimitRow | undefined {
+    return this.db.select().from(schema.usageLimits).where(eq(schema.usageLimits.sessionId, sessionId)).get();
+  }
+
+  /** Every paused session, soonest to resume first. */
+  limits(): UsageLimitRow[] {
+    return this.db.select().from(schema.usageLimits).orderBy(asc(schema.usageLimits.retryAt), asc(schema.usageLimits.createdAt)).all();
+  }
+
+  /** The session runs again (or was deleted): no longer paused. False if it was not. */
+  clearLimit(sessionId: string): boolean {
+    return this.db.delete(schema.usageLimits).where(eq(schema.usageLimits.sessionId, sessionId)).run().changes > 0;
   }
 
   close(): void {

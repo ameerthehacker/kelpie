@@ -411,3 +411,27 @@ export const workbenchNotes = sqliteTable(
   },
   (t) => [index('workbench_notes_round_up_idx').on(t.roundUpId, t.id), index('workbench_notes_to_idx').on(t.toId, t.deliveredAt)],
 );
+
+/**
+ * Sessions paused because a turn stopped at the person's usage limit, one row each, until the
+ * session runs again. Kelpie resumes them at `retryAt` (the reset, or a backoff when that is not
+ * known); kept across restarts, so a daemon started after the reset resumes them at once.
+ */
+export const usageLimits = sqliteTable('usage_limits', {
+  sessionId: text('session_id')
+    .primaryKey()
+    .references(() => sessions.id, { onDelete: 'cascade' }),
+  harness: text('harness').notNull(),
+  /** The harness's own words. */
+  message: text('message').notNull(),
+  /** Epoch ms the limit resets, when the harness said. */
+  resetsAt: integer('resets_at'),
+  /** Epoch ms Kelpie next resumes it. */
+  retryAt: integer('retry_at').notNull(),
+  /** Tries that found the limit still in force (they set the backoff). */
+  attempts: integer('attempts').notNull().default(0),
+  /** False once the person said not to resume it on its own. */
+  auto: integer('auto', { mode: 'boolean' }).notNull().default(true),
+  /** Epoch ms it first paused. */
+  createdAt: integer('created_at').notNull(),
+});
