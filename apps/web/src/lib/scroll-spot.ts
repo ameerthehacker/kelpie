@@ -46,3 +46,49 @@ export function scrollTopFor(spot: Spot, entry: Span | undefined, view: { scroll
 export function belowView(view: { scrollHeight: number; scrollTop: number; clientHeight: number }): number {
   return view.scrollHeight - view.scrollTop - view.clientHeight;
 }
+
+/** One of a chat's entries as its head sees it: marked (`data-chat-head`, "sticky" for its bar), and its height. */
+export interface HeadEntry {
+  head: string | undefined;
+  height: number;
+}
+
+/**
+ * What leads the chat: how many entries (the title, the tabs), and the height of the bar stuck to
+ * the top that the rest scroll under. Only the leading run of marked entries counts; `height` is
+ * read for the sticky one alone.
+ */
+export interface Head {
+  skip: number;
+  cover: number;
+}
+
+export function headOf(entries: Iterable<HeadEntry>): Head {
+  let skip = 0;
+  let cover = 0;
+  for (const e of entries) {
+    if (e.head === undefined) break;
+    skip++;
+    if (e.head === 'sticky') cover = e.height;
+  }
+  return { skip, cover };
+}
+
+/** The view's top edge is up in the head, above every entry: put back at the very top. */
+export const TOP: Spot = { index: -1, into: 0 };
+
+/**
+ * The spot past the chat's head, at its sticky bar's bottom edge (stuck, the bar's own box would
+ * read as the entry at the top). `index` counts from the first entry after the head. Above that
+ * entry it is TOP: an `into` there would be in the first entry's units, and wrong once it reflows.
+ */
+export function spotPast(head: Head, viewTop: number, count: number, span: (index: number) => Span): Spot | undefined {
+  const spot = spotAt(viewTop + head.cover, count - head.skip, (i) => span(head.skip + i));
+  return spot && spot.index === 0 && spot.into < 0 ? TOP : spot;
+}
+
+/** The scroll offset that puts a `spotPast` back under the sticky bar; `entry` is asked by index from the very first entry. */
+export function scrollTopPast(spot: Spot, head: Head, entry: (index: number) => Span | undefined, view: { scrollTop: number; top: number; scrollHeight: number }): number {
+  if (spot.index < 0) return 0;
+  return scrollTopFor(spot, entry(head.skip + spot.index), { ...view, top: view.top + head.cover });
+}

@@ -11,39 +11,51 @@ function scrollerOf(el: Element): Element | null {
 
 /**
  * Whether a `sticky top-0` element is stuck to its scroller's top edge, content scrolling under
- * it. Seen through its scroller's view shrunk by a pixel at the top: stuck, it is cut by that pixel.
+ * it. Read from the scroll position on every scroll, so a jump straight from below the view to
+ * stuck (jump to latest in a short window) is seen too.
  */
 export function useStuck(el: Element | null): boolean {
   const [stuck, setStuck] = useState(false);
   useEffect(() => {
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (!entry?.rootBounds) return;
-        setStuck(entry.intersectionRatio < 1 && entry.boundingClientRect.top < entry.rootBounds.top);
-      },
-      { root: scrollerOf(el), rootMargin: '-1px 0px 0px 0px', threshold: [1] },
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
+    const scroller = el?.isConnected ? scrollerOf(el) : null;
+    if (!el || !scroller) return;
+    let frame = 0;
+    const check = () => {
+      frame = 0;
+      setStuck(scroller.scrollTop > 0 && el.getBoundingClientRect().top - scroller.getBoundingClientRect().top < 0.5);
+    };
+    const onScroll = () => {
+      frame ||= requestAnimationFrame(check);
+    };
+    check();
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener('scroll', onScroll);
+      cancelAnimationFrame(frame);
+    };
   }, [el]);
   return stuck;
 }
 
-/** Whether `el` has scrolled up out of its scroller's view, entirely above its top edge. */
+/**
+ * Whether `el` has scrolled up out of its scroller's view, entirely above its top edge. False for
+ * an element no longer on the page (the last tab's title, for a render), and until a new one is seen.
+ */
 export function useScrolledPast(el: Element | null): boolean {
-  const [past, setPast] = useState(false);
+  const [seen, setSeen] = useState<{ el: Element; past: boolean } | undefined>();
   useEffect(() => {
-    if (!el) return;
+    if (!el?.isConnected) return;
     const observer = new IntersectionObserver(
-      ([entry]) => {
+      (entries) => {
+        // A batch can hold more than one entry for it (the first look, then a jump): the last is now.
+        const entry = entries.at(-1);
         if (!entry?.rootBounds) return;
-        setPast(!entry.isIntersecting && entry.boundingClientRect.bottom <= entry.rootBounds.top);
+        setSeen({ el, past: !entry.isIntersecting && entry.boundingClientRect.bottom <= entry.rootBounds.top });
       },
       { root: scrollerOf(el), threshold: [0] },
     );
     observer.observe(el);
     return () => observer.disconnect();
   }, [el]);
-  return past;
+  return !!seen && seen.el === el && seen.past;
 }

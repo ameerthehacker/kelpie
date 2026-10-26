@@ -297,7 +297,8 @@ export function App() {
               <ApprovalsPage roundUps={roundUps} />
             ) : onChanges ? (
               <>
-                <div className="min-h-0 flex-1 overflow-y-auto">
+                {/* Scrolled to, focus and find land below the sticky tabs, not under them. */}
+                <div className="min-h-0 flex-1 scroll-pt-12 overflow-y-auto">
                   <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
                     {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} />}
                     {tabs}
@@ -316,7 +317,10 @@ export function App() {
             ) : (
               <>
                 <ChatLog key={roundUpId ?? 'new'} id={roundUpId} content={items} className="min-h-0 flex-1">
-                  <ConversationContent className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
+                  <ConversationContent
+                    scrollClassName={tabs ? 'scroll-pt-12' : undefined}
+                    className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4"
+                  >
                     {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} />}
                     {tabs}
                     {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
