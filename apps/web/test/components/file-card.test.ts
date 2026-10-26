@@ -3,8 +3,8 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FileCard, WrapToggle } from '../src/components/changes/file-card.js';
-import type { ChangedFile } from '../src/lib/changes.js';
+import { FileCard, WrapToggle } from '../../src/components/changes/file-card.js';
+import type { ChangedFile } from '../../src/lib/changes.js';
 
 // React only runs effects inside `act` when it is told it is under test.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
