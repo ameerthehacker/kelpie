@@ -18,12 +18,14 @@ import { TabStrip } from '@/components/changes/tab-strip';
 import { groupApprovals } from '@/lib/approvals';
 import { useNow } from '@/hooks/use-now';
 import { useOpenSession } from '@/hooks/use-open-session';
+import { useMaxAgents } from '@/hooks/use-settings';
 import { byAttention, elapsed, STATUS_LABEL, STATUS_ORDER, type AgentStatus, type AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
 import { buildChat } from '@/lib/chat';
 import { unechoed, type SentMessage } from '@/lib/session-state';
 import { uploadFile } from '@/lib/uploads';
 import { harnessOf, modelLabel } from '@/lib/harnesses';
+import { workingLabel } from '@/lib/settings';
 import { cn } from '@/lib/utils';
 import { StatusDot, TodoList } from './agent-bits';
 import { useAgentPane } from './pane-state';
@@ -551,9 +553,10 @@ function AgentMessage({ agent: a, onSend }: { agent: AgentSummary; onSend: (text
   );
 }
 
-/** The header's agents button: who needs a look (failed), who is working, and how many in all. */
+/** The header's agents button: who needs a look (failed), who is working (of the person's limit), and how many in all. */
 export function AgentsButton() {
   const pane = useAgentPane();
+  const limit = useMaxAgents();
   if (!pane || pane.agents.length === 0) return null;
   const listOn = pane.open && !pane.active;
   const failed = pane.agents.filter((a) => a.status === 'failed').length;
@@ -573,9 +576,10 @@ export function AgentsButton() {
         </span>
       )}
       {working > 0 && (
-        <span aria-label={`${working} working`} className="text-fg2 flex items-center gap-1.5 font-mono text-xs">
+        <span aria-label={workingLabel(working, limit)} title={workingLabel(working, limit)} className="text-fg2 flex items-center gap-1.5 font-mono text-xs">
           <StatusDot status="working" />
           {working}
+          {limit && <span className="text-mu2 -ml-1">/{limit}</span>}
         </span>
       )}
       <span>

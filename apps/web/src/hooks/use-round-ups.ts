@@ -7,6 +7,7 @@ import { byRecent, type RoundUp } from '@/lib/round-ups';
 import { AGENTS, agentsKey, upsertAgent } from './use-agents';
 import type { HarnessUsage } from '@/lib/usage';
 import { USAGE } from './use-usage';
+import { settingsStream } from '@/lib/settings';
 import { APPROVALS } from './use-approvals';
 import type { PendingApproval } from '@/lib/approvals';
 import { attention } from './use-attention';
@@ -24,7 +25,7 @@ const upsert = (list: RoundUp[] = [], next: RoundUp) =>
 
 /**
  * The daemon's round-ups: fetched once, then kept live by its event stream; plus rename and
- * delete. The same stream keeps harness usage (use-usage) current, and tells notifications
+ * delete. The same stream keeps harness usage (use-usage) and settings (use-settings) current, and tells notifications
  * (use-attention) what needs the person, and the Workbench's cards (use-workbench).
  */
 export function useRoundUps() {
@@ -67,6 +68,8 @@ export function useRoundUps() {
             attention.session(info);
           },
           usage: (msg) => queryClient.setQueryData(USAGE, JSON.parse(msg.data) as HarnessUsage[]),
+          // The person's settings, as the stream connects and as they change.
+          ...settingsStream(queryClient),
           agent: (msg) => {
             const agent = JSON.parse(msg.data) as AgentSummary;
             const key = agentsKey(agent.parentId);

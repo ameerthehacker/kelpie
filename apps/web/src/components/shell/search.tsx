@@ -94,7 +94,7 @@ export function Search({ roundUps }: { roundUps: RoundUp[] | undefined }) {
               <CommandItem value="new round-up" onSelect={run(() => navigate('/'))}>
                 <PlusIcon /> New round-up
               </CommandItem>
-              <CommandItem value="settings harness claude code connections" onSelect={run(() => navigate('/settings'))}>
+              <CommandItem value="settings parallel agents limit theme notifications harness claude code connections" onSelect={run(() => navigate('/settings'))}>
                 <SettingsIcon /> Settings
               </CommandItem>
               <CommandItem value="theme light" onSelect={run(() => setTheme('light'))}>

@@ -1,4 +1,4 @@
-import { MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, PencilIcon, PlusIcon, SettingsIcon, ShieldAlertIcon, SquareKanbanIcon, SunIcon, Trash2Icon } from 'lucide-react';
+import { MoreHorizontalIcon, PanelLeftIcon, PencilIcon, PlusIcon, SettingsIcon, ShieldAlertIcon, SquareKanbanIcon, Trash2Icon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useMatch } from 'react-router';
 import { StatusDot } from '@/components/agents/agent-bits';
@@ -15,12 +15,12 @@ import { useWorkbench } from '@/hooks/use-workbench';
 import { harnessOf } from '@/lib/harnesses';
 import { relativeTime, roundUpPath, statusLine, titleOf, type RoundUp } from '@/lib/round-ups';
 import { GROUP_LABEL, type PlanGroup } from '@/lib/status';
-import { setTheme, useTheme, type Theme } from '@/lib/theme';
 import { metersOf } from '@/lib/usage';
 import { needsYouTotal } from '@/lib/workbench';
 import { cn } from '@/lib/utils';
 import { KelpieLogo, Wordmark } from './brand';
 import { NotificationPrompt, NotificationsMenu } from './notifications-menu';
+import { ThemeSwitch } from './theme-switch';
 
 interface RowProps {
   roundUp: RoundUp;
@@ -167,38 +167,6 @@ function Usage({ now }: { now: number }) {
         );
       })}
     </section>
-  );
-}
-
-const THEMES: { value: Theme; label: string; Icon: typeof SunIcon }[] = [
-  { value: 'system', label: 'System theme', Icon: MonitorIcon },
-  { value: 'light', label: 'Light theme', Icon: SunIcon },
-  { value: 'dark', label: 'Dark theme', Icon: MoonIcon },
-];
-
-/** System, light or dark, as the design's three-way switch. */
-function ThemeSwitch() {
-  const theme = useTheme();
-  return (
-    <div role="radiogroup" aria-label="Theme" className="bg-chip flex gap-0.5 rounded-full p-[3px]">
-      {THEMES.map(({ value, label, Icon }) => {
-        const on = theme === value;
-        return (
-          <button
-            key={value}
-            type="button"
-            role="radio"
-            aria-checked={on}
-            aria-label={label}
-            title={label}
-            onClick={() => setTheme(value)}
-            className={cn('flex size-7 items-center justify-center rounded-full', on ? 'bg-surf text-fg shadow-[0_1px_3px_rgba(0,0,0,0.18)]' : 'text-mu2 hover:text-fg')}
-          >
-            <Icon className="size-3.5" strokeWidth={1.9} />
-          </button>
-        );
-      })}
-    </div>
   );
 }
 
