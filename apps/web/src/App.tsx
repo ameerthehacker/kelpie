@@ -106,17 +106,21 @@ function RoundUpTabs({
   titleEl,
   value,
   onChange,
+  wide,
 }: {
   roundUpId: string;
   title: string;
   titleEl: Element | null;
   value: RoundUpTab;
   onChange: (tab: RoundUpTab) => void;
+  /** Over a column wider than the reading width (the diffs): the bar spans it, the tabs keep to the reading width. */
+  wide?: boolean;
 }) {
   const files = useChanges(roundUpId, { patches: false }).data;
   return (
     <StickyHead className="-mt-3">
       <TabStrip
+        className={wide ? 'mx-auto w-full max-w-[704px]' : undefined}
         label="Round-up views"
         tabs={[
           { id: 'conversation', label: 'Conversation' },
@@ -200,7 +204,7 @@ export function App() {
   const onChanges = reviewable && nav.tab === 'changes';
   // The big title, for the tabs to show it small once it has scrolled away.
   const [titleEl, setTitleEl] = useState<HTMLHeadingElement | null>(null);
-  const tabs = reviewable && <RoundUpTabs roundUpId={roundUpId} title={titleOf(current)} titleEl={titleEl} value={nav.tab} onChange={nav.setTab} />;
+  const tabs = reviewable ? { roundUpId, title: titleOf(current), titleEl, value: nav.tab, onChange: nav.setTab } : null;
   const waiting = allApprovals.length + unseen.filter((i) => !isRequestKind(i.kind)).length;
 
   useEffect(() => {
@@ -299,9 +303,13 @@ export function App() {
               <>
                 {/* Scrolled to, focus and find land below the sticky tabs, not under them. */}
                 <div className="min-h-0 flex-1 scroll-pt-12 overflow-y-auto">
-                  <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
+                  {/* The title stays where the conversation has it; the tabs and diffs take the whole column. */}
+                  <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 px-7 pt-1 max-sm:px-4">
                     {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} />}
-                    {tabs}
+                  </div>
+                  {/* One column for the tabs and the diffs, so the tabs stay stuck all the way down. */}
+                  <div className="flex w-full flex-col gap-7 px-7 pt-7 pb-8 max-sm:px-4">
+                    {tabs && <RoundUpTabs {...tabs} wide />}
                     <ChangesTab roundUpId={roundUpId} repo={current?.cwd.split('/').slice(-2).join('/')} />
                   </div>
                 </div>
@@ -322,7 +330,7 @@ export function App() {
                     className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4"
                   >
                     {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} />}
-                    {tabs}
+                    {tabs && <RoundUpTabs {...tabs} />}
                     {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
                     {items.map((item) =>
                       item.role === 'user' ? (

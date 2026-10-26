@@ -4,11 +4,12 @@ import { useAgentPane } from '@/components/agents/pane-state';
 import { HarnessMark } from '@/components/harness-mark';
 import { useChanges } from '@/hooks/use-changes';
 import { useChangesNav } from '@/hooks/use-changes-nav';
+import { useDiffWrap } from '@/hooks/use-diff-wrap';
 import { useReview } from '@/hooks/use-review';
 import { anchorSha, filesLabel, groupByDir, neighbors, splitPath, vscodeUrl } from '@/lib/changes';
 import { threadsOn } from '@/lib/review';
 import { cn } from '@/lib/utils';
-import { FileBody, FilePath, FileStat } from './file-card';
+import { FileBody, FilePath, FileStat, WrapToggle } from './file-card';
 import { ReviewBar } from './review-bar';
 import type { DiffScope } from './scope';
 
@@ -20,6 +21,7 @@ const typing = (el: EventTarget | null) => el instanceof HTMLElement && (el.isCo
  */
 export function FullScreen({ roundUpId, roundUpTitle, which }: { roundUpId: string; roundUpTitle: string; which: string }) {
   const nav = useChangesNav();
+  const [wrap, toggleWrap] = useDiffWrap('full');
   const agent = useAgentPane()?.agents.find((a) => a.id === which);
   const feature = which === 'feature';
   const sessionId = feature ? roundUpId : which;
@@ -123,6 +125,7 @@ export function FullScreen({ roundUpId, roundUpTitle, which }: { roundUpId: stri
                     <ChevronRightIcon className="size-3.5" />
                   </button>
                 </span>
+                <WrapToggle wrap={wrap} onToggle={toggleWrap} className="h-8" />
                 {href && (
                   <a href={href} className="bg-chip hover:bg-raise flex h-8 items-center gap-1.5 rounded-full px-3 text-xs">
                     <CodeXmlIcon className="text-run size-3.5" />
@@ -131,7 +134,7 @@ export function FullScreen({ roundUpId, roundUpTitle, which }: { roundUpId: stri
                 )}
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto">
-                <FileBody key={file.path} file={file} threads={threads} scope={scope} sessionId={sessionId} round={feature ? undefined : nav.round} />
+                <FileBody key={file.path} file={file} threads={threads} scope={scope} sessionId={sessionId} round={feature ? undefined : nav.round} wrap={wrap} />
               </div>
             </>
           ) : (

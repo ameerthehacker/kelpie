@@ -1,4 +1,4 @@
-import { ChevronRightIcon, Maximize2Icon } from 'lucide-react';
+import { ChevronRightIcon, Maximize2Icon, WrapTextIcon } from 'lucide-react';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { HarnessMark } from '@/components/harness-mark';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -8,6 +8,26 @@ import type { AgentRef, ReviewThread } from '@/lib/review';
 import { cn } from '@/lib/utils';
 import { LazyDiffView, type DiffScope } from './scope';
 import { quietButton, ThreadStrip } from './thread';
+
+/**
+ * The "Wrap lines" switch over a place's diffs (see useDiffWrap). `iconOnly` where the toolbar is
+ * narrow (the agent pane); `className` to match its neighbours' height.
+ */
+export function WrapToggle({ wrap, onToggle, iconOnly, className }: { wrap: boolean; onToggle: () => void; iconOnly?: boolean; className?: string }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={wrap}
+      onClick={onToggle}
+      {...(iconOnly ? { 'aria-label': 'Wrap lines' } : {})}
+      title={wrap ? 'Long lines wrap: scroll them sideways instead' : 'Long lines scroll sideways: wrap them instead'}
+      className={cn(quietButton, 'h-[30px] text-xs', iconOnly && 'w-[30px] justify-center px-0', wrap && 'text-fg shadow-[inset_0_0_0_1.5px_var(--acc)]', className)}
+    >
+      <WrapTextIcon className="size-3" />
+      {!iconOnly && 'Wrap lines'}
+    </button>
+  );
+}
 
 /** `billing-api/` muted, then **package.json**. */
 export function FilePath({ path, className }: { path: string; className?: string }) {
@@ -73,7 +93,7 @@ function useSeen<T extends Element>(): [React.RefObject<T | null>, boolean] {
  * A file's diff and the review on it. Binary files have none; a file too large to come with the
  * rest is fetched when asked for.
  */
-export function FileBody({ file, threads, scope, sessionId, round }: { file: ChangedFile; threads: ReviewThread[]; scope: DiffScope; sessionId: string; round?: number }) {
+export function FileBody({ file, threads, scope, sessionId, round, wrap }: { file: ChangedFile; threads: ReviewThread[]; scope: DiffScope; sessionId: string; round?: number; wrap?: boolean }) {
   const [load, setLoad] = useState(false);
   const big = useChangedFile(sessionId, file.path, round, load && !!file.tooLarge);
   const patch = file.patch ?? big.data?.patch;
@@ -81,7 +101,7 @@ export function FileBody({ file, threads, scope, sessionId, round }: { file: Cha
   if (patch)
     return (
       <Suspense fallback={<p className="text-mu px-4 py-3 text-[13px]">Loading diff…</p>}>
-        <LazyDiffView file={file} patch={patch} threads={mine} scope={scope} />
+        <LazyDiffView file={file} patch={patch} threads={mine} scope={scope} wrap={wrap} />
       </Suspense>
     );
   return (
@@ -122,6 +142,7 @@ export function FileCard({
   onToggle,
   onFullScreen,
   compact,
+  wrap,
 }: {
   file: ChangedFile;
   threads: ReviewThread[];
@@ -132,6 +153,7 @@ export function FileCard({
   onToggle: () => void;
   onFullScreen: () => void;
   compact?: boolean;
+  wrap?: boolean;
 }) {
   const [ref, seen] = useSeen<HTMLDivElement>();
   const count = threads.filter((t) => t.path === file.path && t.status !== 'resolved').length;
@@ -155,7 +177,7 @@ export function FileCard({
           <Maximize2Icon className="size-3.5" />
         </button>
       </div>
-      {!collapsed && (seen ? <FileBody file={file} threads={threads} scope={scope} sessionId={sessionId} round={round} /> : <div className="h-24" />)}
+      {!collapsed && (seen ? <FileBody file={file} threads={threads} scope={scope} sessionId={sessionId} round={round} wrap={wrap} /> : <div className="h-24" />)}
     </div>
   );
 }
