@@ -7,6 +7,9 @@ import { bodyLimit } from 'hono/body-limit';
 import { streamSSE, type SSEMessage } from 'hono/streaming';
 import { getMimeType } from 'hono/utils/mime';
 import { Answers, Mode } from '@kelpie/protocol';
+import { checkHarnesses, shared, type HarnessStatus } from './harness-status.js';
+import type { Connections } from './connectors/connector.js';
+import { connectionRoutes } from './connectors/routes.js';
 import { isLocalHost, isLocalOrigin } from './local.js';
 import { handleMcp } from './orchestrator/mcp.js';
 import { BaseFixedError, type Orchestrator } from './orchestrator/orchestrator.js';
@@ -29,6 +32,10 @@ export interface AppOptions {
   orchestrator?: Orchestrator;
   /** Largest file one upload may be. Default 25 MB. */
   maxUploadBytes?: number;
+  /** Checks each harness CLI's setup, for `GET /api/harnesses/status`. Default: the CLIs on PATH. */
+  checkHarnesses?: () => Promise<HarnessStatus[]>;
+  /** Services Kelpie connects to (GitHub), served at `/api/connections`. */
+  connections?: Connections;
 }
 
 /**
@@ -93,6 +100,10 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
 
   // What the harness offers a round-up: its modes, in the order Shift+Tab cycles through them.
   app.get('/api/harnesses', (c) => c.json(sessions.harnesses()));
+
+  // Whether each harness CLI is installed and signed in, checked afresh on every request (never cached).
+  const harnessStatus = shared(opts.checkHarnesses ?? (() => checkHarnesses()));
+  app.get('/api/harnesses/status', async (c) => c.json(await harnessStatus(), 200, { 'cache-control': 'no-store' }));
 
   // Round-up list (and sub-agents), harness usage and approvals: snapshots, then every change.
   app.get('/api/events', (c) =>
@@ -318,6 +329,8 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
       s.subscribe((u) => send({ event: 'kef', id: String(u.index), data: JSON.stringify(u.event) }), Number.isFinite(lastId) ? lastId + 1 : 0, end),
     );
   });
+
+  if (opts.connections) app.route('/api/connections', connectionRoutes(opts.connections));
 
   // Keep unknown API paths out of the SPA fallback below.
   app.all('/api/*', (c) => c.json({ error: 'not found' }, 404));

@@ -14,6 +14,7 @@
 // questions (the tool's input, as JSON) if set; any other FAKE_ASK_TOOL (e.g. mcp__claude-in-chrome__navigate)
 // asks to use that tool on the url FAKE_ASK. Interrupted while asking, it ends the turn the way the real
 // CLI does (ask-interrupt.jsonl): it cancels the request, unless FAKE_NO_CANCEL=1, then reports the turn aborted.
+// FAKE_ENV_FILE gets a line of JSON per start with the GitHub env it was given (GH_TOKEN, GITHUB_TOKEN).
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -23,6 +24,9 @@ let printed = false;
 const out = (o) => process.stdout.write((typeof o === 'string' ? o : JSON.stringify(o)) + '\n');
 const args = process.argv.slice(2);
 if (process.env.FAKE_ARGS_FILE) appendFileSync(process.env.FAKE_ARGS_FILE, JSON.stringify(args) + '\n');
+if (process.env.FAKE_ENV_FILE) {
+  appendFileSync(process.env.FAKE_ENV_FILE, JSON.stringify({ GH_TOKEN: process.env.GH_TOKEN ?? null, GITHUB_TOKEN: process.env.GITHUB_TOKEN ?? null }) + '\n');
+}
 
 const resume = args[args.indexOf('--resume') + 1];
 if (process.env.FAKE_RESUME_FAIL === '1' && args.includes('--resume')) {

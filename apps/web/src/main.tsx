@@ -22,6 +22,7 @@ const router = createBrowserRouter([
       { path: 'approvals', element: null },
       { path: 'workbench', element: null },
       { path: 'workbench/:cardId', element: null },
+      { path: 'settings', element: null },
     ],
   },
   { path: '*', element: <Navigate to="/" replace /> },

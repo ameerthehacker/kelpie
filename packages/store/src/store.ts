@@ -18,6 +18,10 @@ export type OutboxSource = OutboxRow['source'];
 export type AttachmentRow = typeof schema.attachments.$inferSelect;
 export type NewAttachment = Omit<AttachmentRow, 'createdAt'>;
 export type PermissionRuleRow = typeof schema.permissionRules.$inferSelect;
+export interface ConnectionRow extends Omit<typeof schema.connections.$inferSelect, 'scopes'> {
+  scopes: string[] | null;
+}
+export type NewConnection = Omit<ConnectionRow, 'createdAt' | 'updatedAt'>;
 export type TicketRow = typeof schema.tickets.$inferSelect;
 export type TicketSource = TicketRow['source'];
 
@@ -275,6 +279,26 @@ export class Store {
   /** Removes one of a round-up's rules; false if it has no such rule. */
   deleteRule(roundUpId: string, id: number): boolean {
     return this.db.delete(schema.permissionRules).where(and(eq(schema.permissionRules.id, id), eq(schema.permissionRules.roundUpId, roundUpId))).run().changes > 0;
+  }
+
+  /** Saves a connector's secret, replacing the one it had. */
+  setConnection(c: NewConnection, now = Date.now()): void {
+    const row = { ...c, scopes: c.scopes ? JSON.stringify(c.scopes) : null, updatedAt: now };
+    this.db
+      .insert(schema.connections)
+      .values({ ...row, createdAt: now })
+      .onConflictDoUpdate({ target: schema.connections.provider, set: row })
+      .run();
+  }
+
+  getConnection(provider: string): ConnectionRow | undefined {
+    const row = this.db.select().from(schema.connections).where(eq(schema.connections.provider, provider)).get();
+    return row && { ...row, scopes: row.scopes ? (JSON.parse(row.scopes) as string[]) : null };
+  }
+
+  /** Forgets a connector's secret; false if it had none. */
+  deleteConnection(provider: string): boolean {
+    return this.db.delete(schema.connections).where(eq(schema.connections.provider, provider)).run().changes > 0;
   }
 
   /**

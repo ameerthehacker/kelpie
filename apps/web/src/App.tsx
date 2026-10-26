@@ -13,6 +13,8 @@ import { ApprovalsPage } from '@/components/approvals/approvals-page';
 import { AttachmentChips } from '@/components/chat/attachments';
 import { ChatLog } from '@/components/chat/chat-log';
 import { Composer } from '@/components/chat/composer';
+import { HarnessSetupDialog } from '@/components/settings/setup-dialog';
+import { SettingsPage } from '@/components/settings/settings-page';
 import { WorkingStatus } from '@/components/chat/working-status';
 import { AgentCrumb } from '@/components/shell/agent-crumb';
 import { KelpieLogo } from '@/components/shell/brand';
@@ -105,6 +107,7 @@ export function App() {
   const onApprovals = !!useMatch('/approvals');
   const linkedCard = useMatch(WORKBENCH_ROUTE)?.params.cardId;
   const onWorkbench = !!useMatch('/workbench') || !!linkedCard;
+  const onSettings = !!useMatch('/settings');
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const isMobile = useIsMobile();
@@ -246,6 +249,8 @@ export function App() {
               <ApprovalsPage roundUps={roundUps} />
             ) : onWorkbench ? (
               <WorkbenchPage cardId={linkedCard} />
+            ) : onSettings ? (
+              <SettingsPage />
             ) : (
               <>
                 <ChatLog key={roundUpId ?? 'new'} id={roundUpId} content={items} className="min-h-0 flex-1">
@@ -298,6 +303,8 @@ export function App() {
           </main>
           <AgentPaneSlot />
         </div>
+        {/* First run: until Claude Code is installed and signed in. Settings shows the same, so not there. */}
+        <HarnessSetupDialog hidden={onSettings} />
       </AgentPaneProvider>
     </TooltipProvider>
   );

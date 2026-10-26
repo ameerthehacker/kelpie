@@ -1,4 +1,4 @@
-import { MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, PencilIcon, PlusIcon, ShieldAlertIcon, SquareKanbanIcon, SunIcon, Trash2Icon } from 'lucide-react';
+import { MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, PencilIcon, PlusIcon, SettingsIcon, ShieldAlertIcon, SquareKanbanIcon, SunIcon, Trash2Icon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useMatch } from 'react-router';
 import { StatusDot } from '@/components/agents/agent-bits';
@@ -228,6 +228,7 @@ export function AppSidebar({ roundUps, currentId, inAgent, onNavigate, onRename,
   const [confirming, setConfirming] = useState<RoundUp | undefined>();
   const onWorkbench = !!useMatch({ path: '/workbench', end: false });
   const boardWaiting = needsYouTotal(useWorkbench().cards, now);
+  const onSettings = !!useMatch('/settings');
 
   return (
     <nav aria-label="Round-ups" className={cn('bg-side flex w-[260px] shrink-0 flex-col gap-1.5 rounded-[22px] px-3 pt-3.5 pb-3', className)}>
@@ -289,6 +290,16 @@ export function AppSidebar({ roundUps, currentId, inAgent, onNavigate, onRename,
       <NotificationPrompt />
 
       <Usage now={now} />
+
+      <Link
+        to="/settings"
+        onClick={onNavigate}
+        aria-current={onSettings ? 'page' : undefined}
+        className={cn('text-mu hover:bg-hov hover:text-fg mb-1 flex h-9 items-center gap-2.5 rounded-[10px] px-2.5 text-[13px]', onSettings && 'bg-sel text-fg font-medium')}
+      >
+        <SettingsIcon className="size-4" strokeWidth={1.8} />
+        Settings
+      </Link>
 
       <div className="flex items-center gap-1.5 pl-2.5">
         <span className="text-mu2 flex-1 text-[13px]">Notifications</span>

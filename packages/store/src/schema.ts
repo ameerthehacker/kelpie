@@ -163,6 +163,26 @@ export const permissionRules = sqliteTable(
 );
 
 /**
+ * Services the person connected Kelpie to (GitHub, ...), one row per connector, with the secret it
+ * was given. Plain text: the database is the person's own file under KELPIE_HOME, and the secret
+ * never leaves the daemon except into the env of the agents it starts. A connection Kelpie only
+ * reads from elsewhere (GitHub through the `gh` CLI) has no row.
+ */
+export const connections = sqliteTable('connections', {
+  /** The connector's id, e.g. `github`. */
+  provider: text('provider').primaryKey(),
+  /** How it was connected, e.g. `token` (a pasted personal access token). */
+  method: text('method').notNull(),
+  secret: text('secret').notNull(),
+  /** Who the secret belongs to on the service (a GitHub login), as last checked. */
+  account: text('account'),
+  /** What the secret may do, as the service reported it (JSON array); null when it doesn't say. */
+  scopes: text('scopes'),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+/**
  * Jira and Asana tickets linked to a round-up: found in the person's messages, or linked by its
  * orchestrator. Known only by their links (Kelpie never calls Jira or Asana). `ref` is what makes
  * two links the same ticket (see `parseTicketUrl`), so each is listed once.
