@@ -1,6 +1,9 @@
-import { CheckIcon, ChevronRightIcon } from 'lucide-react';
+import { CheckIcon, ChevronRightIcon, UserIcon } from 'lucide-react';
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { MessageResponse } from '@/components/ai-elements/message';
+import { HarnessMark } from '@/components/harness-mark';
+import { KelpieLogo } from '@/components/shell/brand';
+import { useOpenSession } from '@/hooks/use-open-session';
 import { useReview } from '@/hooks/use-review';
 import { authorLabel, type ReviewComment, type ReviewThread } from '@/lib/review';
 import { cn } from '@/lib/utils';
@@ -89,9 +92,27 @@ export function CommentBox({
   );
 }
 
-/** One comment: who, and what; the person's own unsent comments can still be edited or deleted. */
-function Comment({ comment: c, roundUpId }: { comment: ReviewComment; roundUpId: string }) {
+/** The harness an agent's reply was written with: its session's, else the thread's agent of that id. */
+function harnessOf(c: ReviewComment, t: ReviewThread): string {
+  if (c.authorHarness) return c.authorHarness;
+  return [t.assignedTo, t.agent].find((a) => a?.id && a.id === c.authorId)?.harness ?? 'claude-code';
+}
+
+/** Who wrote a comment, at a glance: the person's neutral circle, Kelpie's mark, or the agent's harness. */
+function Avatar({ comment: c, thread }: { comment: ReviewComment; thread: ReviewThread }) {
+  if (c.author === 'orchestrator') return <KelpieLogo className="size-5" />;
+  if (c.author === 'agent') return <HarnessMark harness={harnessOf(c, thread)} className="size-5" />;
+  return (
+    <span aria-hidden="true" className="bg-chip text-mu inline-flex size-5 shrink-0 items-center justify-center rounded-full">
+      <UserIcon className="size-3" strokeWidth={2.2} />
+    </span>
+  );
+}
+
+/** One comment: who, and what; the person's own unsent comments can still be edited or deleted. Agents' replies sit on a faint tint. */
+function Comment({ comment: c, thread, roundUpId }: { comment: ReviewComment; thread: ReviewThread; roundUpId: string }) {
   const review = useReview(roundUpId);
+  const openSession = useOpenSession();
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const pending = c.state === 'pending';
@@ -109,26 +130,37 @@ function Comment({ comment: c, roundUpId }: { comment: ReviewComment; roundUpId:
         }}
       />
     );
+  const byAgent = c.author !== 'person';
+  const agentId = c.author === 'agent' ? c.authorId : undefined;
   return (
-    <div className="flex flex-col gap-1">
-      <div className="text-mu2 flex items-center gap-2 text-xs">
-        <span className={cn('font-medium', c.author === 'person' ? 'text-fg' : 'text-fg2')}>{authorLabel(c)}</span>
-        {pending && <span className="bg-wbg text-wait rounded-full px-1.5 py-px text-[10px] font-medium">Pending</span>}
-        {pending && (
-          <span className="ml-auto flex gap-2">
-            <button type="button" onClick={() => setEditing(true)} className="hover:text-fg">
-              Edit
+    <div className={cn('flex gap-2.5', byAgent && 'bg-well dark:bg-raise -mx-2 rounded-lg p-2')}>
+      <Avatar comment={c} thread={thread} />
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="text-mu2 flex min-h-5 items-center gap-2 text-xs">
+          {agentId ? (
+            <button type="button" onClick={() => openSession(agentId)} title={`Open ${authorLabel(c)}`} className="text-fg truncate font-semibold hover:underline">
+              {authorLabel(c)}
             </button>
-            <button type="button" onClick={() => review.remove(c.id).catch((err: Error) => setError(err.message))} className="hover:text-fail">
-              Delete
-            </button>
-          </span>
-        )}
+          ) : (
+            <span className={cn('text-fg truncate', byAgent ? 'font-semibold' : 'font-medium')}>{authorLabel(c)}</span>
+          )}
+          {pending && <span className="bg-wbg text-wait rounded-full px-1.5 py-px text-[10px] font-medium">Pending</span>}
+          {pending && (
+            <span className="ml-auto flex gap-2">
+              <button type="button" onClick={() => setEditing(true)} className="hover:text-fg">
+                Edit
+              </button>
+              <button type="button" onClick={() => review.remove(c.id).catch((err: Error) => setError(err.message))} className="hover:text-fail">
+                Delete
+              </button>
+            </span>
+          )}
+        </div>
+        <div className="text-fg text-sm leading-[1.45] break-words [&>*>:first-child]:mt-0 [&>*>:last-child]:mb-0">
+          <MessageResponse>{c.body}</MessageResponse>
+        </div>
+        {error && <p className="text-fail text-xs">{error}</p>}
       </div>
-      <div className="text-fg text-sm leading-[1.45] break-words [&>*>:first-child]:mt-0 [&>*>:last-child]:mb-0">
-        <MessageResponse>{c.body}</MessageResponse>
-      </div>
-      {error && <p className="text-fail text-xs">{error}</p>}
     </div>
   );
 }
@@ -180,7 +212,7 @@ export function ThreadView({ thread: t, roundUpId, showHunk }: { thread: ReviewT
           )}
           {showHunk && <HunkExcerpt hunk={t.diffHunk} />}
           {t.comments.map((c) => (
-            <Comment key={c.id} comment={c} roundUpId={roundUpId} />
+            <Comment key={c.id} comment={c} thread={t} roundUpId={roundUpId} />
           ))}
           {replying ? (
             <CommentBox

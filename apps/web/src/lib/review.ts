@@ -22,6 +22,8 @@ export interface ReviewComment {
   author: 'person' | 'orchestrator' | 'agent';
   authorId?: string;
   authorTitle?: string;
+  /** The writing agent's harness, while its session is still there. */
+  authorHarness?: string;
   body: string;
   /** The person's comments stay pending, and theirs alone to see, until the review is submitted. */
   state: 'pending' | 'published';

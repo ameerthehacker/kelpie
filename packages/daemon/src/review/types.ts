@@ -66,6 +66,8 @@ export interface ReviewComment {
   author: 'person' | 'orchestrator' | 'agent';
   authorId?: string;
   authorTitle?: string;
+  /** The writing agent's harness, while its session is still there. */
+  authorHarness?: string;
   body: string;
   state: 'pending' | 'published';
   createdAt: number;

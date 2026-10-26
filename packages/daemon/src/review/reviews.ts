@@ -452,12 +452,14 @@ export class Reviews {
   }
 
   private commentOf(c: ReviewCommentRow): ReviewComment {
+    const harness = c.authorSessionId ? this.store.getSession(c.authorSessionId)?.harness : undefined;
     return {
       id: c.id,
       threadId: c.threadId,
       author: c.author,
       ...(c.authorSessionId ? { authorId: c.authorSessionId } : {}),
       ...(c.authorTitle ? { authorTitle: c.authorTitle } : {}),
+      ...(harness ? { authorHarness: harness } : {}),
       body: c.body,
       state: c.state,
       createdAt: c.createdAt,
