@@ -52,39 +52,45 @@ export function ticketView(t: ShownTicket): TicketView {
   };
 }
 
-/**
- * How the title block (or a Workbench card) shows its tickets: nothing, one ticket's chip, or an
- * "N tickets" chip that opens the list. Pure.
- */
-export type TicketsDisplay = { kind: 'none' } | { kind: 'one'; ticket: TicketView } | { kind: 'many'; label: string; tickets: TicketView[] };
-
-export function ticketsDisplay(tickets: readonly ShownTicket[] | undefined): TicketsDisplay {
-  const views = (tickets ?? []).map(ticketView);
-  if (!views.length) return { kind: 'none' };
-  if (views.length === 1) return { kind: 'one', ticket: views[0]! };
-  return { kind: 'many', label: `${views.length} tickets`, tickets: views };
-}
-
 /** A link in pasted rich text: where it goes, and the text it showed. */
 export interface PastedLink {
   href: string;
   text: string;
 }
 
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Markdown links already in the text: nothing is written inside one. */
+const MD_LINK = /(\[[^\]\n]*\]\([^)\s]*\))/;
+
+/** The text with the first match of `pattern` outside its markdown links swapped for `to`; undefined when there is none. */
+function replaceOutsideLinks(text: string, pattern: RegExp, to: string): string | undefined {
+  const parts = text.split(MD_LINK);
+  for (let i = 0; i < parts.length; i += 2) {
+    const m = pattern.exec(parts[i]!);
+    if (!m) continue;
+    parts[i] = parts[i]!.slice(0, m.index) + to + parts[i]!.slice(m.index + m[0].length);
+    return parts.join('');
+  }
+  return undefined;
+}
+
 /**
  * Pasted text, with each Jira or Asana link the rich copy named written as `[name](url)`, so the
  * ticket is linked under that name: where the plain text holds the link itself it gets the name,
  * and where it holds only the name (rich apps copy a link's text, not its address) it gets the link.
- * The plain text as it was when there is nothing to add. Pure.
+ * Only whole links and whole words count, never inside a markdown link. The plain text as it was
+ * when there is nothing to add. Pure.
  */
 export function ticketPaste(plain: string, links: readonly PastedLink[]): string {
   let out = plain;
   for (const { href, text } of links) {
     const name = text.replace(/\s+/g, ' ').trim();
-    if (!name || name.includes(']') || !parseTicketUrl(href) || parseTicketUrl(name) || out.includes(`](${href})`)) continue;
+    if (!name || /[[\]]/.test(name) || !parseTicketUrl(href) || parseTicketUrl(name) || out.includes(`](${href})`)) continue;
     const md = `[${name}](${href})`;
-    if (out.includes(href)) out = out.replace(href, md);
-    else if (out.includes(name)) out = out.replace(name, md);
+    out =
+      replaceOutsideLinks(out, new RegExp(`(?<![\\w/.:-])${escapeRegExp(href)}(?![\\w/-])`), md) ??
+      replaceOutsideLinks(out, new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRegExp(name)}(?![\\p{L}\\p{N}_])`, 'u'), md) ??
+      out;
   }
   return out;
 }
