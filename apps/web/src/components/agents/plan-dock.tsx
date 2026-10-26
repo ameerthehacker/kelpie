@@ -79,7 +79,7 @@ export function PlanDock({ settledAt }: { settledAt?: number }) {
   return (
     <Dock title="Plan" bar={<Dots bar={bar} />} summary={bar.text} end={bar.counts.join(' · ')}>
       <p className="text-mu2 px-2 pb-1 text-xs">
-        {p.agents} agents{working > 0 && ` · ${workingLabel(working, limit)}`}
+        {p.agents} agent{p.agents === 1 ? '' : 's'}{working > 0 && ` · ${workingLabel(working, limit)}`}
         {p.steps > 0 && ` · ${p.stepsDone}/${p.steps} todos done`}
       </p>
       {active.length > 0 && <ul className="flex flex-col">{active.map(row)}</ul>}

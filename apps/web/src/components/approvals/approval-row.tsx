@@ -56,7 +56,7 @@ export function ApprovalRow({ group, selected, busy, onAnswer, onSelect, canReme
     <li
       aria-selected={selected}
       onClick={onSelect}
-      className={cn('flex flex-col gap-1.5 rounded-xl px-2.5 py-2', selected ? 'bg-hov' : 'hover:bg-hov/60')}
+      className={cn('hover:bg-raise/50 flex flex-col gap-1.5 rounded-xl px-2.5 py-2', selected && 'group-focus-within/approvals:bg-raise/70')}
     >
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         <button
@@ -69,7 +69,8 @@ export function ApprovalRow({ group, selected, busy, onAnswer, onSelect, canReme
           <ChevronRightIcon className={cn('size-3.5 transition-transform', open && 'rotate-90')} strokeWidth={2.2} />
         </button>
         <Icon className="text-mu2 size-4 shrink-0" strokeWidth={1.9} />
-        <span className="flex min-w-0 flex-1 flex-col">
+        {/* On a narrow screen the buttons go under it rather than squeeze it to a letter. */}
+        <span className="flex min-w-0 flex-1 basis-40 flex-col">
           <code className="text-fg truncate font-mono text-[13px]" title={group.label}>
             {group.label}
           </code>
