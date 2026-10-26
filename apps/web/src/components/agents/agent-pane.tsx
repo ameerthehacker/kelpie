@@ -69,7 +69,7 @@ function BranchLine({ agent: a }: { agent: AgentSummary }) {
 const iconButton = 'text-mu2 hover:bg-hov hover:text-fg flex size-8 shrink-0 items-center justify-center rounded-full';
 
 /** The right-hand card of an orchestrator round-up: all its agents, and a tab per agent opened. */
-export function AgentPane({ agents }: { agents: AgentSummary[] }) {
+export function AgentPane({ agents, docked }: { agents: AgentSummary[]; docked?: boolean }) {
   const pane = useAgentPane()!;
   const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
   const tabs = pane.tabs.filter((id) => byId.has(id));
@@ -78,7 +78,11 @@ export function AgentPane({ agents }: { agents: AgentSummary[] }) {
   return (
     <section
       aria-label="Agent pane"
-      className="bg-background shadow-card fixed inset-2 z-40 flex min-w-0 flex-col overflow-hidden rounded-3xl sm:left-auto sm:w-[30rem] lg:static lg:z-auto lg:w-auto lg:flex-[0_1_470px]"
+      // Docked, it fills its resizable panel beside the chat; otherwise it is a card over the chat.
+      className={cn(
+        'bg-background shadow-card flex min-w-0 flex-col overflow-hidden rounded-3xl',
+        docked ? 'flex-1' : 'fixed inset-2 z-40 sm:left-auto sm:w-[30rem]',
+      )}
     >
       <div role="tablist" aria-label="Open agents" className="flex items-center gap-1 overflow-x-auto px-2.5 pt-2.5">
         <button
@@ -597,10 +601,4 @@ export function AgentsButton() {
       </span>
     </button>
   );
-}
-
-/** The pane when it is open and there is something to show. */
-export function AgentPaneSlot() {
-  const pane = useAgentPane();
-  return pane?.open ? <AgentPane agents={pane.agents} /> : null;
 }

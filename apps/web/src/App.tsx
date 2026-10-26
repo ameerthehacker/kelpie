@@ -3,7 +3,8 @@ import { useCallback, useEffect, useMemo, useState, type Ref } from 'react';
 import type { Mode } from '@kelpie/protocol';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMatch, useNavigate } from 'react-router';
-import { AgentPaneSlot, AgentsButton } from '@/components/agents/agent-pane';
+import { AgentsButton } from '@/components/agents/agent-pane';
+import { AgentPaneLayout } from '@/components/agents/pane-layout';
 import { AgentPaneProvider } from '@/components/agents/pane-state';
 import { PlanDock, TodoDock } from '@/components/agents/plan-dock';
 import { ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation';
@@ -280,107 +281,108 @@ export function App() {
             </Sheet>
           )}
 
-          <main aria-label="Chat" className="bg-background shadow-card flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl max-sm:rounded-none">
-            <header className="flex h-16 shrink-0 items-center gap-2.5 pr-4 pl-5">
-              {(isMobile || !navOpen) && (
-                <button
-                  type="button"
-                  onClick={() => (isMobile ? setMobileNav(true) : setNavOpen(true))}
-                  aria-label="Show sidebar"
-                  className="text-mu2 hover:bg-hov hover:text-fg -ml-2 flex size-[34px] items-center justify-center rounded-lg"
-                >
-                  <PanelLeftIcon className="size-[17px]" strokeWidth={1.7} />
-                </button>
-              )}
-              {current?.role === 'agent' && current.parentId && <AgentCrumb agent={current} roundUp={roundUps?.find((r) => r.id === current.parentId)} />}
-              <span className="flex-1" />
-              <Search roundUps={roundUps} />
-              <AgentsButton />
-            </header>
-
-            {onApprovals ? (
-              <ApprovalsPage roundUps={roundUps} />
-            ) : onChanges ? (
-              <>
-                {/* Scrolled to, focus and find land below the sticky tabs, not under them. */}
-                <div className="min-h-0 flex-1 scroll-pt-12 overflow-y-auto">
-                  {/* The title stays where the conversation has it; the tabs and diffs take the whole column. */}
-                  <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 px-7 pt-1 max-sm:px-4">
-                    {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} />}
-                  </div>
-                  {/* One column for the tabs and the diffs, so the tabs stay stuck all the way down. */}
-                  <div className="flex w-full flex-col gap-7 px-7 pt-7 pb-8 max-sm:px-4">
-                    {tabs && <RoundUpTabs {...tabs} wide />}
-                    <ChangesTab roundUpId={roundUpId} repo={current?.cwd.split('/').slice(-2).join('/')} />
-                  </div>
-                </div>
-                <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
-                  <ApprovalTray approvals={approvals} roundUpId={roundUpId} docked />
-                  {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
-                </div>
-              </>
-            ) : onWorkbench ? (
-              <WorkbenchPage cardId={linkedCard} />
-            ) : onSettings ? (
-              <SettingsPage />
-            ) : (
-              <>
-                <ChatLog key={roundUpId ?? 'new'} id={roundUpId} content={items} className="min-h-0 flex-1">
-                  <ConversationContent
-                    scrollClassName={tabs ? 'scroll-pt-12' : undefined}
-                    className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4"
+          <AgentPaneLayout>
+            <main aria-label="Chat" className="bg-background shadow-card flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl max-sm:rounded-none">
+              <header className="flex h-16 shrink-0 items-center gap-2.5 pr-4 pl-5">
+                {(isMobile || !navOpen) && (
+                  <button
+                    type="button"
+                    onClick={() => (isMobile ? setMobileNav(true) : setNavOpen(true))}
+                    aria-label="Show sidebar"
+                    className="text-mu2 hover:bg-hov hover:text-fg -ml-2 flex size-[34px] items-center justify-center rounded-lg"
                   >
-                    {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} />}
-                    {tabs && <RoundUpTabs {...tabs} />}
-                    {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
-                    {items.map((item) =>
-                      item.role === 'user' ? (
-                        <div key={item.id} className="flex flex-col items-end gap-1.5">
-                          <AttachmentChips sessionId={roundUpId} attachments={item.attachments} className="max-w-[78%]" />
-                          {item.text && <div className="bg-raise max-w-[78%] rounded-[20px] px-4 py-[11px] break-words whitespace-pre-wrap">{item.text}</div>}
-                        </div>
-                      ) : (
-                        <div key={item.id} className="flex min-w-0 flex-col gap-3.5">
-                          <AssistantParts parts={item.parts} streaming={busy && item === last} actor={actor} sessionId={roundUpId} />
-                        </div>
-                      ),
-                    )}
-                    {/* Whenever the composer offers stop: the same busy state, whoever started the turn. */}
-                    <WorkingStatus busy={busy} events={events} agents={agents ?? NO_AGENTS} />
-                  </ConversationContent>
-                  <ConversationScrollButton />
-                </ChatLog>
+                    <PanelLeftIcon className="size-[17px]" strokeWidth={1.7} />
+                  </button>
+                )}
+                {current?.role === 'agent' && current.parentId && <AgentCrumb agent={current} roundUp={roundUps?.find((r) => r.id === current.parentId)} />}
+                <span className="flex-1" />
+                <Search roundUps={roundUps} />
+                <AgentsButton />
+              </header>
 
-                <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
-                  {/* The plan sits outside the chat flow, always in view while agents work. */}
-                  {roundUpId && <ApprovalTray approvals={approvals} roundUpId={current?.role === 'agent' ? (current.parentId ?? roundUpId) : roundUpId} inChat={roundUpId} docked />}
-                  {/* Paused at the usage limit: when it picks up again, and the person's say in it. */}
-                  {roundUpId && current?.limited && !busy && <PausedBanner sessionId={roundUpId} pause={current.limited} className="mb-2" />}
-                  {agents?.length ? <PlanDock settledAt={current?.updatedAt} /> : <TodoDock todos={todos} />}
-                  {/* Below the tray (whose fade would cover it), next to the composer it is about. */}
-                  {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
-                  <Composer
-                    status={status}
-                    busy={busy}
-                    send={send}
-                    interrupt={interrupt}
-                    model={model}
-                    onModel={changeModel}
-                    base={base}
-                    onBase={changeBase}
-                    branches={branches}
-                    baseLocked={baseLocked}
-                    baseClearable={!roundUpId}
-                    // A sub-agent follows its round-up's mode; it is changed there.
-                    mode={mode}
-                    modes={current?.role === 'agent' ? [] : modes}
-                    onMode={changeMode}
-                  />
-                </div>
-              </>
-            )}
-          </main>
-          <AgentPaneSlot />
+              {onApprovals ? (
+                <ApprovalsPage roundUps={roundUps} />
+              ) : onChanges ? (
+                <>
+                  {/* Scrolled to, focus and find land below the sticky tabs, not under them. */}
+                  <div className="min-h-0 flex-1 scroll-pt-12 overflow-y-auto">
+                    {/* The title stays where the conversation has it; the tabs and diffs take the whole column. */}
+                    <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 px-7 pt-1 max-sm:px-4">
+                      {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} />}
+                    </div>
+                    {/* One column for the tabs and the diffs, so the tabs stay stuck all the way down. */}
+                    <div className="flex w-full flex-col gap-7 px-7 pt-7 pb-8 max-sm:px-4">
+                      {tabs && <RoundUpTabs {...tabs} wide />}
+                      <ChangesTab roundUpId={roundUpId} repo={current?.cwd.split('/').slice(-2).join('/')} />
+                    </div>
+                  </div>
+                  <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
+                    <ApprovalTray approvals={approvals} roundUpId={roundUpId} docked />
+                    {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
+                  </div>
+                </>
+              ) : onWorkbench ? (
+                <WorkbenchPage cardId={linkedCard} />
+              ) : onSettings ? (
+                <SettingsPage />
+              ) : (
+                <>
+                  <ChatLog key={roundUpId ?? 'new'} id={roundUpId} content={items} className="min-h-0 flex-1">
+                    <ConversationContent
+                      scrollClassName={tabs ? 'scroll-pt-12' : undefined}
+                      className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4"
+                    >
+                      {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} />}
+                      {tabs && <RoundUpTabs {...tabs} />}
+                      {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
+                      {items.map((item) =>
+                        item.role === 'user' ? (
+                          <div key={item.id} className="flex flex-col items-end gap-1.5">
+                            <AttachmentChips sessionId={roundUpId} attachments={item.attachments} className="max-w-[78%]" />
+                            {item.text && <div className="bg-raise max-w-[78%] rounded-[20px] px-4 py-[11px] break-words whitespace-pre-wrap">{item.text}</div>}
+                          </div>
+                        ) : (
+                          <div key={item.id} className="flex min-w-0 flex-col gap-3.5">
+                            <AssistantParts parts={item.parts} streaming={busy && item === last} actor={actor} sessionId={roundUpId} />
+                          </div>
+                        ),
+                      )}
+                      {/* Whenever the composer offers stop: the same busy state, whoever started the turn. */}
+                      <WorkingStatus busy={busy} events={events} agents={agents ?? NO_AGENTS} />
+                    </ConversationContent>
+                    <ConversationScrollButton />
+                  </ChatLog>
+
+                  <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
+                    {/* The plan sits outside the chat flow, always in view while agents work. */}
+                    {roundUpId && <ApprovalTray approvals={approvals} roundUpId={current?.role === 'agent' ? (current.parentId ?? roundUpId) : roundUpId} inChat={roundUpId} docked />}
+                    {/* Paused at the usage limit: when it picks up again, and the person's say in it. */}
+                    {roundUpId && current?.limited && !busy && <PausedBanner sessionId={roundUpId} pause={current.limited} className="mb-2" />}
+                    {agents?.length ? <PlanDock settledAt={current?.updatedAt} /> : <TodoDock todos={todos} />}
+                    {/* Below the tray (whose fade would cover it), next to the composer it is about. */}
+                    {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
+                    <Composer
+                      status={status}
+                      busy={busy}
+                      send={send}
+                      interrupt={interrupt}
+                      model={model}
+                      onModel={changeModel}
+                      base={base}
+                      onBase={changeBase}
+                      branches={branches}
+                      baseLocked={baseLocked}
+                      baseClearable={!roundUpId}
+                      // A sub-agent follows its round-up's mode; it is changed there.
+                      mode={mode}
+                      modes={current?.role === 'agent' ? [] : modes}
+                      onMode={changeMode}
+                    />
+                  </div>
+                </>
+              )}
+            </main>
+          </AgentPaneLayout>
         </div>
         {reviewable && nav.full && <FullScreen roundUpId={roundUpId} roundUpTitle={titleOf(current)} which={nav.full} />}
         {/* First run: until Claude Code is installed and signed in. Settings shows the same, so not there. */}
