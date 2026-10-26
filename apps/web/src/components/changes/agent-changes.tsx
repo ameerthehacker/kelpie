@@ -2,19 +2,21 @@ import { Maximize2Icon } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useChanges } from '@/hooks/use-changes';
 import { useChangesNav } from '@/hooks/use-changes-nav';
+import { useDiffWrap } from '@/hooks/use-diff-wrap';
 import { useReview } from '@/hooks/use-review';
 import type { AgentSummary } from '@/lib/agents';
 import { anchorSha, filesLabel } from '@/lib/changes';
 import { reviewCounts, threadsOffDiff, threadsOn } from '@/lib/review';
 import { cn } from '@/lib/utils';
 import { OffDiffThreads, Totals, useCollapsed } from './changes-tab';
-import { FileCard } from './file-card';
+import { FileCard, WrapToggle } from './file-card';
 import type { DiffScope } from './scope';
 import { quietButton } from './thread';
 
 /** An agent's own changes in its pane: its branch against the feature branch, a round at a time. */
 export function AgentChanges({ agent: a }: { agent: AgentSummary }) {
   const nav = useChangesNav();
+  const [wrap, toggleWrap] = useDiffWrap('agent');
   const [round, setRound] = useState<number | undefined>();
   const changes = useChanges(a.id, { round, working: a.status === 'working' });
   const { state } = useReview(a.parentId);
@@ -55,6 +57,7 @@ export function AgentChanges({ agent: a }: { agent: AgentSummary }) {
                 ))}
               </select>
             )}
+            <WrapToggle wrap={wrap} onToggle={toggleWrap} />
             <button type="button" disabled={!files.length} onClick={() => nav.openFull(a.id, files[0]?.path, round)} className={cn(quietButton, 'h-[30px] text-xs')}>
               <Maximize2Icon className="size-3" />
               Full screen
@@ -77,6 +80,7 @@ export function AgentChanges({ agent: a }: { agent: AgentSummary }) {
               scope={scope}
               sessionId={a.id}
               round={round}
+              wrap={wrap}
               collapsed={collapse.isCollapsed(f.path)}
               onToggle={() => collapse.toggle(f.path)}
               onFullScreen={() => nav.openFull(a.id, f.path, round)}

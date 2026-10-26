@@ -2,11 +2,12 @@ import { FolderIcon, GitBranchIcon, Maximize2Icon } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useChanges } from '@/hooks/use-changes';
 import { useChangesNav } from '@/hooks/use-changes-nav';
+import { useDiffWrap } from '@/hooks/use-diff-wrap';
 import { useReview } from '@/hooks/use-review';
 import { anchorSha, filesLabel, musteredFromLabel, type ChangedFile } from '@/lib/changes';
 import { threadsOffDiff, threadsOn, type ReviewThread } from '@/lib/review';
 import { cn } from '@/lib/utils';
-import { FileCard, FilePath } from './file-card';
+import { FileCard, FilePath, WrapToggle } from './file-card';
 import { ReviewBar } from './review-bar';
 import type { DiffScope } from './scope';
 import { quietButton, ThreadView } from './thread';
@@ -60,6 +61,7 @@ export function ChangesTab({ roundUpId, repo }: { roundUpId: string; repo?: stri
   const changes = useChanges(roundUpId);
   const { state } = useReview(roundUpId);
   const nav = useChangesNav();
+  const [wrap, toggleWrap] = useDiffWrap('changes');
   const data = changes.data;
   const files = data?.state === 'ready' ? data.files : undefined;
   const collapse = useCollapsed(files);
@@ -101,6 +103,7 @@ export function ChangesTab({ roundUpId, repo }: { roundUpId: string; repo?: stri
             {filesLabel(data.stats.files)} <Totals additions={data.stats.additions} deletions={data.stats.deletions} />
           </span>
           <span className="flex-1" />
+          <WrapToggle wrap={wrap} onToggle={toggleWrap} />
           <button type="button" disabled={!files.length} onClick={() => nav.openFull('feature', files[0]?.path)} className={cn(quietButton, 'h-[30px] text-xs')}>
             <Maximize2Icon className="size-3" />
             Full screen
@@ -126,6 +129,7 @@ export function ChangesTab({ roundUpId, repo }: { roundUpId: string; repo?: stri
             threads={threads}
             scope={scope}
             sessionId={roundUpId}
+            wrap={wrap}
             collapsed={collapse.isCollapsed(f.path)}
             onToggle={() => collapse.toggle(f.path)}
             onFullScreen={() => nav.openFull('feature', f.path)}

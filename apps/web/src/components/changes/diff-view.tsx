@@ -29,7 +29,30 @@ const DIFF_STYLE = {
   '--diffs-header-font-family': 'var(--font-sans)',
   '--diffs-font-size': '12px',
   '--diffs-line-height': '20px',
+  // The scrollbar's height is otherwise measured, and overlay scrollbars (macOS) measure 0: none to grab.
+  '--diffs-scrollbar-gutter-override': '10px',
 } as CSSProperties;
+
+const THUMB = 'color-mix(in lab, var(--diffs-fg) 22%, var(--diffs-bg))';
+const THUMB_HOVER = 'color-mix(in lab, var(--diffs-fg) 38%, var(--diffs-bg))';
+
+/** What the diff's own CSS does not do as wanted; it is the shadow root's last layer. */
+const DIFF_CSS = [
+  // The card has the header. Not `disableFileHeader`: in @pierre/diffs 1.6 a re-render with it set
+  // leaves the diff blank, so its header is hidden instead.
+  '[data-diffs-header] { display: none; }',
+  '[data-line-number-content] { white-space: pre; }',
+  // Long lines scroll sideways under a scrollbar that shows, not one only there on hover.
+  `[data-code]::-webkit-scrollbar-thumb { background-color: ${THUMB}; border-radius: 5px; border: 2px solid transparent; }`,
+  `[data-code]::-webkit-scrollbar-thumb:hover { background-color: ${THUMB_HOVER}; }`,
+  `@supports (-moz-appearance: none) { [data-code] { scrollbar-color: ${THUMB} transparent; } }`,
+  // A hunk's header stays in view as the code scrolls (or wraps), cut short with an ellipsis; its
+  // title has it whole. It sits right of its gutter cell (100%), so it gets the code's width (as
+  // the diff's own `line-info` separators measure it) less that. A block, not the diff's flex: a
+  // flex box's text gets no ellipsis.
+  '[data-code] { container-type: inline-size; }',
+  '[data-gutter] [data-separator=metadata] [data-separator-wrapper] { display: block; align-content: center; min-width: 0; max-width: calc(100cqi - 100%); }',
+].join('\n');
 
 /**
  * Old and new line numbers in two columns, as GitHub's unified diff has them: @pierre/diffs 1.6
@@ -53,11 +76,17 @@ function numberBothSides(host: HTMLElement): void {
   }
 }
 
+/** A hunk's header is cut short when it is wider than the diff: hovering it shows it whole. */
+function titleHunks(host: HTMLElement): void {
+  const root = host.shadowRoot ?? host;
+  for (const el of root.querySelectorAll<HTMLElement>('[data-separator=metadata] [data-separator-wrapper]')) el.title = el.textContent?.trim() ?? '';
+}
+
 /**
  * One file's diff (@pierre/diffs, loaded lazily), with the review on it: threads on their lines,
  * the rest in a strip above, and a comment box on the line clicked.
  */
-export default function DiffView({ file, patch, threads, scope }: { file: ChangedFile; patch: string; threads: ReviewThread[]; scope: DiffScope }) {
+export default function DiffView({ file, patch, threads, scope, wrap }: { file: ChangedFile; patch: string; threads: ReviewThread[]; scope: DiffScope; wrap?: boolean }) {
   const review = useReview(scope.roundUpId);
   const theme = useTheme();
   const parsed = useMemo(() => {
@@ -108,22 +137,25 @@ export default function DiffView({ file, patch, threads, scope }: { file: Change
   const options = useMemo<FileDiffOptions<Meta, undefined>>(
     () => ({
       diffStyle: 'unified',
-      // The card has the header. Not `disableFileHeader`: in @pierre/diffs 1.6 a re-render with it
-      // set leaves the diff blank, so its header is hidden instead.
-      unsafeCSS: '[data-diffs-header] { display: none; } [data-line-number-content] { white-space: pre; }',
+      unsafeCSS: DIFF_CSS,
       themeType: theme,
       hunkSeparators: 'metadata',
       diffIndicators: 'classic',
-      overflow: 'scroll',
+      // Scrolling, the line numbers stay put and the threads keep to the visible width.
+      overflow: wrap ? 'wrap' : 'scroll',
       lineHoverHighlight: 'both',
       enableGutterUtility: true,
       // Context lines count as the new file's: they are anchored on `additions` by their new number.
       onLineClick: ({ annotationSide, lineNumber }) => openAt.current(annotationSide, lineNumber),
       onLineNumberClick: ({ annotationSide, lineNumber }) => openAt.current(annotationSide, lineNumber),
       onGutterUtilityClick: ({ start, side }) => openAt.current(side ?? 'additions', start),
-      onPostRender: (host, _diff, phase) => phase !== 'unmount' && numberBothSides(host),
+      onPostRender: (host, _diff, phase) => {
+        if (phase === 'unmount') return;
+        numberBothSides(host);
+        titleHunks(host);
+      },
     }),
-    [theme],
+    [theme, wrap],
   );
 
   if (!parsed) return <p className="text-mu px-4 py-3 text-[13px]">Couldn't read this diff.</p>;

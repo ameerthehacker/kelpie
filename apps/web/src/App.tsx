@@ -277,9 +277,12 @@ export function App() {
             ) : onChanges ? (
               <>
                 <div className="min-h-0 flex-1 overflow-y-auto">
-                  <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
+                  {/* The title and tabs stay where the conversation has them; the diffs take the whole column. */}
+                  <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 px-7 pt-1 max-sm:px-4">
                     {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} />}
                     {tabs}
+                  </div>
+                  <div className="w-full px-7 pt-7 pb-8 max-sm:px-4">
                     <ChangesTab roundUpId={roundUpId} repo={current?.cwd.split('/').slice(-2).join('/')} />
                   </div>
                 </div>
