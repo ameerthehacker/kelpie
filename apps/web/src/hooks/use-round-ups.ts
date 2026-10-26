@@ -11,6 +11,9 @@ import { APPROVALS } from './use-approvals';
 import type { PendingApproval } from '@/lib/approvals';
 import { attention } from './use-attention';
 import { dropSession, SUB_AGENTS, upsertSubAgent } from './use-round-up-status';
+import type { ReviewState } from '@/lib/review';
+import { reviewKey } from './use-review';
+import { CHANGES } from './use-changes';
 
 const ROUND_UPS = ['round-ups'] as const;
 
@@ -45,6 +48,9 @@ export function useRoundUps() {
             queryClient.setQueryData(ROUND_UPS, rows);
             attention.sessions(rows);
             void queryClient.invalidateQueries({ queryKey: AGENTS });
+            // Reviews and diffs too: their events missed while away are not replayed.
+            void queryClient.invalidateQueries({ queryKey: ['review'] });
+            void queryClient.invalidateQueries({ queryKey: [CHANGES] });
           },
           // Straight after, on every (re)connect: which sub-agents are working, for notifications and the sidebar's dots.
           'sub-agents': (msg) => {
@@ -77,6 +83,17 @@ export function useRoundUps() {
             const { roundUpId, approvals } = JSON.parse(msg.data) as { roundUpId: string; approvals: PendingApproval[] };
             queryClient.setQueryData<PendingApproval[]>(APPROVALS, (all = []) => [...all.filter((a) => a.roundUpId !== roundUpId), ...approvals]);
             attention.approvals(roundUpId, approvals);
+          },
+          // Every change to a round-up's review, the agents' replies and resolutions among them.
+          review: (msg) => {
+            const { roundUpId, state } = JSON.parse(msg.data) as { roundUpId: string; state: ReviewState };
+            queryClient.setQueryData(reviewKey(roundUpId), state);
+          },
+          // An agent went idle, or Muster merged: its diff and the feature's may have moved.
+          changes: (msg) => {
+            const { roundUpId, sessionId } = JSON.parse(msg.data) as { roundUpId: string; sessionId: string };
+            void queryClient.invalidateQueries({ queryKey: [CHANGES, sessionId] });
+            if (roundUpId !== sessionId) void queryClient.invalidateQueries({ queryKey: [CHANGES, roundUpId] });
           },
           deleted: (msg) => {
             const { id } = JSON.parse(msg.data) as { id: string };

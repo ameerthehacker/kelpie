@@ -6,6 +6,7 @@ import { MessageResponse } from '@/components/ai-elements/message';
 import { AgentEvents, EventLine } from '@/components/chat/events';
 import { PlanCard } from '@/components/chat/plan-card';
 import { StepGroup } from '@/components/chat/steps';
+import { useChangesNav } from '@/hooks/use-changes-nav';
 import type { AssistantPart, SpawnView, ToolView } from '@/lib/chat';
 
 type Block = Exclude<AssistantPart, ToolView | SpawnView> | { type: 'tools'; tools: ToolView[] } | { type: 'spawns'; spawns: SpawnView[] };
@@ -75,10 +76,21 @@ function BlockView({
     case 'plan':
       return <PlanCard plan={part} sessionId={sessionId} />;
     case 'notice':
+      if (part.link === 'changes') return <ChangesNotice text={part.text} ts={part.ts} />;
       return (
         <EventLine tone={part.tone === 'error' ? 'fail' : 'muted'}>
           <span className="whitespace-pre-wrap">{part.text}</span> · {format(new Date(part.ts), 'HH:mm')}
         </EventLine>
       );
   }
+}
+
+/** A notice that leads to the round-up's Changes tab (a submitted review). */
+function ChangesNotice({ text, ts }: { text: string; ts: string }) {
+  const nav = useChangesNav();
+  return (
+    <EventLine tone="muted" title="Open the Changes tab" onClick={() => nav.setTab('changes')}>
+      {text} · <span className="underline underline-offset-2">See changes</span> · {format(new Date(ts), 'HH:mm')}
+    </EventLine>
+  );
 }
