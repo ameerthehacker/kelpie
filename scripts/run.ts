@@ -7,7 +7,9 @@
  * if busy). Ctrl-C interrupts the running turn, a second Ctrl-C (or Ctrl-C
  * while idle) ends the session.
  */
-import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { parseArgs, styleText } from 'node:util';
 import type { EventData, KelpieEvent } from '@kelpie/protocol';
@@ -127,8 +129,13 @@ function render(ev: KelpieEvent): void {
   }
 }
 
+// Run logs go where the dev daemon keeps its data (packages/daemon/src/main.ts), not an installed Kelpie's.
+const home = process.env.KELPIE_HOME || join(homedir(), '.kelpie-dev');
+const runId = randomUUID();
 const run = claudeCode.start({
   cwd: resolve(opts.cwd),
+  runId,
+  runDir: join(home, 'runs', runId),
   ...(positionals.length ? { prompt: positionals.join(' ') } : {}),
   ...(opts.model ? { model: opts.model } : {}),
   ...(opts.resume ? { resume: opts.resume } : {}),

@@ -1,11 +1,19 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, realpathSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
-const tmp = (prefix: string) => realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+const made: string[] = [];
+const tmp = (prefix: string) => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  made.push(dir);
+  return dir;
+};
+afterAll(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true });
+});
 const main = join(import.meta.dirname, '../src/main.ts');
 const root = join(import.meta.dirname, '../../..');
 
@@ -40,9 +48,12 @@ async function dataDir(env: Record<string, string | undefined>): Promise<string>
       child.once('exit', (code) => reject(new Error(`main.ts exited (${code}): ${err}`)));
     });
   } finally {
-    const exited = new Promise((ok) => child.once('exit', ok));
-    child.kill('SIGTERM');
-    await exited;
+    // Already gone if it failed to start: its exit event has fired, and won't again.
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise((ok) => child.once('exit', ok));
+      child.kill('SIGTERM');
+      await exited;
+    }
   }
 }
 

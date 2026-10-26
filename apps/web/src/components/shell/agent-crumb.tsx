@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router';
 import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from '@/components/ui/breadcrumb';
 import { Kbd } from '@/components/ui/kbd';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { roundUpPath, titleOf, type OpenedFrom, type RoundUp } from '@/lib/round-ups';
+import { roundUpPath, titleOf, wayBack, type RoundUp } from '@/lib/round-ups';
 
 /** Escape is the person's to use while a dialog or menu is open, or while they are typing something. */
 function escapeIsFree(e: KeyboardEvent): boolean {
@@ -19,13 +19,14 @@ function escapeIsFree(e: KeyboardEvent): boolean {
 /**
  * The header's way back from a sub-agent's own page to its round-up's chat: "‹ Round-up / Agent",
  * and Escape. Opened from that chat, it steps back through history (the browser's back and
- * forward stay in line); landed on directly, it opens the round-up.
+ * forward stay in line); otherwise it opens the round-up (see `wayBack`).
  */
 export function AgentCrumb({ agent, roundUp }: { agent: RoundUp; roundUp: RoundUp | undefined }) {
   const navigate = useNavigate();
-  const { state } = useLocation();
+  const location = useLocation();
   const to = roundUpPath(agent.parentId!);
-  const back = useCallback(() => void ((state as OpenedFrom | null)?.from === to ? navigate(-1) : navigate(to)), [navigate, state, to]);
+  const way = wayBack(to, location);
+  const back = useCallback(() => void (way === 'back' ? navigate(-1) : navigate(to, { replace: way === 'replace' })), [navigate, way, to]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -57,7 +58,14 @@ export function AgentCrumb({ agent, roundUp }: { agent: RoundUp; roundUp: RoundU
                 </button>
               </BreadcrumbLink>
             </TooltipTrigger>
-            <TooltipContent>
+            {/* Shown on focus too: Escape there goes back rather than only closing it. */}
+            <TooltipContent
+              onEscapeKeyDown={(e) => {
+                if (!escapeIsFree(e)) return;
+                e.preventDefault();
+                back();
+              }}
+            >
               Back to Kelpie's chat <Kbd>Esc</Kbd>
             </TooltipContent>
           </Tooltip>

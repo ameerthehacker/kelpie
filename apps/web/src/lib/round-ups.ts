@@ -12,6 +12,18 @@ export interface OpenedFrom {
   from: string;
 }
 
+/**
+ * How to go back up to `to` (a sub-agent's round-up) from the page at `location`. Opened from
+ * there: step back through history. Reached some other way inside the app (the approvals page,
+ * search): go there in place of this entry, so the browser's back still returns to where the
+ * person was. Landed on directly (a link, a new tab): go there as a new entry, keeping this one.
+ * `key` is React Router's, `'default'` for the entry the app was loaded on.
+ */
+export function wayBack(to: string, location: { state: unknown; key: string }): 'back' | 'replace' | 'push' {
+  if ((location.state as Partial<OpenedFrom> | null)?.from === to) return 'back';
+  return location.key === 'default' ? 'push' : 'replace';
+}
+
 /** A round-up as the daemon lists it (mirrors the daemon's `SessionInfo`). */
 export interface RoundUp {
   id: string;
