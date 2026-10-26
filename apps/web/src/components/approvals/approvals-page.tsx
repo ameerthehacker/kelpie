@@ -22,7 +22,7 @@ export function ApprovalsPage({ roundUps }: { roundUps: RoundUp[] | undefined })
   return (
     <div className="mx-auto flex w-full max-w-[760px] flex-col gap-6 overflow-y-auto px-7 pt-2 pb-10 max-sm:px-4">
       <h1 className="font-heading text-[34px] leading-[1.05] font-semibold tracking-[-0.035em]">Waiting on you</h1>
-      {byRoundUp.size === 0 && <p className="text-mu">Nothing is waiting: no agent needs your approval right now.</p>}
+      {byRoundUp.size === 0 && <p className="text-mu">Nothing is waiting: no agent needs your approval or an answer right now.</p>}
       {[...byRoundUp].map(([roundUpId, approvals]) => {
         const roundUp = roundUps?.find((r) => r.id === roundUpId);
         const plans = approvals.filter(isPlan);
@@ -36,7 +36,7 @@ export function ApprovalsPage({ roundUps }: { roundUps: RoundUp[] | undefined })
                 <ClipboardListIcon className="text-vio size-4" strokeWidth={2} />A plan is waiting for your approval. Open the round-up to review it.
               </Link>
             )}
-            <ApprovalTray approvals={approvals} roundUpId={roundUpId} />
+            <ApprovalTray approvals={approvals} roundUpId={roundUpId} openFirst />
           </section>
         );
       })}

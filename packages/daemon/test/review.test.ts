@@ -75,7 +75,7 @@ describe('reviews', () => {
     const ctx = start();
     const { parent, api, head } = await mustered(ctx);
     const orchestrator = await mcpClient(ctx, await startWith(ctx, "You are Kelpie's orchestrator"));
-    expect(await orchestrator.tools()).toEqual(['assign_threads', 'interrupt_agent', 'list_agents', 'list_branches', 'list_review_threads', 'message_agent', 'muster_agents', 'read_agent', 'read_review', 'reply_to_thread', 'resolve_thread', 'set_base_branch', 'spawn_agent']);
+    expect(await orchestrator.tools()).toEqual(['assign_threads', 'interrupt_agent', 'link_ticket', 'list_agents', 'list_branches', 'list_review_threads', 'message_agent', 'muster_agents', 'read_agent', 'read_review', 'reply_to_thread', 'resolve_thread', 'set_base_branch', 'spawn_agent', 'unlink_ticket']);
     const t1 = (await comment(ctx, parent, head(), { path: 'app.txt', side: 'additions', line: 2, lineText: 'L2 api' }, 'rename this')).body.thread as ReviewThread;
     const t2 = (await comment(ctx, parent, head(), { path: 'app.txt', side: 'additions', line: 5, lineText: 'l5' }, 'why is this here?')).body.thread as ReviewThread;
     expect((await orchestrator.call('list_review_threads', { status: 'all' })).data).toEqual([]);

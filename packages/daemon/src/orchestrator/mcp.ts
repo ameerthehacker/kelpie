@@ -202,6 +202,26 @@ function orchestratorServer(orch: Orchestrator, parent: Session): McpServer {
     ({ branch }) => result(() => orch.setBase(parent, branch)),
   );
 
+  mcp.registerTool(
+    'link_ticket',
+    {
+      description:
+        'Link a Jira issue or Asana task or project to this round-up; the person sees it under the title. Links in their messages are linked already. ' +
+        'Linking a ticket again (by any link to it) only sets its title. Returns the round-up\'s tickets.',
+      inputSchema: {
+        url: z.string().min(1).describe('The ticket\'s link: https://<org>.atlassian.net/browse/KEY-123 (or a board link to it), or an app.asana.com task or project link.'),
+        title: z.string().max(200).optional().describe('A readable name, when you know it: the Jira summary, the Asana task\'s or project\'s name.'),
+      },
+    },
+    ({ url, title }) => result(() => orch.linkTicket(parent, url, title)),
+  );
+
+  mcp.registerTool(
+    'unlink_ticket',
+    { description: 'Unlink a ticket from this round-up, e.g. one linked by mistake.', inputSchema: { url: z.string().min(1).describe('Any link to the ticket.') } },
+    ({ url }) => result(() => orch.unlinkTicket(parent, url)),
+  );
+
   return mcp;
 }
 

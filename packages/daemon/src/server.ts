@@ -6,7 +6,7 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE, type SSEMessage } from 'hono/streaming';
 import { getMimeType } from 'hono/utils/mime';
-import { Mode } from '@kelpie/protocol';
+import { Answers, Mode } from '@kelpie/protocol';
 import { isLocalHost, isLocalOrigin } from './local.js';
 import { handleMcp } from './orchestrator/mcp.js';
 import { BaseFixedError, type Orchestrator } from './orchestrator/orchestrator.js';
@@ -170,10 +170,12 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     return c.json({ approvals: sessions.approvals(roundUp), ...(roundUp ? { rules: sessions.rules(roundUp) } : {}) });
   });
 
-  // Answers a batch: { items: [{ sessionId, requestId }], decision: 'allow' | 'deny', message?, remember?, mode? }.
-  // Each item is answered on its own; the result says which went through.
+  // Answers a batch: { items: [{ sessionId, requestId }], decision: 'allow' | 'deny', message?, remember?, mode?, answers? }.
+  // Each item is answered on its own; the result says which went through. Questions are allowed with
+  // `answers` (question text → an option's label, the person's own words, or a list for a multi-select
+  // one), one item at a time; denying them skips them.
   app.post('/api/approvals', async (c) => {
-    const body = await jsonBody<{ items?: unknown; decision?: unknown; message?: unknown; remember?: unknown; mode?: unknown }>(c);
+    const body = await jsonBody<{ items?: unknown; decision?: unknown; message?: unknown; remember?: unknown; mode?: unknown; answers?: unknown }>(c);
     const items = Array.isArray(body.items) ? body.items : [];
     const valid = items.length > 0 && items.length <= 500 && items.every((i) => typeof i?.sessionId === 'string' && typeof i?.requestId === 'string');
     if (!valid) return c.json({ error: 'items must be 1-500 { sessionId, requestId }' }, 400);
@@ -181,12 +183,23 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     if (body.message !== undefined && (typeof body.message !== 'string' || body.message.length > 2000)) return c.json({ error: 'message must be text (at most 2000 characters)' }, 400);
     const mode = body.mode === undefined ? undefined : Mode.safeParse(body.mode);
     if (mode && (!mode.success || mode.data === 'plan')) return c.json({ error: 'mode, approving a plan, must be auto or acceptEdits' }, 400);
+    const answers = body.answers === undefined ? undefined : Answers.safeParse(body.answers);
+    if (answers && (!answers.success || items.length !== 1 || body.decision !== 'allow')) {
+      return c.json({ error: 'answers must map question text to an answer (or a list of them), for one item being allowed' }, 400);
+    }
+    if (answers) {
+      const [item] = items as { sessionId: string; requestId: string }[];
+      const pending = sessions.get(item!.sessionId)?.approval(item!.requestId);
+      // Gone already is the result's to report; only a request still open can be the wrong kind.
+      if (pending && !pending.questions) return c.json({ error: 'answers are for questions, and this is not a question' }, 400);
+    }
     const results = await sessions.answerApprovals({
       items: items as { sessionId: string; requestId: string }[],
       allow: body.decision === 'allow',
       ...(typeof body.message === 'string' ? { message: body.message } : {}),
       remember: body.remember === true,
       ...(mode?.success ? { mode: mode.data } : {}),
+      ...(answers?.success ? { answers: answers.data } : {}),
     });
     return c.json({ results });
   });

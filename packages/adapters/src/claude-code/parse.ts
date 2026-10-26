@@ -1,4 +1,4 @@
-import type { EventData, EventKind, KelpieEvent, TodoItem, UsageWindow } from '@kelpie/protocol';
+import { questionsOf, type EventData, type EventKind, type KelpieEvent, type TodoItem, type UsageWindow } from '@kelpie/protocol';
 import { applyTodoTool, fileDelta, flattenContent, isChromeTool, toolCategory, toolTitle } from './tools.js';
 
 type Obj = Record<string, any>;
@@ -22,6 +22,8 @@ export interface ParserOptions {
 interface PendingTool {
   name: string;
   input: Obj;
+  /** Called by a sub-agent, not the turn itself. */
+  nested: boolean;
 }
 
 export interface EmitExtra {
@@ -52,8 +54,8 @@ export class ClaudeCodeParser {
   private lastBusy = false;
   /** The latest assistant text: what a plan put to the person says, when ExitPlanMode carries none. */
   private lastText = '';
-  /** Permission requests waiting for an answer, with the input they asked about. */
-  private readonly permissions = new Map<string, Obj>();
+  /** Permission requests waiting for an answer, with the input they asked about and the call they are for. */
+  private readonly permissions = new Map<string, { input: Obj; callId: string | undefined }>();
 
   constructor(opts: ParserOptions) {
     this.runId = opts.runId;
@@ -100,7 +102,7 @@ export class ClaudeCodeParser {
 
   /** The input a still-open permission request asked about; undefined once it is answered or gone. */
   permissionInput(requestId: string): Obj | undefined {
-    return this.permissions.get(requestId);
+    return this.permissions.get(requestId)?.input;
   }
 
   /** A permission request has been answered (by the spawner, on stdin). */
@@ -156,13 +158,37 @@ export class ClaudeCodeParser {
     const requestId = String(o.request_id);
     const tool = String(req.tool_name ?? '');
     const input: Obj = req.input ?? {};
-    this.permissions.set(requestId, input);
-    // None for Claude in Chrome: allowing one action in the person's browser allows no other.
-    const rule = isChromeTool(tool) ? undefined : suggestedRule(req.permission_suggestions);
+    this.permissions.set(requestId, { input, callId: typeof req.tool_use_id === 'string' ? req.tool_use_id : undefined });
+    const questions = tool === 'AskUserQuestion' ? questionsOf(input) : undefined;
+    // A question is the person's to answer each time: never a rule to allow by. None for Claude in Chrome
+    // either: allowing one action in the person's browser allows no other.
+    const rule = questions || isChromeTool(tool) ? undefined : suggestedRule(req.permission_suggestions);
     // The plan is in the call, or (when the model wrote it out first) its latest message.
     const plan = tool === 'ExitPlanMode' ? (typeof input.plan === 'string' && input.plan.trim() ? input.plan : this.lastText) || undefined : undefined;
-    const title = tool === 'ExitPlanMode' ? 'Approve the plan' : toolTitle(tool, input, this.cwd) || String(req.description ?? tool);
-    return [this.emit('permission.requested', { requestId, tool, title, input, ...(rule ? { rule } : {}), ...(plan ? { plan } : {}) }, x)];
+    const title =
+      tool === 'ExitPlanMode'
+        ? 'Approve the plan'
+        : questions
+          ? questions.length === 1
+            ? questions[0]!.question
+            : `Answer ${questions.length} questions`
+          : toolTitle(tool, input, this.cwd) || String(req.description ?? tool);
+    return [
+      this.emit(
+        'permission.requested',
+        {
+          requestId,
+          tool,
+          title,
+          input,
+          ...(typeof req.tool_use_id === 'string' ? { callId: req.tool_use_id } : {}),
+          ...(rule ? { rule } : {}),
+          ...(plan ? { plan } : {}),
+          ...(questions ? { questions } : {}),
+        },
+        x,
+      ),
+    ];
   }
 
   private system(o: Obj, x: EmitExtra): KelpieEvent[] {
@@ -209,7 +235,7 @@ export class ClaudeCodeParser {
         case 'tool_use': {
           const name = String(block.name);
           const input: Obj = block.input ?? {};
-          this.pending.set(block.id, { name, input });
+          this.pending.set(block.id, { name, input, nested: !!x.parentCallId });
           out.push(
             this.emit(
               'tool.started',
@@ -312,7 +338,20 @@ export class ClaudeCodeParser {
       },
       x,
     );
-    return [usage, ended];
+    return [...(interrupted ? this.expireTurnRequests(x) : []), usage, ended];
+  }
+
+  /**
+   * An interrupted turn answers nothing it asked. The CLI cancels each such request itself; any it
+   * did not are closed here, so the person isn't left answering into the void. Sub-agents' requests
+   * stay open: a background agent can outlive the turn that started it.
+   */
+  private expireTurnRequests(x: EmitExtra): KelpieEvent[] {
+    const stale = [...this.permissions].filter(([, p]) => !(p.callId && this.pending.get(p.callId)?.nested)).map(([id]) => id);
+    return stale.flatMap((requestId) => {
+      this.permissions.delete(requestId);
+      return [this.emit('permission.resolved', { requestId, decision: 'deny', by: 'expired' }, x)];
+    });
   }
 
   private rateLimit(o: Obj, x: EmitExtra): KelpieEvent {

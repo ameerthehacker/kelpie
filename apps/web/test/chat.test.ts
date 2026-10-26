@@ -19,6 +19,32 @@ const partsOf = (name: string): AssistantPart[] => buildChat(events(name)).flatM
 const toolsOf = (name: string) => partsOf(name).filter((p): p is ToolView => p.type === 'tool');
 
 describe('buildChat', () => {
+  it('shows questions put to the person as their card, open until answered, then with the answers', () => {
+    const evs = events('ask');
+    const resolved = evs.findIndex((e) => e.kind === 'permission.resolved');
+    // The replayed fixture carries no answer of ours; add the one the spawner logs.
+    const requested = evs.find((e) => e.kind === 'permission.requested');
+    const requestId = requested?.kind === 'permission.requested' ? requested.data.requestId : '';
+    const answer = { ...evs[0]!, id: 'x', kind: 'permission.resolved' as const, data: { requestId, decision: 'allow' as const, by: 'person' as const, answers: { 'Which color should the button be?': 'Blue' } } };
+    const open = buildChat(evs.slice(0, evs.findIndex((e) => e.kind === 'permission.requested') + 1)).flatMap((i) => (i.role === 'assistant' ? i.parts : []));
+    expect(open.filter((p) => p.type === 'tool')).toEqual([]);
+    expect(open.filter((p) => p.type === 'question')).toMatchObject([{ state: 'open', requestId, questions: [{ question: 'Which color should the button be?', header: 'Color' }] }]);
+    const parts = buildChat(resolved < 0 ? [...evs, answer] : [...evs.slice(0, resolved), answer, ...evs.slice(resolved)]).flatMap((i) => (i.role === 'assistant' ? i.parts : []));
+    expect(parts.filter((p) => p.type === 'question')).toMatchObject([{ state: 'answered', answers: { 'Which color should the button be?': 'Blue' } }]);
+  });
+
+  it('marks skipped questions, and ones left open when the run ended', () => {
+    const skipped = events('ask-skip');
+    const at = skipped.findIndex((e) => e.kind === 'permission.requested');
+    const req = skipped[at]!;
+    const requestId = req.kind === 'permission.requested' ? req.data.requestId : '';
+    const skip = { ...req, id: 'x', kind: 'permission.resolved' as const, data: { requestId, decision: 'deny' as const, by: 'person' as const } };
+    const state = (evs: KelpieEvent[]) => buildChat(evs).flatMap((i) => (i.role === 'assistant' ? i.parts : [])).find((p) => p.type === 'question');
+    expect(state([...skipped.slice(0, at + 1), skip])).toMatchObject({ state: 'skipped' });
+    const exit = { ...req, id: 'y', kind: 'process.exited' as const, data: { code: 0, signal: null, stderrTail: '' } };
+    expect(state([...skipped.slice(0, at + 1), exit])).toMatchObject({ state: 'expired' });
+  });
+
   it('shows a turn’s files as attachments, without the block of paths the harness reads', () => {
     const base = { id: 'e1', runId: 'r', seq: 0, ts: '2026-01-01T00:00:00.000Z', harness: 'claude-code' as const };
     const text = 'Why is this red?\n\n<attachments>\n- /s/uploads/ab-shot.png (image/png, 2 KB)\n</attachments>';

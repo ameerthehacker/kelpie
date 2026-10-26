@@ -21,6 +21,8 @@ export {
   type StoreOptions,
   type ThreadFilter,
   type ThreadStatus,
+  type TicketRow,
+  type TicketSource,
   type WorktreePatch,
   type WorktreeRow,
 } from './store.js';

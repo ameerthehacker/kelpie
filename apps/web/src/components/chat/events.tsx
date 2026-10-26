@@ -1,9 +1,8 @@
 import { format } from 'date-fns';
 import type { ReactNode } from 'react';
-import { useNavigate } from 'react-router';
 import { firstLine, type AgentUpdate } from '@kelpie/protocol';
 import { useAgentPane } from '@/components/agents/pane-state';
-import { roundUpPath } from '@/lib/round-ups';
+import { useOpenSession } from '@/hooks/use-open-session';
 import { cn } from '@/lib/utils';
 
 export type EventTone = 'done' | 'fail' | 'muted';
@@ -37,7 +36,7 @@ const SAID: Record<string, { verb: string; tone: EventTone }> = {
 /** Agents Kelpie reported to the orchestrator: one event line each, opening the agent. */
 export function AgentEvents({ agents, ts }: { agents: AgentUpdate[]; ts: string }) {
   const pane = useAgentPane();
-  const navigate = useNavigate();
+  const openSession = useOpenSession();
   const time = format(new Date(ts), 'HH:mm');
   return (
     <div className="flex flex-col gap-2">
@@ -51,7 +50,7 @@ export function AgentEvents({ agents, ts }: { agents: AgentUpdate[]; ts: string 
             key={a.agentId}
             tone={said.tone}
             title={`Open ${a.title}`}
-            onClick={() => (pane && inPane ? pane.openAgent(a.agentId) : navigate(roundUpPath(a.agentId)))}
+            onClick={() => (pane && inPane ? pane.openAgent(a.agentId) : openSession(a.agentId))}
           >
             {a.title} {said.verb}
             {detail && ` · ${detail}`} · {time}

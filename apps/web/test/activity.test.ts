@@ -88,6 +88,13 @@ describe('orchestratorStatus', () => {
     expect(orchestratorStatus([busy(true), started('c1', 'Bash', {}, 'bash'), asked, answered], agents)).toBe('Running a command');
   });
 
+  it('waits for an answer to a question, and for a review of a plan', () => {
+    const question = ev('permission.requested', { requestId: 'q1', tool: 'AskUserQuestion', title: 'x', input: {}, questions: [{ question: 'Which?', options: [] }] });
+    expect(orchestratorStatus([busy(true), started('c1', 'AskUserQuestion'), question], agents)).toBe('Waiting for your answer');
+    const plan = ev('permission.requested', { requestId: 'p1', tool: 'ExitPlanMode', title: 'x', input: {} });
+    expect(orchestratorStatus([busy(true), started('c1', 'ExitPlanMode'), plan], agents)).toBe('Waiting for you to review the plan');
+  });
+
   it('only looks at the turn in progress', () => {
     const earlier = [busy(true), started('c1', kelpie('list_agents')), ev('process.exited', { code: 1, signal: null, stderrTail: '' })];
     expect(orchestratorStatus([...earlier, busy(true)], agents)).toBe('Thinking…');

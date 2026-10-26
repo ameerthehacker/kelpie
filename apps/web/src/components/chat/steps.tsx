@@ -142,7 +142,7 @@ function Block({ label, text, tone, language }: { label: string; text: string; t
 export function StepIcon({ kind, tone }: { kind: StepKind; tone?: 'running' | 'error' }) {
   const Icon = ICON[kind];
   return (
-    <span aria-hidden="true" className={cn('bg-chip flex size-[26px] items-center justify-center rounded-full', tone === 'error' ? 'text-fail' : TINT[kind], tone === 'running' && 'animate-k-pulse')}>
+    <span aria-hidden="true" className={cn('bg-chip flex size-[26px] items-center justify-center rounded-full', tone === 'error' ? 'text-fail' : TINT[kind], tone === 'running' && 'motion-safe:animate-k-pulse')}>
       <Icon className="size-[13px]" strokeWidth={2.2} />
     </span>
   );

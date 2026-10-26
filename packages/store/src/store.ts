@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { and, asc, desc, eq, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { HarnessUsage, KelpieEvent, type EventData, type EventKind, type EventOf } from '@kelpie/protocol';
+import { HarnessUsage, KelpieEvent, type EventData, type EventKind, type EventOf, type TicketLink } from '@kelpie/protocol';
 import * as schema from './schema.js';
 
 export type SessionRow = typeof schema.sessions.$inferSelect;
@@ -33,6 +33,8 @@ export interface ThreadFilter {
   assignedTo?: string;
   ids?: string[];
 }
+export type TicketRow = typeof schema.tickets.$inferSelect;
+export type TicketSource = TicketRow['source'];
 
 const MIGRATIONS = join(import.meta.dirname, '../drizzle');
 
@@ -478,6 +480,34 @@ export class Store {
       }
       return done!;
     });
+  }
+
+  /**
+   * Links a ticket to a round-up, once: linking one it has (by `ref`, whatever form the link
+   * took) only sets its title, if one is given. True if anything changed.
+   */
+  linkTicket(roundUpId: string, t: TicketLink, source: TicketSource, title?: string, now = Date.now()): boolean {
+    const name = title?.trim() || null;
+    return this.atomically(() => {
+      const added = this.db
+        .insert(schema.tickets)
+        .values({ roundUpId, ref: t.ref, provider: t.provider, kind: t.kind, url: t.url, key: t.key ?? null, title: name, source, createdAt: now })
+        .onConflictDoNothing()
+        .run().changes;
+      if (added || !name) return added > 0;
+      const where = and(eq(schema.tickets.roundUpId, roundUpId), eq(schema.tickets.ref, t.ref), sql`${schema.tickets.title} is not ${name}`);
+      return this.db.update(schema.tickets).set({ title: name }).where(where).run().changes > 0;
+    });
+  }
+
+  /** A round-up's tickets, in the order they were linked. */
+  ticketsOf(roundUpId: string): TicketRow[] {
+    return this.db.select().from(schema.tickets).where(eq(schema.tickets.roundUpId, roundUpId)).orderBy(asc(schema.tickets.id)).all();
+  }
+
+  /** Unlinks one of a round-up's tickets by its `ref`; false if it has no such ticket. */
+  unlinkTicket(roundUpId: string, ref: string): boolean {
+    return this.db.delete(schema.tickets).where(and(eq(schema.tickets.roundUpId, roundUpId), eq(schema.tickets.ref, ref))).run().changes > 0;
   }
 
   close(): void {

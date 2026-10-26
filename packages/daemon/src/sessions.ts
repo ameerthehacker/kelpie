@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import { attachmentsBlock, mergeUsage, type Attachment, type EventOf, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
+import { attachmentsBlock, findTickets, mergeUsage, type LinkedTicket, type TicketLink, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem } from '@kelpie/protocol';
 import { claudeCode, isChromeTool, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
-import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store } from '@kelpie/store';
-import { nowOf, SUMMARY_KINDS, type AgentSummary } from './agent-summary.js';
+import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store, TicketRow, TicketSource } from '@kelpie/store';
+import { nowOf, SUMMARY_KINDS, type AgentSummary, type Now } from './agent-summary.js';
 import type { ReviewState } from './review/types.js';
 
 export type TurnStatus = EventData<'turn.ended'>['status'];
@@ -40,6 +40,12 @@ export interface SessionInfo {
   baseCommit: string | undefined;
   /** The round-up's mode; a sub-agent reports its round-up's. */
   mode: Mode;
+  /** Jira and Asana tickets linked to a top-level round-up, in the order they were linked; none on a sub-agent. */
+  tickets: LinkedTicket[];
+  /** A sub-agent's own branch and its worktree's state, as in its AgentSummary: whether its work still waits to be mustered. */
+  branch?: string;
+  deliver?: 'muster' | 'standalone';
+  worktree?: 'creating' | 'active' | 'mustered' | 'removed';
 }
 
 /** What subscribers receive. `index` is the event's position in the session log (stable across runs and restarts). */
@@ -60,6 +66,8 @@ export interface PendingApproval {
   input: unknown;
   rule?: string;
   plan?: string;
+  /** Questions it puts to the person (AskUserQuestion), answered with `answers` rather than a yes. */
+  questions?: Question[];
   /** When it was asked (ISO). */
   ts: string;
 }
@@ -74,6 +82,35 @@ export interface ApprovalResult {
 
 /** The message an agent gets when the person says no without one. */
 export const DENIED = "The person declined this. Don't retry it or work around it; say in your report what you needed it for.";
+
+/** The message an agent gets when the person skips its questions. */
+export const SKIPPED =
+  "The person skipped these questions without answering. Don't ask them again; go with your best judgment, and say in your report what you assumed.";
+
+/**
+ * Why `answers` can't answer `questions`, or undefined if they can: every answer is to one of the
+ * questions, non-empty, and a list only for a multi-select one; at least one question is answered.
+ */
+export function answersError(questions: Question[], answers: Answers): string | undefined {
+  const byText = new Map(questions.map((q) => [q.question, q]));
+  const entries = Object.entries(answers);
+  if (!entries.length) return 'answer at least one of the questions';
+  for (const [text, answer] of entries) {
+    const q = byText.get(text);
+    if (!q) return `not one of the questions: ${text}`;
+    const parts = Array.isArray(answer) ? answer : [answer];
+    if (Array.isArray(answer) && !q.multiSelect) return `"${text}" takes one answer`;
+    if (!parts.length || parts.some((p) => typeof p !== 'string' || !p.trim() || p.length > 4000)) return `"${text}" needs an answer (at most 4000 characters each)`;
+    if (parts.length > q.options.length + 1) return `"${text}" has more answers than options`;
+    if (q.kind === 'number') {
+      const n = Number(parts[0]!.trim());
+      if (!/^-?\d+(\.\d+)?$/.test(parts[0]!.trim()) || (q.min !== undefined && n < q.min) || (q.max !== undefined && n > q.max)) {
+        return `"${text}" takes a number${q.min !== undefined && q.max !== undefined ? ` between ${q.min} and ${q.max}` : ''}`;
+      }
+    }
+  }
+  return undefined;
+}
 
 /** What the round-up list stream carries. */
 export type ManagerUpdate =
@@ -193,6 +230,16 @@ interface SessionContext {
   approvalsChanged: (s: Session) => void;
 }
 
+const ticketOf = (r: TicketRow): LinkedTicket => ({
+  provider: r.provider,
+  kind: r.kind,
+  url: r.url,
+  ...(r.key ? { key: r.key } : {}),
+  ...(r.title ? { title: r.title } : {}),
+  source: r.source,
+  addedAt: r.createdAt,
+});
+
 const STOPPED = 'Kelpie stopped while this run was active.';
 const AGENT_UPDATE_MS = 300;
 const TITLE_MAX = 60;
@@ -247,8 +294,10 @@ export class Session {
   private lastTurnState: TurnStatus | undefined;
   /** For a sub-agent's summary: kept current from its events. */
   private todosState: TodoItem[] = [];
-  private nowState = '';
+  private nowState: Now = { now: '' };
   private modelState: string | undefined;
+  /** A top-level round-up's tickets, read from the store when first asked for. */
+  private ticketsState: LinkedTicket[] | undefined;
 
   constructor(
     row: SessionRow,
@@ -417,7 +466,36 @@ export class Session {
       baseBranch: baseBranch ?? undefined,
       baseCommit: baseCommit ?? undefined,
       mode: this.mode,
+      tickets: this.tickets(),
+      ...(parentId ? this.worktreeSummary() : {}),
     };
+  }
+
+  /** The Jira and Asana tickets linked to this round-up; a sub-agent has none of its own. */
+  tickets(): LinkedTicket[] {
+    if (this.row.parentId) return [];
+    return (this.ticketsState ??= this.ctx.store.ticketsOf(this.id).map(ticketOf));
+  }
+
+  /** Links tickets to this round-up (each once; see Store.linkTicket). True, and watchers hear, if anything changed. */
+  linkTickets(links: TicketLink[], source: TicketSource, title?: string): boolean {
+    if (this.row.parentId) throw new Error('tickets are linked to a round-up, not to one of its agents');
+    let changed = false;
+    for (const t of links) changed = this.ctx.store.linkTicket(this.id, t, source, title) || changed;
+    if (changed) this.ticketsChanged();
+    return changed;
+  }
+
+  /** Unlinks a ticket by its `ref`; false if it was not linked. */
+  unlinkTicket(ref: string): boolean {
+    const gone = !this.row.parentId && this.ctx.store.unlinkTicket(this.id, ref);
+    if (gone) this.ticketsChanged();
+    return gone;
+  }
+
+  private ticketsChanged(): void {
+    this.ticketsState = undefined;
+    this.ctx.changed(this);
   }
 
   /** A sub-agent at a glance (see AgentSummary). */
@@ -433,7 +511,7 @@ export class Session {
       writes,
       browser,
       status: this.working ? (this.asking.size ? 'needs-approval' : 'working') : t === 'completed' ? 'done' : t === 'failed' ? 'failed' : t === 'interrupted' ? 'stopped' : 'idle',
-      now: this.nowState,
+      ...this.nowState,
       todos: this.todosState,
       kind: this.row.kind,
       ...this.worktreeSummary(),
@@ -579,6 +657,15 @@ export class Session {
       for (const t of together) this.ctx.store.enqueue(t.session.id, t.text, t.source, Date.now(), t.meta);
     });
     if (!this.row.title && source === 'user') this.update({ title: titleFrom(text) || titleFrom(files.map((f) => f.name).join(', ')) });
+    // Tickets the person links to, in their round-up or to one of its agents, are the round-up's.
+    if (source === 'user') {
+      const found = findTickets(text);
+      try {
+        if (found.length) (this.row.parentId ? this.ctx.get(this.row.parentId) : this)?.linkTickets(found, 'auto');
+      } catch (err) {
+        console.error(`session ${this.id}: could not link tickets`, err);
+      }
+    }
     // Each is in its outbox now: one that cannot start here is sent on the next start.
     const sent = await Promise.allSettled([this.dispatch(turn), ...together.map((t) => t.session.dispatch(t.text))]);
     sent.slice(1).forEach((r, i) => r.status === 'rejected' && console.error(`session ${together[i]!.session.id}: could not start`, r.reason));
@@ -626,9 +713,11 @@ export class Session {
     if (this.row.resumePending) this.update({ resumePending: false });
   }
 
-  /** Something about a sub-agent outside its log changed (e.g. its branch was mustered): the pane hears. */
+  /** Something about a sub-agent outside its log changed (e.g. its branch was mustered): the pane and the round-up's dot hear. */
   summaryChanged(): void {
-    if (this.row.parentId) this.ctx.agentChanged(this);
+    if (!this.row.parentId) return;
+    this.ctx.agentChanged(this);
+    this.ctx.changed(this);
   }
 
   /** Records that the orchestrator has been told about this sub-agent up to log index `index`. */
@@ -1026,9 +1115,17 @@ export class SessionManager {
    * The person's answer to a batch of approvals. Each is answered on its own: one already answered
    * or gone is reported, and the rest still go through. `remember` saves each one's rule for its
    * round-up, so its agents are no longer asked (and others asking the same now are answered too).
-   * `mode`, for a plan, takes the round-up out of plan mode as the plan is approved.
+   * `mode`, for a plan, takes the round-up out of plan mode as the plan is approved. Questions are
+   * allowed with `answers` (one at a time); denying them is the person skipping them.
    */
-  async answerApprovals(opts: { items: { sessionId: string; requestId: string }[]; allow: boolean; message?: string; remember?: boolean; mode?: Mode }): Promise<ApprovalResult[]> {
+  async answerApprovals(opts: {
+    items: { sessionId: string; requestId: string }[];
+    allow: boolean;
+    message?: string;
+    remember?: boolean;
+    mode?: Mode;
+    answers?: Answers;
+  }): Promise<ApprovalResult[]> {
     const results: ApprovalResult[] = [];
     const saved = new Map<string, Set<string>>();
     for (const { sessionId, requestId } of opts.items) {
@@ -1048,10 +1145,25 @@ export class SessionManager {
         const roundUp = this.sessions.get(session.roundUpId);
         if (roundUp) await this.setMode(roundUp, opts.mode);
       }
+      if (opts.answers && !pending.questions) {
+        results.push({ sessionId, requestId, ok: false, error: 'answers are for questions, and this is not a question' });
+        continue;
+      }
+      // Questions take their answers: a bare yes would tell the agent the person said nothing.
+      const answers = pending.questions && opts.allow ? opts.answers : undefined;
+      if (pending.questions && opts.allow) {
+        const error = answers ? answersError(pending.questions, answers) : 'answering questions needs the answers';
+        if (error) {
+          results.push({ sessionId, requestId, ok: false, error });
+          continue;
+        }
+      }
       const rule = opts.allow && opts.remember && session.parentId && pending.rule && !isChromeTool(pending.rule) ? pending.rule : undefined;
       const ok = session.answer(
         requestId,
-        opts.allow ? { allow: true, by: 'person', ...(rule ? { rules: [rule] } : {}) } : { allow: false, by: 'person', message: opts.message?.trim() || DENIED },
+        opts.allow
+          ? { allow: true, by: 'person', ...(rule ? { rules: [rule] } : {}), ...(answers ? { answers } : {}) }
+          : { allow: false, by: 'person', message: opts.message?.trim() || (pending.questions ? SKIPPED : DENIED) },
       );
       // Saved only once it went through: a rule for a request nobody was asking any more is not the person's choice.
       if (ok && rule) {

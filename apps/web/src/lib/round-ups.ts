@@ -1,11 +1,28 @@
-import type { Mode } from '@kelpie/protocol';
+import type { LinkedTicket, Mode } from '@kelpie/protocol';
 import { formatDistanceStrict } from 'date-fns';
 import { generatePath } from 'react-router';
-import type { AgentStatus } from './agents.js';
-import type { PendingApproval } from './approvals.js';
+import type { AgentSummary } from './agents.js';
+import { groupCounts, planGroup, type Placed } from './status.js';
 
 export const ROUND_UP_ROUTE = '/r/:roundUpId';
 export const roundUpPath = (roundUpId: string) => generatePath(ROUND_UP_ROUTE, { roundUpId });
+
+/** History state on a page opened from inside the app: the path it was opened from. */
+export interface OpenedFrom {
+  from: string;
+}
+
+/**
+ * How to go back up to `to` (a sub-agent's round-up) from the page at `location`. Opened from
+ * there: step back through history. Reached some other way inside the app (the approvals page,
+ * search): go there in place of this entry, so the browser's back still returns to where the
+ * person was. Landed on directly (a link, a new tab): go there as a new entry, keeping this one.
+ * `key` is React Router's, `'default'` for the entry the app was loaded on.
+ */
+export function wayBack(to: string, location: { state: unknown; key: string }): 'back' | 'replace' | 'push' {
+  if ((location.state as Partial<OpenedFrom> | null)?.from === to) return 'back';
+  return location.key === 'default' ? 'push' : 'replace';
+}
 
 /** A round-up as the daemon lists it (mirrors the daemon's `SessionInfo`). */
 export interface RoundUp {
@@ -29,6 +46,12 @@ export interface RoundUp {
   baseCommit?: string;
   /** How freely its agents work; a sub-agent reports its round-up's. */
   mode: Mode;
+  /** Jira and Asana tickets linked to a top-level round-up, in the order they were linked. */
+  tickets?: LinkedTicket[];
+  /** A sub-agent's own branch and its worktree's state: whether its work still waits to be mustered. */
+  branch?: AgentSummary['branch'];
+  deliver?: AgentSummary['deliver'];
+  worktree?: AgentSummary['worktree'];
 }
 
 export const NEW_TITLE = 'New round-up';
@@ -48,12 +71,13 @@ export function relativeTime(ms: number, now: number): string {
 
 export type StatusTone = 'busy' | 'error' | 'muted';
 
-/** The second line of a round-up's row in the sidebar. */
+/** A round-up's own state, in words: what its row says when there is no dot (see `roundUpStatus`), and the line under its title without agents. */
 export function statusLine(r: RoundUp, now: number): { text: string; tone: StatusTone } {
   if (r.busy) return { text: 'Working…', tone: 'busy' };
   const when = relativeTime(r.updatedAt, now);
   if (r.lastTurn === 'failed') return { text: `Failed · ${when}`, tone: 'error' };
-  if (r.lastTurn === 'interrupted') return { text: `Interrupted · ${when}`, tone: 'muted' };
+  if (r.lastTurn === 'interrupted') return { text: `Stopped · ${when}`, tone: 'muted' };
+  if (r.lastTurn === 'completed') return { text: `Done · ${when}`, tone: 'muted' };
   return { text: `Idle · ${when}`, tone: 'muted' };
 }
 
@@ -61,49 +85,15 @@ export function statusLine(r: RoundUp, now: number): { text: string; tone: Statu
 export const byRecent = (a: RoundUp, b: RoundUp) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt;
 
 /**
- * The line under a round-up's title: what its agents are up to ("2 working · 1 failed"),
- * or, with none moving, whether they are all done; a round-up without agents says its own state.
+ * The line under a round-up's title: what its agents are up to ("1 needs you · 2 working"), or,
+ * with none moving, where they stand ("2 ready to merge · 3 done", "Done"), grouped as the Plan bar
+ * groups them; a round-up without agents says its own state.
  */
-export function roundUpSummary(r: RoundUp, agents: readonly { status: string }[], now: number): string {
-  const when = relativeTime(r.updatedAt, now);
+export function roundUpSummary(r: RoundUp, agents: readonly Placed[], now: number): string {
   if (!agents.length) return r.busy ? 'Working' : statusLine(r, now).text;
-  const n = (status: string) => agents.filter((a) => a.status === status).length;
-  const moving = [
-    n('needs-approval') && `${n('needs-approval')} waiting on you`,
-    n('working') && `${n('working')} working`,
-    n('failed') && `${n('failed')} failed`,
-  ].filter(Boolean);
+  const groups = agents.map((a) => planGroup(a, r.updatedAt));
+  const moving = groupCounts(groups, ['needs-you', 'failed', 'working']);
   if (moving.length) return moving.join(' · ');
-  return n('done') === agents.length ? `Done · ${when}` : `Idle · ${when}`;
-}
-
-/** A round-up's dot, from its orchestrator and every sub-agent: the same marks as an agent's. */
-export type RoundUpStatus = Extract<AgentStatus, 'needs-approval' | 'failed' | 'working' | 'done'>;
-
-export const ROUND_UP_STATUS_LABEL: Record<RoundUpStatus, string> = {
-  'needs-approval': 'Needs your attention',
-  failed: 'Failed',
-  working: 'Working',
-  done: 'Done',
-};
-
-type StatusSession = Pick<RoundUp, 'id' | 'busy' | 'lastTurn' | 'parentId'>;
-
-/**
- * The whole round-up's state, Kelpie (its orchestrator) and its sub-agents together, most urgent
- * first: something waiting on the person (an approval, a plan to decide on), then a turn that
- * failed (a usage limit, say) and isn't being retried, then anything working, then done. A
- * round-up that has never finished a turn has no state yet. Pure.
- */
-export function roundUpStatus(
-  roundUp: StatusSession,
-  sessions: Iterable<StatusSession>,
-  approvals: readonly Pick<PendingApproval, 'roundUpId'>[],
-): RoundUpStatus | undefined {
-  if (approvals.some((a) => a.roundUpId === roundUp.id)) return 'needs-approval';
-  const all = [roundUp];
-  for (const s of sessions) if (s.parentId === roundUp.id) all.push(s);
-  if (all.some((s) => !s.busy && s.lastTurn === 'failed')) return 'failed';
-  if (all.some((s) => s.busy)) return 'working';
-  return all.some((s) => s.lastTurn) ? 'done' : undefined;
+  if (groups.every((g) => g === 'done')) return `Done · ${relativeTime(r.updatedAt, now)}`;
+  return groupCounts(groups).join(' · ');
 }
