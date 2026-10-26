@@ -2,7 +2,7 @@ import { getSingularPatch } from '@pierre/diffs';
 import { FileDiff, type DiffLineAnnotation, type FileDiffOptions } from '@pierre/diffs/react';
 import { useMemo, useRef, useState, type CSSProperties } from 'react';
 import { isStale, useReview } from '@/hooks/use-review';
-import { splitPath, type ChangedFile } from '@/lib/changes';
+import { gutterNumbers, splitPath, type ChangedFile } from '@/lib/changes';
 import { anchorFor, annotationsFor, lineTextAt, splitOutdated, type ReviewThread, type Side, type ThreadAnnotation } from '@/lib/review';
 import { useTheme } from '@/lib/theme';
 import { CommentBox, ThreadStrip, ThreadView } from './thread';
@@ -17,6 +17,28 @@ const DIFF_STYLE = {
   '--diffs-font-size': '12px',
   '--diffs-line-height': '20px',
 } as CSSProperties;
+
+/**
+ * Old and new line numbers in two columns, as GitHub's unified diff has them: @pierre/diffs 1.6
+ * gives a unified gutter one number per row, so each cell's is rewritten from the row it labels
+ * (same `data-line-index`), which carries both.
+ */
+function numberBothSides(host: HTMLElement): void {
+  const root = host.shadowRoot ?? host;
+  const rows = new Map<string, { type: string | null; line: number; alt?: number }>();
+  let widest = 1;
+  for (const el of root.querySelectorAll<HTMLElement>('[data-line][data-line-index]')) {
+    const line = Number(el.dataset.line);
+    const alt = el.dataset.altLine ? Number(el.dataset.altLine) : undefined;
+    rows.set(el.dataset.lineIndex!, { type: el.dataset.lineType ?? null, line, ...(alt !== undefined ? { alt } : {}) });
+    widest = Math.max(widest, String(line).length, String(alt ?? '').length);
+  }
+  for (const cell of root.querySelectorAll<HTMLElement>('[data-column-number][data-line-index]')) {
+    const row = rows.get(cell.dataset.lineIndex!);
+    const label = cell.querySelector('[data-line-number-content]');
+    if (row && label) label.textContent = gutterNumbers(row.type, row.line, row.alt, widest);
+  }
+}
 
 /**
  * One file's diff (@pierre/diffs, loaded lazily), with the review on it: threads on their lines,
@@ -48,7 +70,7 @@ export default function DiffView({ file, patch, threads, scope }: { file: Change
       diffStyle: 'unified',
       // The card has the header. Not `disableFileHeader`: in @pierre/diffs 1.6 a re-render with it
       // set leaves the diff blank, so its header is hidden instead.
-      unsafeCSS: '[data-diffs-header] { display: none; }',
+      unsafeCSS: '[data-diffs-header] { display: none; } [data-line-number-content] { white-space: pre; }',
       themeType: theme,
       hunkSeparators: 'metadata',
       diffIndicators: 'classic',
@@ -59,6 +81,7 @@ export default function DiffView({ file, patch, threads, scope }: { file: Change
       onLineClick: ({ annotationSide, lineNumber }) => openAt.current(annotationSide, lineNumber),
       onLineNumberClick: ({ annotationSide, lineNumber }) => openAt.current(annotationSide, lineNumber),
       onGutterUtilityClick: ({ start, side }) => openAt.current(side ?? 'additions', start),
+      onPostRender: (host, _diff, phase) => phase !== 'unmount' && numberBothSides(host),
     }),
     [theme],
   );

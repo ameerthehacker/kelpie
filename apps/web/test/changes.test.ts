@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentsOf, anchorSha, filesLabel, groupByDir, neighbors, splitPath, statSquares, vscodeUrl } from '../src/lib/changes.js';
+import { agentsOf, anchorSha, filesLabel, groupByDir, gutterNumbers, neighbors, splitPath, statSquares, vscodeUrl } from '../src/lib/changes.js';
 
 describe('splitPath', () => {
   it('splits a path into its directory and its name', () => {
@@ -81,5 +81,15 @@ describe('anchorSha', () => {
     expect(anchorSha({ headSha: 'h', rounds })).toBe('h');
     expect(anchorSha({ headSha: 'h' })).toBe('h');
     expect(anchorSha(undefined, 1)).toBeUndefined();
+  });
+});
+
+describe('gutterNumbers', () => {
+  it('puts old and new line numbers side by side, a column each', () => {
+    // A context line: data-line is its new number, data-alt-line its old one.
+    expect(gutterNumbers('context', 11, 7, 2)).toBe(' 7 11');
+    expect(gutterNumbers('change-deletion', 7, undefined, 2)).toBe(' 7   ');
+    expect(gutterNumbers('change-addition', 11, undefined, 2)).toBe('   11');
+    expect(gutterNumbers('context', 3, undefined, 1)).toBe('3 3');
   });
 });

@@ -100,3 +100,15 @@ export function agentsOf(files: readonly Pick<ChangedFile, 'agents'>[]): AgentRe
 /** A link that opens a file in VS Code, when the branch is checked out somewhere. */
 export const vscodeUrl = (checkoutPath: string | undefined, path: string) =>
   checkoutPath ? `vscode://file/${checkoutPath.replace(/^\/+|\/+$/g, '')}/${path}` : undefined;
+
+/**
+ * A unified diff's gutter label, old and new line numbers side by side as GitHub shows them: a
+ * removed line has only its old number, an added one only its new, a context line both. Each is
+ * padded to `width` so the columns line up in a monospace font.
+ */
+export function gutterNumbers(type: string | null, line: number, altLine: number | undefined, width: number): string {
+  const pad = (n?: number) => (n === undefined ? '' : String(n)).padStart(width, ' ');
+  if (type === 'change-deletion') return `${pad(line)} ${pad()}`;
+  if (type === 'change-addition') return `${pad()} ${pad(line)}`;
+  return `${pad(altLine ?? line)} ${pad(line)}`;
+}
