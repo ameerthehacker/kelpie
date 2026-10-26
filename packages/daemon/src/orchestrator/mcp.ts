@@ -3,7 +3,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { Context } from 'hono';
 import { z } from 'zod';
-import { CardCreate, CardUpdate, EntryPatch, Harness } from '@kelpie/protocol';
+import { CardCreate, CardUpdate, Effort, EntryPatch, Harness } from '@kelpie/protocol';
 import { isLocalHost } from '../local.js';
 import type { Session } from '../sessions.js';
 import { ToolError } from '../errors.js';
@@ -179,6 +179,10 @@ function orchestratorServer(orch: Orchestrator, parent: Session): McpServer {
         in: z.string().optional().describe("Read-only agents only: an agent id whose worktree to look at (e.g. to review its work). Default: your feature branch."),
         harness: Harness.optional().describe('Which coding agent runs it. Default claude-code.'),
         model: z.string().optional().describe('Model override; omit to use the default.'),
+        effort: Effort.optional().describe(
+          "How hard it thinks, lowest first: low, medium, high, xhigh, max. Omit for the round-up's (the person's choice). " +
+            'Go higher for hard, subtle work (tricky bugs, design, reviews); lower for quick mechanical work (renames, lookups, running a command).',
+        ),
         browser: z
           .boolean()
           .optional()

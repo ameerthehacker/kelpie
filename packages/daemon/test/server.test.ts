@@ -123,6 +123,19 @@ describe('round-up API', () => {
     expect((await patch({})).status).toBe(400);
   });
 
+  it('sets a round-up’s effort when it is created, changes it, and puts the default back', async () => {
+    const { app } = setup();
+    const res = await app.request('/api/sessions', { method: 'POST', ...json({ effort: 'high' }) });
+    const { id, effort } = (await res.json()) as { id: string; effort?: string };
+    expect(effort).toBe('high');
+    const patch = (body: unknown) => app.request(`/api/sessions/${id}`, { method: 'PATCH', ...json(body) });
+    for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) expect(await (await patch({ effort: level })).json()).toMatchObject({ effort: level });
+    expect(await (await patch({ effort: null })).json()).not.toHaveProperty('effort');
+    expect((await patch({ effort: 'ultra' })).status).toBe(400);
+    expect((await patch({ effort: '--model' })).status).toBe(400);
+    expect((await app.request('/api/sessions', { method: 'POST', ...json({ effort: 3 }) })).status).toBe(400);
+  });
+
   it('sets a round-up’s mode when it is created and changes it, among the modes its harness has', async () => {
     const { app } = setup();
     expect(await (await app.request('/api/harnesses', { headers: local })).json()).toEqual([{ harness: 'claude-code', modes: ['auto', 'acceptEdits', 'plan'] }]);

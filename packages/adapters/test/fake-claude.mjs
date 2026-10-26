@@ -23,6 +23,7 @@
 // FAKE_LIMIT_FILE: while that file exists, every turn hits the usage limit the way the real CLI does
 // (usage-limit.jsonl): a rejected rate_limit_event, the CLI's synthetic message, a failed result. The
 // file holds JSON { resetsAt?: epoch seconds, text?: the message }; remove it and turns go through again.
+// FAKE_CONTROL_FILE gets a line of JSON per control request received (the request), other than interrupts.
 // FAKE_TURN_DELAY (ms) holds each later FAKE_EVERY_TURN answer back that long after its echo: a turn that takes a while.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -77,6 +78,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     continue;
   }
   if (msg.type === 'control_request') {
+    if (process.env.FAKE_CONTROL_FILE && msg.request?.subtype !== 'interrupt') appendFileSync(process.env.FAKE_CONTROL_FILE, JSON.stringify(msg.request) + '\n');
     if (msg.request?.subtype === 'interrupt' && asking && !hang) {
       asking = false;
       const session_id = JSON.parse(lines[0]).session_id;

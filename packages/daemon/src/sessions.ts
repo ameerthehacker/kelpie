@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import { attachmentsBlock, findTickets, mergeUsage, ticketsNote, type LinkedTicket, type TicketLink, type TicketTitleSource, type Answers, type Attachment, type EventOf, type Question, type Mode, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings, type WorkbenchCard, type UsageLimitPause } from '@kelpie/protocol';
+import { attachmentsBlock, findTickets, mergeUsage, ticketsNote, type LinkedTicket, type TicketLink, type TicketTitleSource, type Answers, type Attachment, type EventOf, type Question, type Mode, type Effort, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings, type WorkbenchCard, type UsageLimitPause } from '@kelpie/protocol';
 import { claudeCode, isChromeTool, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store, TicketRow, TicketSource } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary, type Now } from './agent-summary.js';
@@ -34,6 +34,8 @@ export interface SessionInfo {
   browser: boolean;
   /** The model asked for, if not the harness's default. */
   model: string | undefined;
+  /** The reasoning effort asked for, if not the harness's default. */
+  effort: Effort | undefined;
   /** A sub-agent's job: ordinary work, or Muster. */
   kind: 'worker' | 'muster';
   /** An orchestrator's base branch and the commit it is pinned to, once chosen. */
@@ -217,6 +219,7 @@ export interface CreateOptions {
   browser?: boolean;
   title?: string;
   model?: string;
+  effort?: Effort;
   mode?: Mode;
 }
 
@@ -492,7 +495,7 @@ export class Session {
   }
 
   info(): SessionInfo {
-    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes, browser, model, kind, baseBranch, baseCommit } = this.row;
+    const { id, title, cwd, createdAt, updatedAt, harnessSessionId, harness, parentId, role, writes, browser, model, effort, kind, baseBranch, baseCommit } = this.row;
     return {
       id,
       title,
@@ -508,6 +511,7 @@ export class Session {
       writes,
       browser,
       model: model ?? undefined,
+      effort: effort ?? undefined,
       kind,
       baseBranch: baseBranch ?? undefined,
       baseCommit: baseCommit ?? undefined,
@@ -570,6 +574,7 @@ export class Session {
       title,
       harness,
       model: this.modelState ?? this.row.model ?? undefined,
+      ...(this.row.effort ? { effort: this.row.effort } : {}),
       writes,
       browser,
       status: this.working
@@ -851,6 +856,7 @@ export class Session {
       ...this.ctx.defaults,
       permissionMode: this.mode,
       ...(this.row.model ? { model: this.row.model } : {}),
+      ...(this.row.effort ? { effort: this.row.effort } : {}),
       ...hooked,
       // A hook's env (a connection's GH_TOKEN) adds to the defaults' rather than replacing them.
       ...(hooked?.env ? { env: { ...this.ctx.defaults.env, ...hooked.env } } : {}),
@@ -890,6 +896,25 @@ export class Session {
   setModel(model: string | undefined): void {
     this.update({ model: model ?? null });
     if (!this.working) void this.stop();
+  }
+
+  get effort(): Effort | undefined {
+    return this.row.effort ?? undefined;
+  }
+
+  /**
+   * The reasoning effort from now on; undefined goes back to the default. A live process takes a
+   * level at once, from its next request (mid-turn too). Going back to the default, or a process
+   * that refuses the change, needs a new process: it is ended once idle, and the next turn resumes
+   * the same conversation without the flag (the CLI's own reset lands on the model's default,
+   * not the person's settings).
+   */
+  async setEffort(effort: Effort | undefined): Promise<void> {
+    if ((this.row.effort ?? undefined) === effort) return;
+    this.update({ effort: effort ?? null });
+    const run = this.run;
+    if (!run || run.exited) return;
+    if (!effort || !(await run.setEffort(effort))) this.restartWhenIdle();
   }
 
   /** Ends the harness process, if any, once its last events are logged. */
@@ -1140,10 +1165,12 @@ export class SessionManager {
 
   create(cwd = this.defaultCwd, opts: CreateOptions = {}): Session {
     const model = opts.model ?? this.ctx.defaults.model;
+    const effort = opts.effort ?? this.ctx.defaults.effort;
     const row = this.store.createSession({
       id: opts.id ?? randomUUID(),
       cwd,
       ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
       ...(opts.parentId ? { parentId: opts.parentId } : {}),
       ...(opts.kind ? { kind: opts.kind } : {}),
       ...(opts.baseBranch ? { baseBranch: opts.baseBranch, baseCommit: opts.baseCommit ?? null } : {}),

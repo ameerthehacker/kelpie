@@ -3,7 +3,7 @@ import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
 import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
-import { Harness, parseTicketUrl, type AgentUpdate, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
+import { Harness, parseTicketUrl, type AgentUpdate, type Effort, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import type { Connections } from '../connectors/connector.js';
 import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
@@ -109,6 +109,8 @@ export interface AgentInfo {
   writes: boolean;
   /** Given the Claude in Chrome tools. */
   browser?: boolean;
+  /** Its reasoning effort, if not the harness's default. */
+  effort?: Effort;
   /** Muster, or ordinary work. */
   kind: 'worker' | 'muster';
   /** A writer's own branch, and whether its work is still to be mustered, mustered, or standalone. */
@@ -130,6 +132,8 @@ export interface SpawnInput {
   writes: boolean;
   harness?: string | undefined;
   model?: string | undefined;
+  /** Its reasoning effort; the round-up's without it. */
+  effort?: Effort | undefined;
   /** A writer's: merged into the feature branch by Muster (default), or a branch that stands alone. */
   deliver?: 'muster' | 'standalone' | undefined;
   /** A read-only agent's: look at this agent's worktree instead of the feature branch. */
@@ -479,6 +483,8 @@ export class Orchestrator implements SessionHooks {
       writes: input.writes,
       title,
       ...(input.model ? { model: input.model } : {}),
+      // The person's choice for the round-up, unless the orchestrator picked one for this unit.
+      ...((input.effort ?? parent.effort) ? { effort: input.effort ?? parent.effort } : {}),
       ...(input.browser ? { browser: true } : {}),
     };
     const repo = this.worktrees ? await this.worktrees.repoOf(parent.cwd) : undefined;
@@ -1122,6 +1128,7 @@ export class Orchestrator implements SessionHooks {
       harness: info.harness,
       writes: c.writes,
       ...(c.browser ? { browser: true } : {}),
+      ...(c.effort ? { effort: c.effort } : {}),
       kind: c.kind,
       ...(row ? { branch: row.branch, worktree: row.state, ...(row.deliver ? { deliver: row.deliver } : {}) } : {}),
       status: this.isWorking(c) ? (c.approvals().length ? 'needs approval' : 'working') : c.limited ? 'paused' : this.waiting.has(c.id) ? 'waiting' : 'idle',

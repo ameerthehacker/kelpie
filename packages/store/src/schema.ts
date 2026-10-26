@@ -22,6 +22,8 @@ export const sessions = sqliteTable('sessions', {
   cwd: text('cwd').notNull(),
   harness: text('harness').notNull().default('claude-code'),
   model: text('model'),
+  /** The reasoning effort asked for (a protocol `Effort`), if not the harness's default. */
+  effort: text('effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max'] }),
   /** The harness's own session id, used to resume it in a new process. */
   harnessSessionId: text('harness_session_id'),
   /** A sub-agent's job: ordinary work, or Muster (bringing other agents' branches together). */

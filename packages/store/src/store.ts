@@ -10,7 +10,7 @@ import * as schema from './schema.js';
 
 export type SessionRow = typeof schema.sessions.$inferSelect;
 export type NewSession = Omit<typeof schema.sessions.$inferInsert, 'createdAt' | 'updatedAt'>;
-export type SessionPatch = Partial<Pick<SessionRow, 'title' | 'model' | 'harnessSessionId' | 'resumePending' | 'notifiedIdx' | 'baseBranch' | 'baseCommit' | 'mode'>>;
+export type SessionPatch = Partial<Pick<SessionRow, 'title' | 'model' | 'effort' | 'harnessSessionId' | 'resumePending' | 'notifiedIdx' | 'baseBranch' | 'baseCommit' | 'mode'>>;
 export type WorktreeRow = typeof schema.worktrees.$inferSelect;
 export type NewWorktree = Omit<typeof schema.worktrees.$inferInsert, 'id' | 'createdAt' | 'lastUsedAt' | 'state'>;
 export type WorktreePatch = Partial<Pick<WorktreeRow, 'state' | 'lastUsedAt' | 'removedAt' | 'forkCommit'>>;

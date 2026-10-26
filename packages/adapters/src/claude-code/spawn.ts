@@ -6,7 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Readable } from 'node:stream';
-import type { KelpieEvent } from '@kelpie/protocol';
+import type { Effort, KelpieEvent } from '@kelpie/protocol';
 import { resetFromText, type UsageLimitStop } from '../limits.js';
 import type { Adapter, PermissionAnswer, Run, RunExit, RunSpec } from '../types.js';
 import { ClaudeCodeParser } from './parse.js';
@@ -56,6 +56,8 @@ export function claudeArgs(spec: RunSpec): string[] {
     '--strict-mcp-config',
   ];
   if (spec.model) args.push('--model', spec.model);
+  // Given on every start, a resume included, so the session keeps it whatever the person's own settings say.
+  if (spec.effort) args.push('--effort', spec.effort);
   if (spec.resume) args.push('--resume', spec.resume);
   if (spec.allowedTools?.length) args.push('--allowedTools', ...spec.allowedTools);
   if (spec.disallowedTools?.length) args.push('--disallowedTools', ...spec.disallowedTools);
@@ -188,6 +190,13 @@ class ClaudeCodeRun implements Run {
   async setMode(mode: string): Promise<boolean> {
     if (this.exit || this.stopping) return false;
     const res = await this.control({ subtype: 'set_permission_mode', mode });
+    return res?.subtype === 'success';
+  }
+
+  async setEffort(effort: Effort): Promise<boolean> {
+    if (this.exit || this.stopping) return false;
+    // The session-scoped settings layer `--effort` sets; the CLI clamps a level the model lacks.
+    const res = await this.control({ subtype: 'apply_flag_settings', settings: { effortLevel: effort } });
     return res?.subtype === 'success';
   }
 
