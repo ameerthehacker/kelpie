@@ -1,17 +1,23 @@
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DONE_FOR, type WorkbenchCard, type WorkbenchItem } from '@kelpie/protocol';
+import { DONE_FOR, type WorkbenchCard, type WorkbenchItem, type WorkbenchNote } from '@kelpie/protocol';
 import { HttpError } from '../src/lib/api.js';
 import type { PendingApproval } from '../src/lib/approvals.js';
 import {
+  blockedAgents,
   boardOf,
   calloutOf,
   cardApprovals,
   chatWhen,
   columns,
   dropCard,
+  entryOf,
   footer,
   needsYouTotal,
+  noteFrom,
+  noteState,
+  noteTargets,
+  noteTo,
   onBoard,
   pillOf,
   primaryAction,
@@ -39,6 +45,7 @@ const card = (over: Partial<WorkbenchCard>): WorkbenchCard => ({
   items: [],
   agents: { total: 0, working: 0 },
   needsYou: 0,
+  notes: [],
   archived: false,
   createdAt: NOW - 60 * MIN,
   updatedAt: NOW - MIN,
@@ -253,5 +260,50 @@ describe('a daemon without the Workbench', () => {
     expect(workbenchQuery.retry(1, new HttpError('Internal Server Error', 500))).toBe(false);
     expect(boardOf(undefined, new HttpError('Internal Server Error', 500))).toEqual({ cards: undefined, error: 'Internal Server Error', unavailable: false });
     expect(boardOf([card({})], null).cards).toHaveLength(1);
+  });
+});
+
+describe('coordination on a card', () => {
+  const entry = (over: Partial<NonNullable<WorkbenchItem['entry']>>) => ({ claims: [], updatedAt: NOW, ...over });
+
+  it("shows an agent's focus (or progress), its first claims and a blocker", () => {
+    expect(entryOf(item({}))).toBeUndefined();
+    expect(entryOf(item({ entry: entry({}) }))).toBeUndefined();
+    expect(entryOf(item({ entry: entry({ focus: 'Checkout API', claims: ['a/**', 'b.ts', 'c.ts'], blocker: 'needs the schema' }) }))).toEqual({
+      focus: 'Checkout API',
+      claims: ['a/**', 'b.ts'],
+      more: 1,
+      blocker: 'needs the schema',
+    });
+    expect(entryOf(item({ entry: entry({ progress: 'routes done' }) }))).toEqual({ focus: 'routes done', claims: [], more: 0 });
+    expect(blockedAgents(card({ items: [item({ key: 'a', entry: entry({ blocker: 'x' }) }), item({ key: 'b', entry: entry({}) })] })).map((i) => i.key)).toEqual(['a']);
+  });
+
+  it('names who wrote a note, to whom, and whether it has reached them', () => {
+    const note = (over: Partial<WorkbenchNote>): WorkbenchNote => ({ id: 1, from: { kind: 'agent', title: 'API' }, body: 'hi', createdAt: NOW, ...over });
+    expect(noteFrom(note({}))).toBe('API');
+    expect(noteFrom(note({ from: { kind: 'person', title: 'The person' } }))).toBe('You');
+    expect(noteFrom(note({ from: { kind: 'orchestrator', title: 'Orchestrator' } }))).toBe('Kelpie');
+    expect(noteTo(note({}))).toBeUndefined();
+    expect(noteTo(note({ to: { title: 'Orchestrator' } }))).toBe('Kelpie');
+    expect(noteTo(note({ to: { title: 'Docs', agentId: 'd' } }))).toBe('Docs');
+    expect(noteState(note({}))).toBeUndefined();
+    expect(noteState(note({ to: { title: 'Docs' } }))).toBe('Waiting for their next turn');
+    expect(noteState(note({ to: { title: 'Docs' }, deliveredAt: NOW }))).toBe('Seen');
+  });
+
+  it("offers the card's agents, once each, as a note's recipients", () => {
+    const c = card({
+      items: [
+        item({ key: 'a', title: 'Checkout API', agentId: 'a', agentTitle: 'API' }),
+        item({ key: 'pr', title: 'PR #12', agentId: 'a' }),
+        item({ key: 'docs', title: 'Docs' }),
+        item({ key: 'b', title: 'UI', agentId: 'b' }),
+      ],
+    });
+    expect(noteTargets(c)).toEqual([
+      { id: 'a', title: 'API' },
+      { id: 'b', title: 'UI' },
+    ]);
   });
 });

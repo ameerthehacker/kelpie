@@ -1,4 +1,4 @@
-import { ArchiveIcon, MessageCircleIcon, MoreHorizontalIcon, SquareArrowOutUpRightIcon } from 'lucide-react';
+import { ArchiveIcon, MessageCircleIcon, MessageSquareTextIcon, MoreHorizontalIcon, SquareArrowOutUpRightIcon } from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import type { WorkbenchCard } from '@kelpie/protocol';
@@ -12,9 +12,12 @@ import { calloutOf, cardApprovals, chatWhen, footer, PRIMARY_LABEL, primaryActio
 import { cn } from '@/lib/utils';
 import { AnswerSheet } from './answer-sheet';
 import { ItemRow } from './item-row';
+import { NoteRow, NotesSheet } from './notes';
 import { TicketChips } from '@/components/shell/tickets';
 
 const SHOWN = 3;
+/** Notes the card itself shows; the rest are in its notes sheet. */
+const NOTES_SHOWN = 2;
 
 const ACTION_STYLE = {
   answer: 'bg-fg text-background hover:bg-fg/85',
@@ -46,7 +49,9 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
   const items = topItems(card.items, SHOWN);
   const more = tally(card.items, SHOWN);
   const foot = footer(card);
+  const notes = card.notes.slice(-NOTES_SHOWN);
   const [answering, setAnswering] = useState(false);
+  const [noting, setNoting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -115,6 +120,9 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
               <SquareArrowOutUpRightIcon /> Open the chat
             </Link>
           </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setNoting(true)}>
+            <MessageSquareTextIcon /> Notes
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void run('remove it', () => archive(card.id))}>
             <ArchiveIcon /> Remove from Workbench
           </DropdownMenuItem>
@@ -151,8 +159,27 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
         </div>
       )}
 
+      {notes.length > 0 && (
+        <button type="button" onClick={() => setNoting(true)} className="hover:bg-hov -mx-1.5 flex flex-col gap-1 rounded-lg px-1.5 py-1 text-left" aria-label={`Notes on ${card.title}`}>
+          <ul className="flex flex-col gap-1">
+            {notes.map((n) => (
+              <NoteRow key={n.id} note={n} now={now} compact />
+            ))}
+          </ul>
+        </button>
+      )}
+
       <div className="border-ln flex items-center gap-2 border-t pt-3 text-xs">
         <span className="text-mu min-w-0 flex-1 truncate">{foot.agents}</span>
+        <button
+          type="button"
+          onClick={() => setNoting(true)}
+          aria-label={card.notes.length ? `${card.notes.length} notes` : 'Leave a note'}
+          className="text-mu2 hover:text-fg flex shrink-0 items-center gap-1"
+        >
+          <MessageSquareTextIcon className="size-3.5" strokeWidth={1.9} />
+          {card.notes.length > 0 && <span className="font-mono text-[11px]">{card.notes.length}</span>}
+        </button>
         {foot.needsYou && (
           <span className="text-wait shrink-0 font-medium">
             <span aria-hidden="true">◆ </span>
@@ -169,6 +196,7 @@ export const BoardCard = memo(function BoardCard({ card, approvals: all, now, li
       {error && <p className="text-fail -mt-1 text-xs">{error}</p>}
 
       <AnswerSheet card={card} approvals={approvals} callout={callout} open={answering} onOpenChange={setAnswering} />
+      <NotesSheet card={card} now={now} open={noting} onOpenChange={setNoting} />
 
       <Dialog open={confirming} onOpenChange={(open) => !busy && setConfirming(open)}>
         <DialogContent>
