@@ -1,11 +1,11 @@
-import { CheckIcon, ChevronRightIcon, UserIcon } from 'lucide-react';
+import { BotIcon, CheckIcon, ChevronRightIcon, UserIcon, type LucideIcon } from 'lucide-react';
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { MessageResponse } from '@/components/ai-elements/message';
 import { HarnessMark } from '@/components/harness-mark';
 import { KelpieLogo } from '@/components/shell/brand';
 import { useOpenSession } from '@/hooks/use-open-session';
 import { useReview } from '@/hooks/use-review';
-import { authorLabel, type ReviewComment, type ReviewThread } from '@/lib/review';
+import { authorLabel, commentAvatar, type ReviewComment, type ReviewThread } from '@/lib/review';
 import { cn } from '@/lib/utils';
 
 export const pill = 'flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] disabled:opacity-50';
@@ -92,25 +92,25 @@ export function CommentBox({
   );
 }
 
-/** The harness an agent's reply was written with: its session's, else the thread's agent of that id. */
-function harnessOf(c: ReviewComment, t: ReviewThread): string {
-  if (c.authorHarness) return c.authorHarness;
-  return [t.assignedTo, t.agent].find((a) => a?.id && a.id === c.authorId)?.harness ?? 'claude-code';
-}
-
-/** Who wrote a comment, at a glance: the person's neutral circle, Kelpie's mark, or the agent's harness. */
-function Avatar({ comment: c, thread }: { comment: ReviewComment; thread: ReviewThread }) {
-  if (c.author === 'orchestrator') return <KelpieLogo className="size-5" />;
-  if (c.author === 'agent') return <HarnessMark harness={harnessOf(c, thread)} className="size-5" />;
+/** A neutral circle with a glyph: the person's, or an agent's whose harness is unknown. */
+function GlyphAvatar({ icon: Icon }: { icon: LucideIcon }) {
   return (
-    <span aria-hidden="true" className="bg-chip text-mu inline-flex size-5 shrink-0 items-center justify-center rounded-full">
-      <UserIcon className="size-3" strokeWidth={2.2} />
+    <span aria-hidden="true" className="bg-raise text-mu border-bd inline-flex size-5 shrink-0 items-center justify-center rounded-full border">
+      <Icon className="size-3" strokeWidth={2.2} />
     </span>
   );
 }
 
-/** One comment: who, and what; the person's own unsent comments can still be edited or deleted. Agents' replies sit on a faint tint. */
-function Comment({ comment: c, thread, roundUpId }: { comment: ReviewComment; thread: ReviewThread; roundUpId: string }) {
+/** Who wrote a comment, at a glance: the person's neutral circle, Kelpie's mark, or the agent's harness. */
+function Avatar({ comment }: { comment: ReviewComment }) {
+  const a = commentAvatar(comment);
+  if (a.kind === 'kelpie') return <KelpieLogo className="size-5" />;
+  if (a.kind === 'harness') return <HarnessMark harness={a.harness} className="size-5" />;
+  return <GlyphAvatar icon={a.kind === 'agent' ? BotIcon : UserIcon} />;
+}
+
+/** One comment: who, and what; the person's own unsent comments can still be edited or deleted. Agents' and Kelpie's replies sit on a faint tint. */
+function Comment({ comment: c, roundUpId }: { comment: ReviewComment; roundUpId: string }) {
   const review = useReview(roundUpId);
   const openSession = useOpenSession();
   const [editing, setEditing] = useState(false);
@@ -130,11 +130,12 @@ function Comment({ comment: c, thread, roundUpId }: { comment: ReviewComment; th
         }}
       />
     );
-  const byAgent = c.author !== 'person';
+  const notPerson = c.author !== 'person';
+  // The store clears authorId when the agent's session is deleted, so a deleted agent's title is no link.
   const agentId = c.author === 'agent' ? c.authorId : undefined;
   return (
-    <div className={cn('flex gap-2.5', byAgent && 'bg-well dark:bg-raise -mx-2 rounded-lg p-2')}>
-      <Avatar comment={c} thread={thread} />
+    <div className={cn('flex gap-2.5', notPerson && 'bg-raise -mx-2 rounded-lg p-2')}>
+      <Avatar comment={c} />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="text-mu2 flex min-h-5 items-center gap-2 text-xs">
           {agentId ? (
@@ -142,7 +143,7 @@ function Comment({ comment: c, thread, roundUpId }: { comment: ReviewComment; th
               {authorLabel(c)}
             </button>
           ) : (
-            <span className={cn('text-fg truncate', byAgent ? 'font-semibold' : 'font-medium')}>{authorLabel(c)}</span>
+            <span className={cn('text-fg truncate', notPerson ? 'font-semibold' : 'font-medium')}>{authorLabel(c)}</span>
           )}
           {pending && <span className="bg-wbg text-wait rounded-full px-1.5 py-px text-[10px] font-medium">Pending</span>}
           {pending && (
@@ -212,7 +213,7 @@ export function ThreadView({ thread: t, roundUpId, showHunk }: { thread: ReviewT
           )}
           {showHunk && <HunkExcerpt hunk={t.diffHunk} />}
           {t.comments.map((c) => (
-            <Comment key={c.id} comment={c} thread={t} roundUpId={roundUpId} />
+            <Comment key={c.id} comment={c} roundUpId={roundUpId} />
           ))}
           {replying ? (
             <CommentBox

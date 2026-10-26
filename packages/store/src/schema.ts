@@ -250,6 +250,8 @@ export const reviewComments = sqliteTable(
     author: text('author', { enum: ['person', 'orchestrator', 'agent'] }).notNull(),
     authorSessionId: text('author_session_id').references(() => sessions.id, { onDelete: 'set null' }),
     authorTitle: text('author_title'),
+    /** An agent's harness, kept when it writes so the reply keeps its mark after the agent is deleted. */
+    authorHarness: text('author_harness'),
     body: text('body').notNull(),
     state: text('state', { enum: ['pending', 'published'] }).notNull(),
     createdAt: integer('created_at').notNull(),

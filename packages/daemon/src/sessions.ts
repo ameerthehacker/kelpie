@@ -353,6 +353,10 @@ export class Session {
     return this.row.title;
   }
 
+  get harness(): string {
+    return this.row.harness;
+  }
+
   get parentId(): string | undefined {
     return this.row.parentId ?? undefined;
   }

@@ -22,7 +22,7 @@ export interface ReviewComment {
   author: 'person' | 'orchestrator' | 'agent';
   authorId?: string;
   authorTitle?: string;
-  /** The writing agent's harness, while its session is still there. */
+  /** An agent's harness, as it was when it wrote; absent for the person, Kelpie, and agents deleted before it was kept. */
   authorHarness?: string;
   body: string;
   /** The person's comments stay pending, and theirs alone to see, until the review is submitted. */
@@ -214,6 +214,15 @@ export function authorLabel(c: Pick<ReviewComment, 'author' | 'authorTitle'>): s
   if (c.author === 'person') return 'You';
   if (c.author === 'orchestrator') return 'Kelpie';
   return c.authorTitle || 'Agent';
+}
+
+/** What a comment's avatar shows: the person, Kelpie, the agent's harness, or a plain agent mark when that is unknown. */
+export type CommentAvatar = { kind: 'person' } | { kind: 'kelpie' } | { kind: 'harness'; harness: string } | { kind: 'agent' };
+
+export function commentAvatar(c: Pick<ReviewComment, 'author' | 'authorHarness'>): CommentAvatar {
+  if (c.author === 'person') return { kind: 'person' };
+  if (c.author === 'orchestrator') return { kind: 'kelpie' };
+  return c.authorHarness ? { kind: 'harness', harness: c.authorHarness } : { kind: 'agent' };
 }
 
 /** The text of one line of a parsed diff, by side and line number; undefined when no hunk shows it. */

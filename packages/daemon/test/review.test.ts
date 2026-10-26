@@ -249,6 +249,30 @@ describe('reviews', () => {
     await pump.catch(() => {});
   });
 
+  it("keeps the harness an agent replied with, after the agent is deleted too, and Kelpie's and the person's comments have none", async () => {
+    const ctx = start();
+    const { parent, api, head } = await mustered(ctx);
+    const thread = (await comment(ctx, parent, head(), L2)).body.thread as ReviewThread;
+    await ctx.orch.reviews.submit(parent.id, 'comment');
+    ctx.store.assignThreads([thread.id], api.id);
+    // The fake harness is Claude Code: the agent stands in as a Codex one.
+    vi.spyOn(api, 'harness', 'get').mockReturnValue('codex');
+    await ctx.orch.reviews.reply(api, thread.id, 'Renamed it.');
+    await ctx.orch.reviews.reply(parent, thread.id, 'Checked it.');
+    const comments = async () => ((await ctx.api('GET', `/api/sessions/${parent.id}/review`)).body as ReviewState).threads[0]!.comments;
+    const before = await comments();
+    expect(before.map((c) => [c.author, c.authorHarness])).toEqual([
+      ['person', undefined],
+      ['agent', 'codex'],
+      ['orchestrator', undefined],
+    ]);
+    expect(before[1]!.authorId).toBe(api.id);
+    await ctx.sessions.delete(api.id);
+    const after = await comments();
+    expect(after[1]).toMatchObject({ author: 'agent', authorTitle: 'API', authorHarness: 'codex' });
+    expect(after[1]!.authorId).toBeUndefined();
+  });
+
   it('gives an agent only its assigned threads over MCP, and starts a writer for the rest', async () => {
     const ctx = start();
     const { parent, api, docs, head } = await mustered(ctx);

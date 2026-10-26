@@ -5,6 +5,7 @@ import {
   annotationsFor,
   authorLabel,
   canSubmit,
+  commentAvatar,
   followDraft,
   lineTextAt,
   reviewCounts,
@@ -159,6 +160,15 @@ describe('authorLabel', () => {
     expect(authorLabel({ author: 'person' })).toBe('You');
     expect(authorLabel({ author: 'orchestrator' })).toBe('Kelpie');
     expect(authorLabel({ author: 'agent', authorTitle: 'gateway-web' })).toBe('gateway-web');
+  });
+});
+
+describe('commentAvatar', () => {
+  it("shows the person, Kelpie, the agent's harness, or a plain agent mark when its harness is unknown", () => {
+    expect(commentAvatar(comment())).toEqual({ kind: 'person' });
+    expect(commentAvatar(comment({ author: 'orchestrator', authorHarness: 'claude-code' }))).toEqual({ kind: 'kelpie' });
+    expect(commentAvatar(comment({ author: 'agent', authorHarness: 'codex' }))).toEqual({ kind: 'harness', harness: 'codex' });
+    expect(commentAvatar(comment({ author: 'agent', authorTitle: 'gone' }))).toEqual({ kind: 'agent' });
   });
 });
 
