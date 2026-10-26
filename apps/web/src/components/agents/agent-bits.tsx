@@ -6,7 +6,8 @@ import { cn } from '@/lib/utils';
 /**
  * The design's status marks: a solid dot with a breathing halo while working or waiting on the
  * person, a solid one when done or failed, a green ring when finished with a branch still to merge,
- * a grey ring otherwise, and a soft blue one, still, while paused for the usage limit. Takes an
+ * a grey ring otherwise, a soft blue one, still, while paused for the usage limit, and a small grey square
+ * (a stop sign) while the person has it stopped. Takes an
  * agent's status or its group in the plan (see `planGroup`).
  * With a `label`, it is announced (and shown on hover) as that; otherwise it is decoration.
  */
@@ -19,6 +20,7 @@ export function StatusDot({ status, label, className }: { status: AgentStatus | 
         status === 'working' && 'bg-run motion-safe:animate-k-halo [--k-halo:var(--run)]',
         (status === 'needs-approval' || status === 'needs-you') && 'bg-wait motion-safe:animate-k-halo [--k-halo:var(--wait)]',
         status === 'paused' && 'bg-run/40',
+        status === 'halted' && 'bg-mu2 rounded-[1.5px]',
         status === 'done' && 'bg-done',
         status === 'failed' && 'bg-fail',
         status === 'to-merge' && 'border-done border-[1.5px]',

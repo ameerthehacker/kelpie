@@ -1,5 +1,5 @@
 import { format } from 'date-fns';
-import { ArrowUpIcon, ChevronRightIcon, ExternalLinkIcon, GitBranchIcon, ListIcon, PauseIcon, SearchIcon, XIcon } from 'lucide-react';
+import { ArrowUpIcon, ChevronRightIcon, ExternalLinkIcon, GitBranchIcon, ListIcon, PauseIcon, PlayIcon, SearchIcon, SquareIcon, XIcon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { HarnessMark } from '@/components/harness-mark';
@@ -8,7 +8,9 @@ import { ApprovalRow } from '@/components/approvals/approval-row';
 import { useGroupAnswers } from '@/components/approvals/approval-tray';
 import { AttachButton, AttachmentChips, FileChips, useAttachedFiles } from '@/components/chat/attachments';
 import { EventLine } from '@/components/chat/events';
-import { LimitLine, PausedBanner, ResumedLine } from '@/components/chat/limit-banner';
+import { HaltLine, LimitLine, PausedBanner, ResumedLine } from '@/components/chat/limit-banner';
+import { Button } from '@/components/ui/button';
+import { useResumeAgent } from '@/hooks/use-halt';
 import { QuestionCard } from '@/components/chat/question-card';
 import { ShowCommandsToggle, StepRow } from '@/components/chat/steps';
 import { useEventLog } from '@/hooks/use-agents';
@@ -127,8 +129,8 @@ export function AgentPane({ agents }: { agents: AgentSummary[] }) {
   );
 }
 
-const GROUP_LABEL: Record<AgentStatus, string> = { 'needs-approval': 'Needs you', failed: 'Failed', working: 'Working', paused: 'Paused for usage limit', stopped: 'Stopped', idle: 'Idle', done: 'Done' };
-const FLEET: Record<AgentStatus, string> = { 'needs-approval': 'bg-wait', failed: 'bg-fail', working: 'bg-run', paused: 'bg-run/40', stopped: 'bg-ln2', idle: 'bg-ln2', done: 'bg-done' };
+const GROUP_LABEL: Record<AgentStatus, string> = { 'needs-approval': 'Needs you', failed: 'Failed', working: 'Working', halted: 'Stopped by you', paused: 'Paused for usage limit', stopped: 'Stopped', idle: 'Idle', done: 'Done' };
+const FLEET: Record<AgentStatus, string> = { 'needs-approval': 'bg-wait', failed: 'bg-fail', working: 'bg-run', halted: 'bg-mu2', paused: 'bg-run/40', stopped: 'bg-ln2', idle: 'bg-ln2', done: 'bg-done' };
 const PER_GROUP = 6;
 
 /** Every agent: a filter, status chips, the fleet map (one square each), and the agents grouped by status. */
@@ -262,6 +264,24 @@ function AgentList({ agents }: { agents: AgentSummary[] }) {
   );
 }
 
+/** An agent the person stopped ("Stop all"): it waits for them, and they can pick it up on its own. */
+function HaltedBanner({ agentId }: { agentId: string }) {
+  const { resume, pending, error } = useResumeAgent(agentId);
+  return (
+    <div className="bg-well flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[14px] px-3.5 py-3 text-sm">
+      <SquareIcon aria-hidden="true" className="fill-mu2 text-mu2 size-3.5 shrink-0" strokeWidth={2} />
+      <span className="min-w-0 flex-1">
+        Stopped by you. It keeps its work and waits until you resume it.
+        {error && <span className="text-fail block text-xs">{error}</span>}
+      </span>
+      <Button variant="outline" size="sm" disabled={pending} onClick={resume} title="Continue where it left off, as the agent limit allows">
+        <PlayIcon aria-hidden="true" className="text-run fill-current" />
+        Resume
+      </Button>
+    </div>
+  );
+}
+
 /** One agent: who and how it is, what it is doing right now, its todos, its timeline, and a line to it. */
 function AgentView({ agent: a }: { agent: AgentSummary }) {
   const openSession = useOpenSession();
@@ -330,7 +350,9 @@ function AgentView({ agent: a }: { agent: AgentSummary }) {
           </div>
         </div>
 
-        {a.status === 'paused' && a.limited ? (
+        {a.status === 'halted' ? (
+          <HaltedBanner agentId={a.id} />
+        ) : a.status === 'paused' && a.limited ? (
           <PausedBanner sessionId={a.id} pause={a.limited} className="rounded-[14px]" />
         ) : (
           <div className="bg-well flex items-start gap-2.5 rounded-[14px] px-3.5 py-3">
@@ -481,6 +503,8 @@ function AgentTimeline({
                   return <LimitLine key={key} limit={p.limit} message={p.message} ts={p.ts} />;
                 case 'resumed':
                   return <ResumedLine key={key} ts={p.ts} />;
+                case 'halt':
+                  return <HaltLine key={key} action={p.action} text={p.text} ts={p.ts} />;
                 default:
                   return null;
               }

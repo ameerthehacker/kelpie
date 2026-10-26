@@ -5,14 +5,14 @@ import type { RoundUp } from './round-ups.js';
 /**
  * Where an agent sits in the plan, and so what its round-up's dot shows. `needs-you`: waiting on
  * the person (an approval, a question or a plan). `to-merge`: finished, but its branch still waits
- * to be mustered, so not done yet. `paused`: stopped at the usage limit, until Kelpie resumes it after the
- * reset (not a failure). `stopped`: interrupted, never finished a turn, or failed in a way the
+ * to be mustered, so not done yet. `halted`: the person stopped it ("Stop all"), until they resume it.
+ * `paused`: stopped at the usage limit, until Kelpie resumes it after the reset (not a failure). `stopped`: interrupted, never finished a turn, or failed in a way the
  * orchestrator has since moved on from. Mustered, standalone and read-only agents that finished are `done`.
  */
-export type PlanGroup = 'needs-you' | 'failed' | 'working' | 'paused' | 'to-merge' | 'stopped' | 'done';
+export type PlanGroup = 'needs-you' | 'failed' | 'working' | 'halted' | 'paused' | 'to-merge' | 'stopped' | 'done';
 
 /** Most urgent first. */
-export const GROUP_ORDER: PlanGroup[] = ['needs-you', 'failed', 'working', 'paused', 'to-merge', 'stopped', 'done'];
+export const GROUP_ORDER: PlanGroup[] = ['needs-you', 'failed', 'working', 'halted', 'paused', 'to-merge', 'stopped', 'done'];
 const RANK = Object.fromEntries(GROUP_ORDER.map((g, i) => [g, i])) as Record<PlanGroup, number>;
 export const groupRank = (g: PlanGroup) => RANK[g];
 
@@ -21,6 +21,7 @@ export const GROUP_LABEL: Record<PlanGroup, string> = {
   'needs-you': 'Needs you',
   failed: 'Failed',
   working: 'Working',
+  halted: 'Stopped by you',
   paused: 'Paused',
   'to-merge': 'Ready to merge',
   stopped: 'Stopped',
@@ -54,6 +55,8 @@ export function planGroup(a: Placed, settledAt?: number): PlanGroup {
       return settledAt !== undefined && a.updatedAt <= settledAt ? 'stopped' : 'failed';
     case 'working':
       return 'working';
+    case 'halted':
+      return 'halted';
     case 'paused':
       return 'paused';
     case 'stopped':
@@ -71,11 +74,12 @@ export const mostUrgent = (groups: Iterable<PlanGroup>): PlanGroup | undefined =
   return top;
 };
 
-type StatusSession = Pick<RoundUp, 'id' | 'busy' | 'lastTurn' | 'parentId' | 'updatedAt' | 'kind' | 'branch' | 'deliver' | 'worktree' | 'limited'>;
+type StatusSession = Pick<RoundUp, 'id' | 'busy' | 'lastTurn' | 'parentId' | 'updatedAt' | 'kind' | 'branch' | 'deliver' | 'worktree' | 'limited' | 'halted'>;
 
 /** A session's status as an agent's (as the daemon's AgentSummary works it out); undefined until it has run. */
-export function sessionStatus(s: Pick<RoundUp, 'busy' | 'lastTurn' | 'limited'>, asking: boolean): AgentStatus | undefined {
+export function sessionStatus(s: Pick<RoundUp, 'busy' | 'lastTurn' | 'limited' | 'halted'>, asking: boolean): AgentStatus | undefined {
   if (s.busy) return asking ? 'needs-approval' : 'working';
+  if (s.halted) return 'halted';
   if (s.limited) return 'paused';
   switch (s.lastTurn) {
     case 'completed':
@@ -92,7 +96,7 @@ export function sessionStatus(s: Pick<RoundUp, 'busy' | 'lastTurn' | 'limited'>,
 /**
  * The whole round-up's state, Kelpie (its orchestrator) and its sub-agents together: the most
  * urgent of their groups, as the Plan bar groups them. Something waiting on the person first, then
- * a failure nobody has acted on, anything working, branches waiting to be merged, anything stopped,
+ * a failure nobody has acted on, anything working, anything the person stopped, branches waiting to be merged, anything stopped,
  * then done. Kelpie's own failure always counts; a sub-agent's only until Kelpie has had a turn
  * since. A round-up that has never run has no state yet. Pure.
  */

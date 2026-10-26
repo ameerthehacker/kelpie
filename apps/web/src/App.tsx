@@ -356,7 +356,7 @@ export function App() {
                   {roundUpId && <ApprovalTray approvals={approvals} roundUpId={current?.role === 'agent' ? (current.parentId ?? roundUpId) : roundUpId} inChat={roundUpId} docked />}
                   {/* Paused at the usage limit: when it picks up again, and the person's say in it. */}
                   {roundUpId && current?.limited && !busy && <PausedBanner sessionId={roundUpId} pause={current.limited} className="mb-2" />}
-                  {agents?.length ? <PlanDock settledAt={current?.updatedAt} /> : <TodoDock todos={todos} />}
+                  {agents?.length ? <PlanDock settledAt={current?.updatedAt} roundUp={current} /> : <TodoDock todos={todos} />}
                   {/* Below the tray (whose fade would cover it), next to the composer it is about. */}
                   {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
                   <Composer

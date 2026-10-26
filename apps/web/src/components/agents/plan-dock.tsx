@@ -8,11 +8,14 @@ import { useMaxAgents } from '@/hooks/use-settings';
 import { useNow } from '@/hooks/use-now';
 import { planProgress, type AgentSummary } from '@/lib/agents';
 import { isPlan, isQuestion } from '@/lib/approvals';
+import { haltState } from '@/lib/halt';
 import { planBar, planLabel, planSections, type PlanBar, type PlanOpts } from '@/lib/plan';
+import type { RoundUp } from '@/lib/round-ups';
 import { planGroup, type PlanGroup } from '@/lib/status';
 import { workingLabel } from '@/lib/settings';
 import { cn } from '@/lib/utils';
 import { StatusDot, TodoList } from './agent-bits';
+import { HaltControl } from './halt-control';
 import { useAgentPane } from './pane-state';
 
 const OPEN_KEY = 'kelpie.plan-dock.open';
@@ -25,8 +28,11 @@ const remembered = () => {
   }
 };
 
-/** A panel docked above the composer, outside the chat flow; open or collapsed as the viewer last left it. */
-function Dock({ title, bar, summary, end, children }: { title: string; bar: ReactNode; summary: ReactNode; end?: ReactNode; children: ReactNode }) {
+/**
+ * A panel docked above the composer, outside the chat flow; open or collapsed as the viewer last left
+ * it. `action` sits at the end of its header, beside (not inside) the button that opens it.
+ */
+function Dock({ title, bar, summary, end, action, children }: { title: string; bar: ReactNode; summary: ReactNode; end?: ReactNode; action?: ReactNode; children: ReactNode }) {
   const [open, setOpen] = useState(remembered);
   const toggle = (next: boolean) => {
     setOpen(next);
@@ -36,13 +42,16 @@ function Dock({ title, bar, summary, end, children }: { title: string; bar: Reac
   };
   return (
     <Collapsible open={open} onOpenChange={toggle} className="bg-surf border-ln mb-2 rounded-[20px] border text-sm">
-      <CollapsibleTrigger className="hover:bg-hov flex w-full items-center gap-3 rounded-[20px] px-4 py-2.5 text-left">
-        <span className="font-medium">{title}</span>
-        {bar}
-        <span className="text-mu min-w-0 flex-1 truncate text-xs">{summary}</span>
-        {end && <span className="text-mu2 shrink-0 text-xs">{end}</span>}
-        <ChevronDownIcon className={cn('text-mu2 size-4 shrink-0 transition-transform', !open && '-rotate-90')} />
-      </CollapsibleTrigger>
+      <div className="flex items-center">
+        <CollapsibleTrigger className="hover:bg-hov flex min-w-0 flex-1 items-center gap-3 rounded-[20px] px-4 py-2.5 text-left">
+          <span className="font-medium">{title}</span>
+          {bar}
+          <span className="text-mu min-w-0 flex-1 truncate text-xs">{summary}</span>
+          {end && <span className="text-mu2 shrink-0 text-xs">{end}</span>}
+          <ChevronDownIcon className={cn('text-mu2 size-4 shrink-0 transition-transform', !open && '-rotate-90')} />
+        </CollapsibleTrigger>
+        {action && <div className="shrink-0 pr-2.5 pl-1">{action}</div>}
+      </div>
       <CollapsibleContent>
         <div className="border-ln max-h-[min(18rem,35vh)] overflow-y-auto border-t px-2 py-2">{children}</div>
       </CollapsibleContent>
@@ -57,9 +66,10 @@ const NO_AGENTS: AgentSummary[] = [];
  * failed, working), what the most urgent one is doing, and finished agents as a count. Open: the
  * active agents with their todos, and the finished ones folded into "Done". Opening an agent shows
  * it in the agent pane. `settledAt`: the orchestrator's last activity, so agents are grouped as
- * the round-up's dot groups them (see `planGroup`).
+ * the round-up's dot groups them (see `planGroup`). `roundUp`: the orchestrator's round-up, for "Stop all"
+ * and "Resume all".
  */
-export function PlanDock({ settledAt }: { settledAt?: number }) {
+export function PlanDock({ settledAt, roundUp }: { settledAt?: number; roundUp?: RoundUp }) {
   const pane = useAgentPane();
   const approvals = useApprovals();
   const agents = pane?.agents ?? NO_AGENTS;
@@ -79,7 +89,13 @@ export function PlanDock({ settledAt }: { settledAt?: number }) {
     <AgentRow key={a.id} agent={a} group={planGroup(a, settledAt)} label={planLabel(a, opts)} onOpen={() => pane.openAgent(a.id)} />
   );
   return (
-    <Dock title="Plan" bar={<Dots bar={bar} />} summary={bar.text} end={bar.counts.join(' · ')}>
+    <Dock
+      title="Plan"
+      bar={<Dots bar={bar} />}
+      summary={bar.text}
+      end={bar.counts.join(' · ')}
+      action={roundUp && roundUp.role !== 'agent' ? <HaltControl roundUpId={roundUp.id} state={haltState(roundUp, agents)} /> : undefined}
+    >
       <p className="text-mu2 px-2 pb-1 text-xs">
         {p.agents} agent{p.agents === 1 ? '' : 's'}{working > 0 && ` · ${workingLabel(working, limit)}`}
         {p.steps > 0 && ` · ${p.stepsDone}/${p.steps} todos done`}
@@ -142,7 +158,7 @@ function Dots({ bar }: { bar: PlanBar }) {
 function AgentRow({ agent: a, group, label, onOpen }: { agent: AgentSummary; group: PlanGroup; label: string; onOpen: () => void }) {
   const done = a.todos.filter((t) => t.status === 'completed').length;
   // Todos only while they are live (paused ones pick up again); a finished agent's are in its tab.
-  const live = group === 'needs-you' || group === 'failed' || group === 'working' || group === 'paused';
+  const live = group === 'needs-you' || group === 'failed' || group === 'working' || group === 'halted' || group === 'paused';
   return (
     <li className="flex flex-col">
       <button

@@ -13,8 +13,8 @@ export interface PlanOpts {
   now?: number;
 }
 
-/** The groups the collapsed bar gives a dot each: what is moving, stuck on someone, or waiting for the usage limit to reset. */
-const TRACKED: PlanGroup[] = ['needs-you', 'failed', 'working', 'paused'];
+/** The groups the collapsed bar gives a dot each: what is moving, stuck on someone, stopped by the person, or waiting for the usage limit to reset. */
+const TRACKED: PlanGroup[] = ['needs-you', 'failed', 'working', 'halted', 'paused'];
 
 /** Most urgent first, then oldest first. */
 export const byUrgency =
@@ -68,13 +68,15 @@ export function planLabel(a: AgentSummary, opts: PlanOpts = {}): string {
       return 'Failed';
     case 'working':
       return currentTodo(a) ?? nowAsTool(a, opts.nameOf) ?? 'Working';
+    case 'halted':
+      return 'Stopped by you';
     case 'paused':
       return a.limited ? `Usage limit · ${pausedShort(a.limited, opts.now ?? Date.now())}` : 'Paused for usage limit';
     case 'to-merge':
       return 'Ready to merge';
     case 'stopped':
-      // A failure the orchestrator has moved on from still says so, calmly.
-      return a.status === 'failed' ? 'Failed' : 'Stopped';
+      // A failure the orchestrator has moved on from still says so, calmly; one about to resume says that.
+      return a.status === 'failed' ? 'Failed' : a.queued ? 'Waiting for a slot' : 'Stopped';
     case 'done':
       return a.worktree === 'mustered' ? 'Merged' : a.branch && a.deliver === 'standalone' ? 'Done · standalone branch' : 'Done';
   }
@@ -116,9 +118,15 @@ export function planBar(agents: readonly AgentSummary[], opts: PlanOpts & { maxD
   // Everything moving waits on the usage limit: when it all picks up again.
   const paused = tracked.every((a) => group(a) === 'paused');
   const resumes = paused ? soonest(tracked.map((a) => a.limited)) : undefined;
+  // Or on the person, who stopped it all.
+  const halted = tracked.filter((a) => group(a) === 'halted');
+  const waiting = tracked.every((a) => group(a) === 'halted' || group(a) === 'paused');
+  const subject = (n: number) => (n === 1 ? `${tracked.length === 1 ? lead.title : '1 agent'} is` : `${n} agents are`);
   const text = paused
-    ? `${tracked.length === 1 ? `${lead.title} is` : `${tracked.length} agents are`} paused for the usage limit${resumes ? ` · resumes ${clock(resumes, opts.now ?? Date.now())}` : ''}`
-    : `${lead.title}: ${planLabel(lead, opts)}`;
+    ? `${subject(tracked.length)} paused for the usage limit${resumes ? ` · resumes ${clock(resumes, opts.now ?? Date.now())}` : ''}`
+    : waiting && halted.length
+      ? `${subject(halted.length)} stopped by you`
+      : `${lead.title}: ${planLabel(lead, opts)}`;
   return {
     dots: tracked.slice(0, max).map((agent) => ({ agent, group: group(agent) })),
     more: Math.max(0, tracked.length - max),

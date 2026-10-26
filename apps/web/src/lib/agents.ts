@@ -23,16 +23,22 @@ export interface AgentSummary {
   worktree?: 'creating' | 'active' | 'mustered' | 'removed';
   /** While `paused`: stopped at the usage limit, and when Kelpie resumes it. */
   limited?: UsageLimitPause;
+  /** Not working, but in line to resume (after a restart, or "Resume all") once the agent limit has room. */
+  queued?: boolean;
   createdAt: number;
   updatedAt: number;
 }
 
-/** `needs-approval`: working, but waiting on the person to allow something. `paused`: stopped at the usage limit until it resets. */
-export type AgentStatus = 'working' | 'needs-approval' | 'paused' | 'done' | 'failed' | 'stopped' | 'idle';
+/**
+ * `needs-approval`: working, but waiting on the person to allow something. `halted`: the person
+ * stopped it ("Stop all") until they resume it. `paused`: stopped at the usage limit until it resets.
+ */
+export type AgentStatus = 'working' | 'needs-approval' | 'halted' | 'paused' | 'done' | 'failed' | 'stopped' | 'idle';
 
 export const STATUS_LABEL: Record<AgentStatus, string> = {
   working: 'Working',
   'needs-approval': 'Needs you',
+  halted: 'Stopped by you',
   paused: 'Paused',
   done: 'Done',
   failed: 'Failed',
@@ -41,7 +47,7 @@ export const STATUS_LABEL: Record<AgentStatus, string> = {
 };
 
 /** Pane order: what needs attention first. */
-export const STATUS_ORDER: AgentStatus[] = ['needs-approval', 'failed', 'working', 'paused', 'stopped', 'idle', 'done'];
+export const STATUS_ORDER: AgentStatus[] = ['needs-approval', 'failed', 'working', 'halted', 'paused', 'stopped', 'idle', 'done'];
 const RANK = Object.fromEntries(STATUS_ORDER.map((s, i) => [s, i])) as Record<AgentStatus, number>;
 export const byAttention = (a: AgentSummary, b: AgentSummary) => RANK[a.status] - RANK[b.status] || a.createdAt - b.createdAt;
 
