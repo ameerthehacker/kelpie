@@ -749,6 +749,24 @@ export class Store {
     return this.db.delete(schema.usageLimits).where(eq(schema.usageLimits.sessionId, sessionId)).run().changes > 0;
   }
 
+  // ── halts ("Stop all") ───────────────────────────────────────────────
+
+  /** Marks a session stopped by the person; when it first was is kept. */
+  setHalt(sessionId: string, now = Date.now()): number {
+    this.db.insert(schema.halts).values({ sessionId, createdAt: now }).onConflictDoNothing().run();
+    return this.haltOf(sessionId)!;
+  }
+
+  /** When the person stopped the session (epoch ms), if they have and not resumed it since. */
+  haltOf(sessionId: string): number | undefined {
+    return this.db.select().from(schema.halts).where(eq(schema.halts.sessionId, sessionId)).get()?.createdAt;
+  }
+
+  /** The person resumed it. False if it was not stopped. */
+  clearHalt(sessionId: string): boolean {
+    return this.db.delete(schema.halts).where(eq(schema.halts.sessionId, sessionId)).run().changes > 0;
+  }
+
   close(): void {
     this.sqlite.close();
   }
