@@ -56,7 +56,7 @@ export function ApprovalRow({ group, selected, busy, onAnswer, onSelect, canReme
     <li
       aria-selected={selected}
       onClick={onSelect}
-      className={cn('flex flex-col gap-1.5 rounded-xl px-2.5 py-2', selected ? 'bg-hov' : 'hover:bg-hov/60')}
+      className={cn('hover:bg-raise/50 flex flex-col gap-1.5 rounded-xl px-2.5 py-2', selected && 'group-focus-within/approvals:bg-raise/70')}
     >
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         <button

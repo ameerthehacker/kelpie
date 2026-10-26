@@ -69,7 +69,7 @@ export function broaderRule(g: Pick<ApprovalGroup, 'tool' | 'label' | 'rule'>): 
   return g.rule && g.rule !== `${g.tool}(${g.label})` ? g.rule : undefined;
 }
 
-/** "3 approvals from 2 agents", "1 question", "2 approvals and 1 question from 3 agents". */
+/** "3 approvals from 2 agents", "1 question" (one agent goes without saying), "2 approvals and 1 question from 3 agents". */
 export function approvalsSummary(items: readonly PendingApproval[]): string {
   const asks = items.filter(isAsk);
   const questions = items.filter(isQuestion);
@@ -79,5 +79,5 @@ export function approvalsSummary(items: readonly PendingApproval[]): string {
     asks.length && `${asks.length} approval${asks.length === 1 ? '' : 's'}`,
     questions.length && `${questions.length} question${questions.length === 1 ? '' : 's'}`,
   ].filter(Boolean);
-  return `${parts.join(' and ')} from ${agents} agent${agents === 1 ? '' : 's'}`;
+  return agents > 1 ? `${parts.join(' and ')} from ${agents} agents` : parts.join(' and ');
 }

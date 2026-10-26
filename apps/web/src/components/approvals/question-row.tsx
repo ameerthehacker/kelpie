@@ -1,74 +1,59 @@
-import { ChevronRightIcon, MessageCircleQuestionIcon } from 'lucide-react';
-import { useState } from 'react';
+import { ChevronLeftIcon, ChevronRightIcon, MessageCircleQuestionIcon } from 'lucide-react';
 import { QuestionCard } from '@/components/chat/question-card';
-import { useAnswerApprovals } from '@/hooks/use-approvals';
+import { HarnessMark } from '@/components/harness-mark';
 import type { PendingApproval } from '@/lib/approvals';
-import { questionsLine } from '@/lib/questions';
-import { cn } from '@/lib/utils';
 
-const btn = 'h-7 shrink-0 rounded-full px-3 text-xs font-medium disabled:opacity-50';
+const nav = 'text-mu2 hover:bg-raise hover:text-fg flex size-6 items-center justify-center rounded-md disabled:pointer-events-none disabled:opacity-40';
 
 /**
- * Questions one agent is waiting on, in the queue: a line saying what it asks, opening into the
- * same card the agent's chat shows (with the same answers picked so far, kept while it is folded).
+ * The question in the queue the person is on: who asks, in a line (with ‹ › to the others queued),
+ * then the questions themselves, as the agent's chat shows them (with the same answers picked so far).
  * Each is answered on its own; Skip tells the agent the person would rather not.
  */
-export function QuestionRow({ item, defaultOpen }: { item: PendingApproval; defaultOpen: boolean }) {
-  const answer = useAnswerApprovals();
-  const [open, setOpen] = useState(defaultOpen);
-  /** Opened with Answer: the card takes the keyboard. */
-  const [answering, setAnswering] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const skip = () => {
-    setBusy(true);
-    // The stream takes it off the queue; if it was answered elsewhere meanwhile, so much the better.
-    answer({ items: [{ sessionId: item.sessionId, requestId: item.requestId }], decision: 'deny' })
-      .catch(() => {})
-      .finally(() => setBusy(false));
-  };
+export function QuestionItem({ item, harness, index, count, onMove, takeFocus }: {
+  item: PendingApproval;
+  /** The asking agent's harness, when known: its mark leads the line. */
+  harness: string | undefined;
+  index: number;
+  count: number;
+  onMove: (to: number) => void;
+  /** The person moved here: the questions take the keyboard. */
+  takeFocus: boolean;
+}) {
   const questions = item.questions ?? [];
   const who = item.sessionId === item.roundUpId ? 'Kelpie' : item.agentTitle;
   return (
-    <li className="flex flex-col gap-1.5 rounded-xl px-2.5 py-2">
-      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-        <button
-          type="button"
-          onClick={() => {
-            setOpen((o) => !o);
-            setAnswering(false);
-          }}
-          aria-expanded={open}
-          aria-label={open ? 'Hide the questions' : 'Show the questions'}
-          className="text-mu2 hover:text-fg -ml-1 rounded p-0.5"
-        >
-          <ChevronRightIcon className={cn('size-3.5 transition-transform', open && 'rotate-90')} strokeWidth={2.2} />
-        </button>
-        <MessageCircleQuestionIcon className="text-wait size-4 shrink-0" strokeWidth={1.9} />
-        <span className="flex min-w-0 flex-1 flex-col">
-          <span className="text-fg truncate text-[13px]" title={questionsLine(questions)}>
-            {questionsLine(questions)}
-          </span>
-          <span className="text-mu truncate text-xs">{who} asks</span>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-2.5">
+        {harness ? <HarnessMark harness={harness} /> : <MessageCircleQuestionIcon className="text-mu2 size-4 shrink-0" strokeWidth={1.9} />}
+        <span className="text-mu min-w-0 flex-1 truncate text-xs" title={`${who} asks`}>
+          <span className="text-fg2 font-medium">{who}</span> asks
         </span>
-        {!open && (
-          <span className="flex shrink-0 items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(true);
-                setAnswering(true);
-              }}
-              className={cn(btn, 'bg-acc text-accfg')}
-            >
-              Answer
+        {count > 1 && (
+          <span className="text-mu2 flex shrink-0 items-center gap-0.5 text-xs tabular-nums">
+            <button type="button" disabled={index === 0} onClick={() => onMove(index - 1)} aria-label="Previous question" className={nav}>
+              <ChevronLeftIcon className="size-3.5" strokeWidth={2.2} />
             </button>
-            <button type="button" disabled={busy} onClick={skip} className={cn(btn, 'bg-chip text-fg2 hover:bg-raise')}>
-              Skip
+            <span aria-live="polite">
+              {index + 1} of {count}
+            </span>
+            <button type="button" disabled={index === count - 1} onClick={() => onMove(index + 1)} aria-label="Next question" className={nav}>
+              <ChevronRightIcon className="size-3.5" strokeWidth={2.2} />
             </button>
           </span>
         )}
       </div>
-      {open && <QuestionCard questions={questions} state="open" sessionId={item.sessionId} requestId={item.requestId} takeFocus={answering} className="ml-7" />}
-    </li>
+      <QuestionCard
+        key={`${item.sessionId}:${item.requestId}`}
+        variant="bare"
+        questions={questions}
+        state="open"
+        who={who}
+        sessionId={item.sessionId}
+        requestId={item.requestId}
+        takeFocus={takeFocus}
+        className="min-h-0 flex-1"
+      />
+    </div>
   );
 }

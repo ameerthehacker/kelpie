@@ -1,11 +1,12 @@
-import { ChevronDownIcon, ShieldAlertIcon, XIcon } from 'lucide-react';
+import { ChevronDownIcon, XIcon } from 'lucide-react';
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { useAgents } from '@/hooks/use-agents';
 import { useAnswerApprovals, useForgetRule, useRules, type Answer } from '@/hooks/use-approvals';
 import { approvalsSummary, groupApprovals, pendingQuestions, type ApprovalGroup, type PendingApproval } from '@/lib/approvals';
 import { cn } from '@/lib/utils';
 import { ApprovalRow, type GroupAnswer } from './approval-row';
-import { QuestionRow } from './question-row';
+import { QuestionItem } from './question-row';
 
 const btn = 'h-7 shrink-0 rounded-full px-3 text-xs font-medium disabled:opacity-50';
 
@@ -33,24 +34,33 @@ export function useGroupAnswers() {
 }
 
 /**
- * What a round-up's agents are waiting on the person for, docked above the composer. Requests for
- * the same thing are one row, however many agents ask; questions queue after them, oldest first,
- * each answered on its own. Keys, with the request rows focused: j/k to move, a to allow, r to allow
- * for the round-up, d to deny. `inChat`: the session whose chat is on screen, its questions shown there.
- * `openFirst`: open the oldest question's card (where there is room for it, as on the approvals page).
+ * What a round-up's agents are waiting on the person for: one panel with one header, docked above
+ * the composer. Requests for the same thing are one compact row, however many agents ask; below
+ * them, the oldest question is open to answer, the rest a ‹ › away. Keys, with the request rows
+ * focused: j/k to move, a to allow, r to allow for the round-up, d to deny. `inChat`: the session
+ * whose chat is on screen, its questions shown there. `docked`: above the composer, the chat
+ * fading out behind it.
  */
-export function ApprovalTray({ approvals, roundUpId, inChat, openFirst = false }: { approvals: PendingApproval[]; roundUpId: string; inChat?: string | undefined; openFirst?: boolean }) {
+export function ApprovalTray({ approvals, roundUpId, inChat, docked = false }: { approvals: PendingApproval[]; roundUpId: string; inChat?: string | undefined; docked?: boolean }) {
   const groups = useMemo(() => groupApprovals(approvals), [approvals]);
   const questions = useMemo(() => pendingQuestions(approvals).filter((q) => q.sessionId !== inChat), [approvals, inChat]);
+  const agents = useAgents(questions.length ? roundUpId : undefined);
   const rules = useRules(groups.length ? roundUpId : undefined);
   const forget = useForgetRule(roundUpId);
   const { run, busy, error } = useGroupAnswers();
   const [open, setOpen] = useState(true);
   const [selected, setSelected] = useState(0);
+  /** The question on show, and whether the person moved to it (it then takes the keyboard). */
+  const [shownQ, setShownQ] = useState<{ key: string | undefined; moved: boolean }>({ key: undefined, moved: false });
   // Rows leave as they are answered (here or anywhere): keep the selection on a row.
   useEffect(() => setSelected((i) => Math.min(i, Math.max(0, groups.length - 1))), [groups.length]);
   if (!groups.length && !questions.length) return null;
   const shown = approvals.filter((a) => groups.some((g) => g.items.includes(a)) || questions.includes(a));
+  const qKey = (q: PendingApproval) => `${q.sessionId}:${q.requestId}`;
+  // The one picked while it waits; once it is answered, the oldest left.
+  const qi = Math.max(0, questions.findIndex((q) => qKey(q) === shownQ.key));
+  const question = questions[qi];
+  const harness = (q: PendingApproval) => (q.sessionId === q.roundUpId ? 'claude-code' : agents?.find((a) => a.id === q.sessionId)?.harness);
 
   const onKey = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLInputElement || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -72,12 +82,20 @@ export function ApprovalTray({ approvals, roundUpId, inChat, openFirst = false }
   };
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="bg-surf border-wait/50 mb-2 rounded-[20px] border text-sm">
-      <div className="flex items-center gap-2 py-1.5 pr-2 pl-4">
-        <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2.5 py-1 text-left">
-          <ShieldAlertIcon className="text-wait size-4 shrink-0" strokeWidth={2} />
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className={cn(
+        'bg-surf border-ln shadow-card relative mb-2 flex max-h-[min(36rem,50vh)] flex-col rounded-[20px] border text-sm',
+        // The chat ends above the tray: fade it out there rather than cut it off.
+        docked && 'before:from-background before:pointer-events-none before:absolute before:inset-x-0 before:-top-7 before:h-6 before:bg-linear-to-t before:to-transparent',
+      )}
+    >
+      <div className="flex shrink-0 items-center gap-2 py-1.5 pr-2 pl-4">
+        <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left">
+          <span aria-hidden="true" className="bg-wait size-2 shrink-0 rounded-full" />
           <span className="font-medium">Waiting on you</span>
-          <span className="text-mu truncate text-xs">{approvalsSummary(shown)}</span>
+          <span className="text-mu truncate text-xs">· {approvalsSummary(shown)}</span>
           <ChevronDownIcon className={cn('text-mu2 size-4 shrink-0 transition-transform', !open && '-rotate-90')} />
         </CollapsibleTrigger>
         {groups.length > 1 && (
@@ -91,37 +109,47 @@ export function ApprovalTray({ approvals, roundUpId, inChat, openFirst = false }
           </>
         )}
       </div>
-      <CollapsibleContent>
-        <div className="border-ln max-h-[min(28rem,50vh)] overflow-y-auto border-t px-1.5 py-1.5">
-          {groups.length > 0 && (
-            <ul tabIndex={0} onKeyDown={onKey} className="flex flex-col gap-0.5 rounded-xl outline-none" aria-label="Approvals (j/k to move, a allow, r allow for round-up, d deny)">
+      <CollapsibleContent className="border-ln flex min-h-0 flex-1 flex-col border-t">
+        {groups.length > 0 && (
+          <div
+            className={cn(
+              'flex flex-col overflow-y-auto px-1.5 py-1.5 [scrollbar-color:var(--ln2)_transparent] [scrollbar-width:thin]',
+              question ? 'max-h-[9.5rem] shrink-0' : 'min-h-0 flex-1',
+            )}
+          >
+            <ul tabIndex={0} onKeyDown={onKey} className="group/approvals flex flex-col gap-0.5 rounded-xl outline-none" aria-label="Approvals (j/k to move, a allow, r allow for round-up, d deny)">
               {groups.map((g, i) => (
                 <ApprovalRow key={g.key} group={g} selected={i === selected} busy={busy} onSelect={() => setSelected(i)} onAnswer={(a) => void run([g], a)} />
               ))}
             </ul>
-          )}
-          {questions.length > 0 && (
-            <ul aria-label="Questions" className="flex flex-col gap-0.5">
-              {questions.map((q, i) => (
-                <QuestionRow key={`${q.sessionId}:${q.requestId}`} item={q} defaultOpen={openFirst && i === 0} />
-              ))}
-            </ul>
-          )}
-          {error && <p className="text-fail px-2.5 pt-1.5 text-xs">{error}</p>}
-          {rules.length > 0 && (
-            <div className="text-mu flex flex-wrap items-center gap-1.5 px-2.5 pt-2 pb-1 text-xs">
-              Allowed for this round-up:
-              {rules.map((r) => (
-                <span key={r.id} className="bg-chip text-fg2 flex items-center gap-1 rounded-full py-0.5 pr-1 pl-2 font-mono text-[11px]">
-                  {r.rule}
-                  <button type="button" onClick={() => void forget(r.id)} aria-label={`Stop allowing ${r.rule}`} className="hover:text-fg rounded-full p-0.5">
-                    <XIcon className="size-3" strokeWidth={2.2} />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
+            {error && <p className="text-fail px-2.5 pt-1.5 text-xs">{error}</p>}
+            {rules.length > 0 && (
+              <div className="text-mu flex flex-wrap items-center gap-1.5 px-2.5 pt-2 pb-1 text-xs">
+                Allowed for this round-up:
+                {rules.map((r) => (
+                  <span key={r.id} className="bg-chip text-fg2 flex items-center gap-1 rounded-full py-0.5 pr-1 pl-2 font-mono text-[11px]">
+                    {r.rule}
+                    <button type="button" onClick={() => void forget(r.id)} aria-label={`Stop allowing ${r.rule}`} className="hover:text-fg rounded-full p-0.5">
+                      <XIcon className="size-3" strokeWidth={2.2} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {question && (
+          <section aria-label="Questions" className={cn('flex min-h-0 flex-1 flex-col', groups.length > 0 && 'border-ln border-t')}>
+            <QuestionItem
+              item={question}
+              harness={harness(question)}
+              index={qi}
+              count={questions.length}
+              onMove={(to) => setShownQ({ key: questions[to] && qKey(questions[to]), moved: true })}
+              takeFocus={shownQ.moved && shownQ.key === qKey(question)}
+            />
+          </section>
+        )}
       </CollapsibleContent>
     </Collapsible>
   );

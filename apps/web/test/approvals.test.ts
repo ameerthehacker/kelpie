@@ -50,7 +50,7 @@ describe('approvals', () => {
     expect(groupApprovals(items).map((g) => g.tool)).toEqual(['Bash']);
     expect(pendingQuestions(items).map((x) => x.sessionId)).toEqual(['a3', 'a2']);
     expect(approvalsSummary(items)).toBe('1 approval and 2 questions from 3 agents');
-    expect(approvalsSummary([q({})])).toBe('1 question from 1 agent');
+    expect(approvalsSummary([q({})])).toBe('1 question');
   });
 
   it('keeps different round-ups’ asks apart', () => {

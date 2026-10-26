@@ -18,8 +18,11 @@ const STATE: Record<QuestionView['state'], string> = {
   expired: 'No longer waiting',
 };
 
-const btn = 'h-8 rounded-full px-3.5 text-[13px] font-medium disabled:opacity-50';
-const field = 'bg-chip text-fg h-8 min-w-0 rounded-full px-3.5 text-[13px] outline-none focus-visible:ring-wait/40 focus-visible:ring-2';
+const btn = 'h-8 shrink-0 rounded-full px-3.5 text-[13px] font-medium disabled:opacity-50';
+const field = 'bg-chip text-fg h-8 min-w-0 rounded-full px-3.5 text-[13px] outline-none focus-visible:ring-acc/40 focus-visible:ring-2';
+/** A scrolling body whose edges fade out (only its padding, until there is more to scroll to), with a quiet scrollbar. */
+const fade =
+  '[mask-image:linear-gradient(to_bottom,transparent,#000_12px,#000_calc(100%_-_12px),transparent)] [scrollbar-color:var(--ln2)_transparent] [scrollbar-width:thin]';
 
 /** Where the keyboard goes once the card has rendered what a key changed. */
 type FocusTo = 'current' | 'tab' | 'other';
@@ -38,6 +41,11 @@ export interface QuestionCardProps {
   autoFocus?: boolean;
   /** Take the keyboard as it opens, whatever has it: the person asked to answer. */
   takeFocus?: boolean;
+  /**
+   * `card`: a card of its own, with a header saying what it is (in a chat). `bare`: just the
+   * questions, for a container that has its own chrome (the tray): its body scrolls, its buttons stay put.
+   */
+  variant?: 'card' | 'bare';
   className?: string;
 }
 
@@ -49,7 +57,7 @@ export interface QuestionCardProps {
  * submit. Escape stays in the card. What is picked is kept per question, so the agent's chat and
  * the queue show the same. Answered, it folds to what was chosen.
  */
-export function QuestionCard({ questions, state, answers, sessionId, requestId, who, autoFocus, takeFocus, className }: QuestionCardProps) {
+export function QuestionCard({ questions, state, answers, sessionId, requestId, who, autoFocus, takeFocus, variant = 'card', className }: QuestionCardProps) {
   const answer = useAnswerApprovals();
   const key = sessionId && requestId ? draftKey(sessionId, requestId) : undefined;
   const [drafts, setDrafts] = useQuestionDrafts(key, questions);
@@ -185,25 +193,33 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
 
   const title = questions.length === 1 ? 'Question' : `${questions.length} questions`;
   const tabId = (i: number) => `${id}-tab-${i}`;
+  const bare = variant === 'bare';
   return (
     <section
       onKeyDown={onKey}
       data-question-card=""
       aria-label={who ? `${title} from ${who}` : title}
-      className={cn('bg-surf border-ln flex flex-col gap-3 rounded-2xl border p-4', open && 'border-wait/60 has-[:focus-visible]:ring-wait/40 has-[:focus-visible]:ring-2', className)}
+      className={cn('group/q flex flex-col', bare ? 'min-h-0' : 'bg-surf border-ln rounded-2xl border', className)}
     >
-      <header className="flex items-center gap-2 text-sm">
-        <MessageCircleQuestionIcon className="text-wait size-4 shrink-0" strokeWidth={2} />
-        <span className="font-medium">{title}</span>
-        <span className="text-mu truncate text-xs">
-          {who && `· ${who} `}· {STATE[state]}
-        </span>
-      </header>
+      {!bare && (
+        <header className="flex items-center gap-2 px-4 pt-3.5 text-sm">
+          <MessageCircleQuestionIcon className={cn('size-4 shrink-0', open ? 'text-wait' : 'text-mu2')} strokeWidth={2} />
+          <span className="font-medium">{title}</span>
+          <span className="text-mu truncate text-xs">
+            {who && `· ${who} `}· {STATE[state]}
+          </span>
+        </header>
+      )}
 
       {open ? (
         <>
           {questions.length > 1 && (
-            <div ref={tabs} role="tablist" aria-label="Questions" className="flex flex-wrap gap-1.5">
+            <div
+              ref={tabs}
+              role="tablist"
+              aria-label="Questions"
+              className={cn('bg-chip dark:bg-well mx-4 flex w-fit max-w-[calc(100%-2rem)] shrink-0 flex-wrap gap-0.5 rounded-[10px] p-0.5', !bare && 'mt-3')}
+            >
               {questions.map((x, i) => (
                 <button
                   key={i}
@@ -215,11 +231,11 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
                   tabIndex={i === tab ? 0 : -1}
                   onClick={() => goTo(i, 'tab')}
                   className={cn(
-                    'focus-visible:ring-wait/40 flex h-7 items-center gap-1 rounded-full px-3 text-xs font-medium outline-none focus-visible:ring-2',
-                    i === tab ? 'bg-fg text-background' : 'bg-chip text-fg2 hover:bg-raise',
+                    'focus-visible:ring-acc/40 flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium outline-none focus-visible:ring-2',
+                    i === tab ? 'bg-surf dark:bg-raise text-fg shadow-xs' : 'text-mu hover:text-fg',
                   )}
                 >
-                  {answered(x, drafts[i] ?? emptyDraft(x)) && <CheckIcon className="size-3" strokeWidth={2.6} />}
+                  {answered(x, drafts[i] ?? emptyDraft(x)) && <CheckIcon aria-label="answered" className="text-acc size-3" strokeWidth={2.6} />}
                   {tabLabel(x, i)}
                 </button>
               ))}
@@ -229,7 +245,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
             ref={panel}
             id={`${id}-panel`}
             {...(questions.length > 1 ? { role: 'tabpanel', 'aria-labelledby': tabId(tab) } : {})}
-            className="flex flex-col gap-2"
+            className={cn('flex flex-col gap-2 px-4', bare ? cn('min-h-0 flex-1 overflow-y-auto py-3', fade) : 'pt-3')}
           >
             <p id={`${id}-q`} className="text-[15px] leading-snug font-medium">
               {questions.length === 1 && q.header && <span className="text-mu mr-1.5 text-xs font-medium tracking-wide uppercase">{q.header}</span>}
@@ -272,7 +288,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
             ) : (
               <>
                 {q.multiSelect && <p className="text-mu -mt-1 text-xs">Pick any that apply.</p>}
-                <div role={q.multiSelect ? 'group' : 'radiogroup'} aria-labelledby={`${id}-q`} className="flex flex-col gap-1">
+                <div role={q.multiSelect ? 'group' : 'radiogroup'} aria-labelledby={`${id}-q`} className="-mx-1.5 flex flex-col gap-0.5">
                   {[...q.options, { label: 'Other', description: undefined }].map((opt, i) => {
                     const isOther = i === otherIndex(q);
                     const on = isPicked(q, draft, i);
@@ -287,9 +303,9 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
                           onClick={() => void choose(i)}
                           onMouseEnter={() => setRow(i)}
                           className={cn(
-                            'flex items-start gap-3 rounded-xl px-3 py-2 text-left outline-none',
-                            i === row ? 'bg-hov' : 'hover:bg-hov/60',
-                            on && 'shadow-[inset_0_0_0_1px_var(--wait)]',
+                            'focus-visible:ring-acc/25 flex items-start gap-3 rounded-xl px-3 py-2 text-left outline-none focus-visible:ring-1',
+                            // The keyboard's row shows while the questions have it; the mouse's, under it.
+                            on ? 'bg-acc/10' : cn('hover:bg-raise/50', i === row && 'group-focus-within/q:bg-raise/70'),
                           )}
                         >
                           <span
@@ -297,17 +313,17 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
                             className={cn(
                               'mt-0.5 flex size-4 shrink-0 items-center justify-center border-[1.5px]',
                               q.multiSelect ? 'rounded-[4px]' : 'rounded-full',
-                              on ? 'border-wait bg-wait text-background' : 'border-mu2',
+                              on ? 'border-acc bg-acc text-accfg' : 'border-mu2',
                             )}
                           >
-                            {on && (q.multiSelect ? <CheckIcon className="size-3" strokeWidth={3} /> : <span className="bg-background size-1.5 rounded-full" />)}
+                            {on && (q.multiSelect ? <CheckIcon className="size-3" strokeWidth={3} /> : <span className="bg-accfg size-1.5 rounded-full" />)}
                           </span>
                           <span className="flex min-w-0 flex-1 flex-col">
                             <span className="text-fg text-sm font-medium">{isOther ? 'Other' : opt.label}</span>
                             <span className="text-mu text-xs leading-snug">{isOther ? 'Write your own answer' : opt.description}</span>
                           </span>
                           {i < 9 && (
-                            <Kbd aria-hidden="true" className="bg-chip text-mu2 mt-0.5">
+                            <Kbd aria-hidden="true" className={cn('mt-0.5 h-4 min-w-4 bg-transparent text-[11px]', i === row ? 'group-focus-within/q:text-mu2 text-fa' : 'text-fa')}>
                               {i + 1}
                             </Kbd>
                           )}
@@ -329,27 +345,32 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
               </>
             )}
           </div>
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className={cn('flex shrink-0 items-center gap-1.5 px-4', bare ? 'border-ln border-t py-2.5' : 'pt-3 pb-3.5')}>
+            <button type="button" disabled={busy || !ready} onClick={() => submit(drafts)} className={cn(btn, 'bg-acc text-accfg')}>
+              Submit
+            </button>
             {tab < questions.length - 1 ? (
               <button type="button" disabled={busy} onClick={() => goTo(tab + 1, 'current')} className={cn(btn, 'bg-chip text-fg2 hover:bg-raise')}>
                 Next
               </button>
             ) : null}
-            <button type="button" disabled={busy || !ready} onClick={() => submit(drafts)} className={cn(btn, 'bg-acc text-accfg')}>
-              Submit
-            </button>
-            <button type="button" disabled={busy} onClick={() => void send({ decision: 'deny' })} className={cn(btn, 'text-mu hover:bg-hov hover:text-fg')} title="Tell the agent you'd rather not answer">
+            <button type="button" disabled={busy} onClick={() => void send({ decision: 'deny' })} className={cn(btn, 'text-mu hover:bg-raise hover:text-fg')} title="Tell the agent you'd rather not answer">
               Skip
             </button>
-            <span className="text-mu2 ml-auto text-[11px] max-sm:hidden">
-              {rows ? `↑↓ move · 1–${Math.min(rows, 9)} pick · ` : ''}
-              {questions.length > 1 && rows ? '←→ questions · ' : ''}Enter {last ? 'submit' : 'next'}
-            </span>
+            {error ? (
+              <p role="alert" className="text-fail ml-auto min-w-0 truncate text-xs" title={error}>
+                {error}
+              </p>
+            ) : (
+              <span className="text-fa ml-auto min-w-0 truncate text-[11px] max-sm:hidden">
+                {rows ? `↑↓ move · 1–${Math.min(rows, 9)} pick · ` : ''}
+                {questions.length > 1 && rows ? '←→ questions · ' : ''}Enter {last ? 'submit' : 'next'}
+              </span>
+            )}
           </div>
-          {error && <p className="text-fail text-xs">{error}</p>}
         </>
       ) : (
-        <ul className="flex flex-col gap-1.5 text-sm">
+        <ul className="flex flex-col gap-1.5 px-4 pt-2.5 pb-3.5 text-sm">
           {questions.map((x, i) => {
             const picked = chosen(answers, x);
             return (
