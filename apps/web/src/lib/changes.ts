@@ -90,6 +90,9 @@ export function anchorSha(changes: Pick<Changes, 'headSha' | 'rounds'> | undefin
 /** "1 file", "185 files". */
 export const filesLabel = (n: number) => `${n} file${n === 1 ? '' : 's'}`;
 
+/** "Mustered from 1 agent's branch", "Mustered from 2 agents' branches". */
+export const musteredFromLabel = (n: number) => `Mustered from ${n} ${n === 1 ? "agent's branch" : "agents' branches"}`;
+
 /** The agents, listed once each, that changed any of these files. */
 export function agentsOf(files: readonly Pick<ChangedFile, 'agents'>[]): AgentRef[] {
   const seen = new Map<string, AgentRef>();
