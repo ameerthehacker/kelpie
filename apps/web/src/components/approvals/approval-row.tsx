@@ -69,7 +69,8 @@ export function ApprovalRow({ group, selected, busy, onAnswer, onSelect, canReme
           <ChevronRightIcon className={cn('size-3.5 transition-transform', open && 'rotate-90')} strokeWidth={2.2} />
         </button>
         <Icon className="text-mu2 size-4 shrink-0" strokeWidth={1.9} />
-        <span className="flex min-w-0 flex-1 flex-col">
+        {/* On a narrow screen the buttons go under it rather than squeeze it to a letter. */}
+        <span className="flex min-w-0 flex-1 basis-40 flex-col">
           <code className="text-fg truncate font-mono text-[13px]" title={group.label}>
             {group.label}
           </code>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
-import { approvalsSummary, broaderRule, groupApprovals, pendingQuestions, type PendingApproval } from '../src/lib/approvals.js';
+import { approvalsSummary, broaderRule, focusAfter, groupApprovals, pendingQuestions, questionKey, shownQuestion, type PendingApproval } from '../src/lib/approvals.js';
 import { buildChat, type PlanView } from '../src/lib/chat.js';
 
 const ask = (over: Partial<PendingApproval>): PendingApproval => ({
@@ -51,6 +51,27 @@ describe('approvals', () => {
     expect(pendingQuestions(items).map((x) => x.sessionId)).toEqual(['a3', 'a2']);
     expect(approvalsSummary(items)).toBe('1 approval and 2 questions from 3 agents');
     expect(approvalsSummary([q({})])).toBe('1 question');
+  });
+
+  it('shows the question the person paged to while it waits, else the oldest', () => {
+    const qs = [ask({ sessionId: 'a1', requestId: 'q1' }), ask({ sessionId: 'a2', requestId: 'q2' }), ask({ sessionId: 'a3', requestId: 'q3' })];
+    expect(questionKey(qs[1]!)).toBe('a2:q2');
+    expect(shownQuestion(qs, undefined)).toBe(0);
+    expect(shownQuestion(qs, 'a3:q3')).toBe(2);
+    // Answered (here or elsewhere): back to the oldest left.
+    expect(shownQuestion(qs, 'a9:q9')).toBe(0);
+    expect(shownQuestion([], 'a1:q1')).toBe(0);
+  });
+
+  it('hands the keyboard on when the question that had it leaves the queue', () => {
+    const qs = [ask({ sessionId: 'a1', requestId: 'q1' }), ask({ sessionId: 'a2', requestId: 'q2' })];
+    // Still waiting, or nothing had the keyboard: leave it be.
+    expect(focusAfter(qs, 'a1:q1', 0, 0)).toBeUndefined();
+    expect(focusAfter(qs, undefined, 0, 0)).toBeUndefined();
+    // Gone: the question now shown takes it; with none left, the approvals; with nothing left, nowhere.
+    expect(focusAfter(qs, 'a0:q0', 1, 0)).toEqual({ question: 'a2:q2' });
+    expect(focusAfter([], 'a1:q1', 0, 2)).toBe('approvals');
+    expect(focusAfter([], 'a1:q1', 0, 0)).toBe('none');
   });
 
   it('keeps different round-ups’ asks apart', () => {

@@ -383,7 +383,7 @@ function AgentApprovals({ agent: a }: { agent: AgentSummary }) {
   return (
     <section aria-label="Waiting on you" className="border-ln border-t px-3.5 py-2">
       <div className="text-wait px-1 pb-1 text-xs font-medium">Waiting on you</div>
-      <ul className="flex flex-col gap-0.5">
+      <ul className="group/approvals flex flex-col gap-0.5">
         {groups.map((g, i) => (
           <ApprovalRow key={g.key} group={g} selected={i === selected} busy={busy} onSelect={() => setSelected(i)} onAnswer={(ans) => void run([g], ans)} />
         ))}

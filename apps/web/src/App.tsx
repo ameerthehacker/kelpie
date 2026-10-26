@@ -284,8 +284,8 @@ export function App() {
                   </div>
                 </div>
                 <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
-                  {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
                   <ApprovalTray approvals={approvals} roundUpId={roundUpId} docked />
+                  {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
                 </div>
               </>
             ) : onWorkbench ? (
@@ -318,10 +318,11 @@ export function App() {
                 </ChatLog>
 
                 <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
-                  {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
                   {/* The plan sits outside the chat flow, always in view while agents work. */}
                   {roundUpId && <ApprovalTray approvals={approvals} roundUpId={current?.role === 'agent' ? (current.parentId ?? roundUpId) : roundUpId} inChat={roundUpId} docked />}
                   {agents?.length ? <PlanDock settledAt={current?.updatedAt} /> : <TodoDock todos={todos} />}
+                  {/* Below the tray (whose fade would cover it), next to the composer it is about. */}
+                  {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
                   <Composer
                     status={status}
                     busy={busy}

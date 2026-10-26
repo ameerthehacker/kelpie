@@ -10,20 +10,23 @@ const nav = 'text-mu2 hover:bg-raise hover:text-fg flex size-6 items-center just
  * then the questions themselves, as the agent's chat shows them (with the same answers picked so far).
  * Each is answered on its own; Skip tells the agent the person would rather not.
  */
-export function QuestionItem({ item, harness, index, count, onMove, takeFocus }: {
+export function QuestionItem({ item, harness, index, count, onMove, takeFocus, scroll }: {
   item: PendingApproval;
   /** The asking agent's harness, when known: its mark leads the line. */
   harness: string | undefined;
   index: number;
   count: number;
   onMove: (to: number) => void;
-  /** The person moved here: the questions take the keyboard. */
+  /** The person moved here, or answered the one before: the questions take the keyboard. */
   takeFocus: boolean;
+  /** Whether the questions scroll within the tray (not where the page around it scrolls). */
+  scroll: boolean;
 }) {
   const questions = item.questions ?? [];
   const who = item.sessionId === item.roundUpId ? 'Kelpie' : item.agentTitle;
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    // All of it is the question card's, as far as Escape goes (‹ › too): it never leaves the page from here.
+    <div data-question-card="" className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-2.5">
         {harness ? <HarnessMark harness={harness} /> : <MessageCircleQuestionIcon className="text-mu2 size-4 shrink-0" strokeWidth={1.9} />}
         <span className="text-mu min-w-0 flex-1 truncate text-xs" title={`${who} asks`}>
@@ -52,6 +55,7 @@ export function QuestionItem({ item, harness, index, count, onMove, takeFocus }:
         sessionId={item.sessionId}
         requestId={item.requestId}
         takeFocus={takeFocus}
+        scroll={scroll}
         className="min-h-0 flex-1"
       />
     </div>

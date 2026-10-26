@@ -5,7 +5,7 @@ import { Kbd } from '@/components/ui/kbd';
 import { useAnswerApprovals } from '@/hooks/use-approvals';
 import { useQuestionDrafts } from '@/hooks/use-question-drafts';
 import type { QuestionView } from '@/lib/chat';
-import { clearDrafts, draftKey } from '@/lib/question-drafts';
+import { clearDrafts, draftKey, getPlace, setPlace } from '@/lib/question-drafts';
 import { answered, answersOf, canSubmit, chosen, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, tabLabel, type Draft } from '@/lib/questions';
 import { cn } from '@/lib/utils';
 
@@ -46,6 +46,8 @@ export interface QuestionCardProps {
    * questions, for a container that has its own chrome (the tray): its body scrolls, its buttons stay put.
    */
   variant?: 'card' | 'bare';
+  /** Bare: whether its body scrolls within it (false where the page around it scrolls, so there is one scroll). */
+  scroll?: boolean;
   className?: string;
 }
 
@@ -57,12 +59,13 @@ export interface QuestionCardProps {
  * submit. Escape stays in the card. What is picked is kept per question, so the agent's chat and
  * the queue show the same. Answered, it folds to what was chosen.
  */
-export function QuestionCard({ questions, state, answers, sessionId, requestId, who, autoFocus, takeFocus, variant = 'card', className }: QuestionCardProps) {
+export function QuestionCard({ questions, state, answers, sessionId, requestId, who, autoFocus, takeFocus, variant = 'card', scroll = true, className }: QuestionCardProps) {
   const answer = useAnswerApprovals();
   const key = sessionId && requestId ? draftKey(sessionId, requestId) : undefined;
   const [drafts, setDrafts] = useQuestionDrafts(key, questions);
-  const [tab, setTab] = useState(0);
-  const [row, setRow] = useState(0);
+  // Where the person left this question, if they paged away from it in the queue.
+  const [tab, setTab] = useState(() => Math.max(0, Math.min((key && getPlace(key)?.tab) || 0, questions.length - 1)));
+  const [row, setRow] = useState(() => (key && getPlace(key)?.row) || 0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const id = useId();
@@ -88,6 +91,9 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
     else if (to === 'other') panel.current?.querySelector<HTMLElement>('input')?.focus();
     else if (to === 'current') focusCurrent();
   });
+  useEffect(() => {
+    if (key) setPlace(key, { tab, row });
+  }, [key, tab, row]);
   useEffect(() => {
     if (open && (takeFocus || (autoFocus && (document.activeElement === document.body || !document.activeElement)))) focusCurrent();
     // Only as it opens: never again while the person is elsewhere.
@@ -235,8 +241,9 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
                     i === tab ? 'bg-surf dark:bg-raise text-fg shadow-xs' : 'text-mu hover:text-fg',
                   )}
                 >
-                  {answered(x, drafts[i] ?? emptyDraft(x)) && <CheckIcon aria-label="answered" className="text-acc size-3" strokeWidth={2.6} />}
+                  {answered(x, drafts[i] ?? emptyDraft(x)) && <CheckIcon aria-hidden="true" className="text-acc size-3" strokeWidth={2.6} />}
                   {tabLabel(x, i)}
+                  {answered(x, drafts[i] ?? emptyDraft(x)) && <span className="sr-only">, answered</span>}
                 </button>
               ))}
             </div>
@@ -245,7 +252,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
             ref={panel}
             id={`${id}-panel`}
             {...(questions.length > 1 ? { role: 'tabpanel', 'aria-labelledby': tabId(tab) } : {})}
-            className={cn('flex flex-col gap-2 px-4', bare ? cn('min-h-0 flex-1 overflow-y-auto py-3', fade) : 'pt-3')}
+            className={cn('flex flex-col gap-2 px-4', bare && scroll ? cn('min-h-24 flex-1 overflow-y-auto py-3', fade) : bare ? 'py-3' : 'pt-3')}
           >
             <p id={`${id}-q`} className="text-[15px] leading-snug font-medium">
               {questions.length === 1 && q.header && <span className="text-mu mr-1.5 text-xs font-medium tracking-wide uppercase">{q.header}</span>}
@@ -303,9 +310,9 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
                           onClick={() => void choose(i)}
                           onMouseEnter={() => setRow(i)}
                           className={cn(
-                            'focus-visible:ring-acc/25 flex items-start gap-3 rounded-xl px-3 py-2 text-left outline-none focus-visible:ring-1',
-                            // The keyboard's row shows while the questions have it; the mouse's, under it.
-                            on ? 'bg-acc/10' : cn('hover:bg-raise/50', i === row && 'group-focus-within/q:bg-raise/70'),
+                            'flex items-start gap-3 rounded-xl px-3 py-2 text-left outline-none',
+                            // The keyboard's row shows while the questions have it (on a picked one, its tint taken, as a ring); the mouse's, under it.
+                            on ? 'bg-acc/10 focus-visible:ring-acc/60 focus-visible:ring-2' : cn('hover:bg-raise/50', i === row && 'group-focus-within/q:bg-raise/70'),
                           )}
                         >
                           <span
@@ -323,7 +330,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
                             <span className="text-mu text-xs leading-snug">{isOther ? 'Write your own answer' : opt.description}</span>
                           </span>
                           {i < 9 && (
-                            <Kbd aria-hidden="true" className={cn('mt-0.5 h-4 min-w-4 bg-transparent text-[11px]', i === row ? 'group-focus-within/q:text-mu2 text-fa' : 'text-fa')}>
+                            <Kbd aria-hidden="true" className="text-mu2 mt-0.5 h-4 min-w-4 bg-transparent text-[11px]">
                               {i + 1}
                             </Kbd>
                           )}
@@ -362,7 +369,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
                 {error}
               </p>
             ) : (
-              <span className="text-fa ml-auto min-w-0 truncate text-[11px] max-sm:hidden">
+              <span className="text-mu2 ml-auto min-w-0 truncate text-[11px] max-sm:hidden">
                 {rows ? `↑↓ move · 1–${Math.min(rows, 9)} pick · ` : ''}
                 {questions.length > 1 && rows ? '←→ questions · ' : ''}Enter {last ? 'submit' : 'next'}
               </span>

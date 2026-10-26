@@ -17,8 +17,16 @@ export function setDrafts(key: string, ds: Draft[]): void {
   listeners.forEach((l) => l());
 }
 
-/** Forgets a question's drafts, once it has been answered or skipped. */
+/** Where the person was in each open question (its tab and option): paging back to it in the queue lands there again. */
+const places = new Map<string, { tab: number; row: number }>();
+
+export const getPlace = (key: string) => places.get(key);
+
+export const setPlace = (key: string, place: { tab: number; row: number }) => void places.set(key, place);
+
+/** Forgets a question's drafts (and place), once it has been answered or skipped. */
 export function clearDrafts(key: string): void {
+  places.delete(key);
   if (drafts.delete(key)) listeners.forEach((l) => l());
 }
 

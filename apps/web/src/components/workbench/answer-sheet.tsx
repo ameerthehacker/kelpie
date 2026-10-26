@@ -82,7 +82,7 @@ export function AnswerSheet({ card, approvals, callout, open, onOpenChange }: Pr
               <ClipboardListIcon className="text-vio size-4 shrink-0" strokeWidth={2} />A plan is waiting for your approval. Open the chat to review it.
             </Link>
           )}
-          <ApprovalTray approvals={approvals} roundUpId={card.roundUpId} />
+          <ApprovalTray approvals={approvals} roundUpId={card.roundUpId} fit />
           {!approvals.length && <p className="text-mu text-[13px]">No approvals are waiting. Reply to Kelpie below.</p>}
         </div>
         <form onSubmit={send} className="border-ln flex flex-col gap-2 border-t px-5 pt-3 pb-5">
