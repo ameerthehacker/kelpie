@@ -228,19 +228,35 @@ export const Other = ev(
 export const QuestionOption = z.object({
   label: z.string(),
   description: z.string().optional(),
+  /** What choosing it looks like (a mockup, a snippet), as markdown in a monospace box. */
+  preview: z.string().optional(),
 });
 export type QuestionOption = z.infer<typeof QuestionOption>;
 
 /**
  * A structured question an agent puts to the person (Claude Code's AskUserQuestion): pick one
  * option, or several with `multiSelect`; the person may always write their own answer instead.
+ * A `text` question is answered in words, a `number` one with a number (from `min` to `max`); neither
+ * has options. Any question may be left unanswered.
  */
 export const Question = z.object({
   question: z.string(),
   /** A short label for it ("Auth method"). */
   header: z.string().optional(),
+  /** One helper line under the question. */
+  description: z.string().optional(),
+  /** Absent for a choice among the options. */
+  kind: z.enum(['text', 'number']).optional(),
   options: z.array(QuestionOption),
   multiSelect: z.boolean().optional(),
+  /** A text question's: what the empty box says. */
+  placeholder: z.string().optional(),
+  /** A number question's range, step, starting value and unit ("px", "slides"). */
+  min: z.number().optional(),
+  max: z.number().optional(),
+  step: z.number().optional(),
+  defaultValue: z.number().optional(),
+  unit: z.string().optional(),
 });
 export type Question = z.infer<typeof Question>;
 
@@ -251,6 +267,9 @@ export type Question = z.infer<typeof Question>;
 export const Answers = z.record(z.string(), z.union([z.string(), z.array(z.string())]));
 export type Answers = z.infer<typeof Answers>;
 
+const text = (o: Record<string, unknown>, k: string) => (typeof o[k] === 'string' && o[k] ? { [k]: o[k] as string } : {});
+const num = (o: Record<string, unknown>, k: string) => (typeof o[k] === 'number' && Number.isFinite(o[k]) ? { [k]: o[k] as number } : {});
+
 /** The questions in an AskUserQuestion call's input, as far as they are well formed; undefined if none is. */
 export function questionsOf(input: unknown): Question[] | undefined {
   const list = (input as { questions?: unknown } | null | undefined)?.questions;
@@ -258,16 +277,24 @@ export function questionsOf(input: unknown): Question[] | undefined {
   for (const q of Array.isArray(list) ? (list as unknown[]) : []) {
     const o = (q ?? {}) as Record<string, unknown>;
     if (typeof o.question !== 'string') continue;
-    const options = (Array.isArray(o.options) ? (o.options as unknown[]) : []).flatMap((opt) => {
-      const x = (opt ?? {}) as Record<string, unknown>;
-      if (typeof x.label !== 'string') return [];
-      return [{ label: x.label, ...(typeof x.description === 'string' && x.description ? { description: x.description } : {}) }];
-    });
+    const kind = o.kind === 'text' || o.kind === 'number' ? o.kind : undefined;
+    // Text and number questions have no options; the CLI turns down any they come with.
+    const options = kind
+      ? []
+      : (Array.isArray(o.options) ? (o.options as unknown[]) : []).flatMap((opt) => {
+          const x = (opt ?? {}) as Record<string, unknown>;
+          if (typeof x.label !== 'string') return [];
+          return [{ label: x.label, ...text(x, 'description'), ...text(x, 'preview') }];
+        });
     qs.push({
       question: o.question,
-      ...(typeof o.header === 'string' && o.header ? { header: o.header } : {}),
+      ...text(o, 'header'),
+      ...text(o, 'description'),
+      ...(kind ? { kind } : {}),
       options,
-      ...(o.multiSelect === true ? { multiSelect: true } : {}),
+      ...(o.multiSelect === true && !kind ? { multiSelect: true } : {}),
+      ...(kind === 'text' ? text(o, 'placeholder') : {}),
+      ...(kind === 'number' ? { ...num(o, 'min'), ...num(o, 'max'), ...num(o, 'step'), ...num(o, 'defaultValue'), ...text(o, 'unit') } : {}),
     });
   }
   return qs.length ? qs : undefined;

@@ -218,6 +218,66 @@ describe('approvals', () => {
       await waitFor(() => ctx.sessions.approvals().length === 0);
     });
 
+    it.each([
+      ['cancels it', {}],
+      ['says nothing of it', { FAKE_NO_CANCEL: '1' }],
+    ])('closes a question when its turn is interrupted and the CLI %s', async (_, env) => {
+      const ctx = setup(openStore(':memory:'), { FAKE_ASK_TOOL: 'AskUserQuestion', FAKE_ASK: QUESTION, ...env });
+      const parent = ctx.sessions.create();
+      await parent.send('Go');
+      const [q] = await waitFor(() => ctx.sessions.approvals(parent.id).length === 1 && ctx.sessions.approvals(parent.id));
+      await parent.interrupt();
+      await waitFor(() => ctx.sessions.approvals().length === 0);
+      const resolved = parent.events().filter((e) => e.kind === 'permission.resolved');
+      expect(resolved.map((e) => e.kind === 'permission.resolved' && e.data.requestId)).toEqual([q!.requestId]);
+      // Answered late, it is reported as missed rather than shown as answered.
+      const [late] = await ctx.sessions.answerApprovals({ items: [{ sessionId: q!.sessionId, requestId: q!.requestId }], allow: true, answers: { [QUESTION]: 'Red' } });
+      expect(late).toMatchObject({ ok: false, error: expect.stringMatching(/no longer waiting/) });
+      expect(jsonLines(ctx.answers)).toEqual([]);
+    });
+
+    it('turns down answers sent for something that is not a question', async () => {
+      const ctx = setup();
+      const { agents } = await roundUp(ctx, 1);
+      const [p] = ctx.sessions.approvals().filter((a) => a.sessionId === agents[0]!.id);
+      const item = { sessionId: p!.sessionId, requestId: p!.requestId };
+      const res = await ctx.app.request('/api/approvals', {
+        method: 'POST',
+        headers: { host: '127.0.0.1:7317', 'content-type': 'application/json' },
+        body: JSON.stringify({ items: [item], decision: 'allow', answers: { 'Which?': 'Red' } }),
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toMatch(/not a question/);
+      expect((await ctx.sessions.answerApprovals({ items: [item], allow: true, answers: { 'Which?': 'Red' } }))[0]).toMatchObject({ ok: false, error: /not a question/ });
+      // Still waiting: nothing was answered.
+      expect(ctx.sessions.approvals().some((a) => a.requestId === item.requestId)).toBe(true);
+    });
+
+    it('checks a number question against its range, and takes a text question in words', async () => {
+      const input = {
+        questions: [
+          { question: 'Name?', kind: 'text', placeholder: 'kelp' },
+          { question: 'Slides?', kind: 'number', min: 3, max: 20, unit: 'slides' },
+        ],
+      };
+      const ctx = setup(openStore(':memory:'), { FAKE_ASK_TOOL: 'AskUserQuestion', FAKE_ASK: QUESTION, FAKE_ASK_INPUT: JSON.stringify(input) });
+      const parent = ctx.sessions.create();
+      await parent.send('Go');
+      const [q] = await waitFor(() => ctx.sessions.approvals(parent.id).length === 1 && ctx.sessions.approvals(parent.id));
+      expect(q!.questions).toEqual([
+        { question: 'Name?', kind: 'text', placeholder: 'kelp', options: [] },
+        { question: 'Slides?', kind: 'number', min: 3, max: 20, unit: 'slides', options: [] },
+      ]);
+      const item = { sessionId: q!.sessionId, requestId: q!.requestId };
+      const answer = (answers: Record<string, string>) => ctx.sessions.answerApprovals({ items: [item], allow: true, answers });
+      expect((await answer({ 'Slides?': '40' }))[0]).toMatchObject({ ok: false, error: /between 3 and 20/ });
+      expect((await answer({ 'Slides?': 'many' }))[0]).toMatchObject({ ok: false, error: /between 3 and 20/ });
+      // Some questions may go unanswered.
+      expect((await answer({ 'Slides?': '7' }))[0]!.ok).toBe(true);
+      const sent = await waitFor(() => jsonLines<{ updatedInput?: { answers?: unknown } }>(ctx.answers)[0]);
+      expect(sent.updatedInput?.answers).toEqual({ 'Slides?': '7' });
+    });
+
     it('lists questions again after a reconnect, and closes them when Kelpie restarts', async () => {
       const store = openStore(':memory:');
       const ctx = setup(store, { FAKE_ASK_TOOL: 'AskUserQuestion', FAKE_ASK: QUESTION });

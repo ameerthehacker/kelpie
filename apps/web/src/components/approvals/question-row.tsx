@@ -10,12 +10,14 @@ const btn = 'h-7 shrink-0 rounded-full px-3 text-xs font-medium disabled:opacity
 
 /**
  * Questions one agent is waiting on, in the queue: a line saying what it asks, opening into the
- * same card the agent's chat shows. Each is answered on its own; Skip tells the agent the person
- * would rather not.
+ * same card the agent's chat shows (with the same answers picked so far, kept while it is folded).
+ * Each is answered on its own; Skip tells the agent the person would rather not.
  */
 export function QuestionRow({ item, defaultOpen }: { item: PendingApproval; defaultOpen: boolean }) {
   const answer = useAnswerApprovals();
   const [open, setOpen] = useState(defaultOpen);
+  /** Opened with Answer: the card takes the keyboard. */
+  const [answering, setAnswering] = useState(false);
   const [busy, setBusy] = useState(false);
   const skip = () => {
     setBusy(true);
@@ -31,7 +33,10 @@ export function QuestionRow({ item, defaultOpen }: { item: PendingApproval; defa
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         <button
           type="button"
-          onClick={() => setOpen((o) => !o)}
+          onClick={() => {
+            setOpen((o) => !o);
+            setAnswering(false);
+          }}
           aria-expanded={open}
           aria-label={open ? 'Hide the questions' : 'Show the questions'}
           className="text-mu2 hover:text-fg -ml-1 rounded p-0.5"
@@ -47,7 +52,14 @@ export function QuestionRow({ item, defaultOpen }: { item: PendingApproval; defa
         </span>
         {!open && (
           <span className="flex shrink-0 items-center gap-1.5">
-            <button type="button" onClick={() => setOpen(true)} className={cn(btn, 'bg-acc text-accfg')}>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(true);
+                setAnswering(true);
+              }}
+              className={cn(btn, 'bg-acc text-accfg')}
+            >
               Answer
             </button>
             <button type="button" disabled={busy} onClick={skip} className={cn(btn, 'bg-chip text-fg2 hover:bg-raise')}>
@@ -56,7 +68,7 @@ export function QuestionRow({ item, defaultOpen }: { item: PendingApproval; defa
           </span>
         )}
       </div>
-      {open && <QuestionCard questions={questions} state="open" sessionId={item.sessionId} requestId={item.requestId} className="ml-7" />}
+      {open && <QuestionCard questions={questions} state="open" sessionId={item.sessionId} requestId={item.requestId} takeFocus={answering} className="ml-7" />}
     </li>
   );
 }

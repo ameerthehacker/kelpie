@@ -6,11 +6,12 @@ import { Kbd } from '@/components/ui/kbd';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { roundUpPath, titleOf, wayBack, type RoundUp } from '@/lib/round-ups';
 
-/** Escape is the person's to use while a dialog or menu is open, or while they are typing something. */
+/** Escape is the person's to use while a dialog or menu is open, while they are typing something, or in a question card. */
 function escapeIsFree(e: KeyboardEvent): boolean {
   if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return false;
   if (document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [role="menu"][data-state="open"]')) return false;
   const t = e.target;
+  if (t instanceof Element && t.closest('[data-question-card]')) return false;
   if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return !t.value;
   if (t instanceof HTMLElement && t.isContentEditable) return !t.textContent;
   return true;

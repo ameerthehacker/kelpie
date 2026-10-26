@@ -159,6 +159,12 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     if (answers && (!answers.success || items.length !== 1 || body.decision !== 'allow')) {
       return c.json({ error: 'answers must map question text to an answer (or a list of them), for one item being allowed' }, 400);
     }
+    if (answers) {
+      const [item] = items as { sessionId: string; requestId: string }[];
+      const pending = sessions.get(item!.sessionId)?.approval(item!.requestId);
+      // Gone already is the result's to report; only a request still open can be the wrong kind.
+      if (pending && !pending.questions) return c.json({ error: 'answers are for questions, and this is not a question' }, 400);
+    }
     const results = await sessions.answerApprovals({
       items: items as { sessionId: string; requestId: string }[],
       allow: body.decision === 'allow',
