@@ -118,9 +118,10 @@ describe('recovery after Kelpie stops', () => {
     );
 
     // Once the resumed agents finish, the orchestrator hears about all three, once.
-    await waitFor(() => sessions.get('orch')!.events().some((e) => e.kind === 'message' && e.data.sent && e.data.text.includes('"C"')));
+    const heard = (title: string) => sessions.get('orch')!.events().some((e) => e.kind === 'message' && e.data.sent && e.data.text.includes(`"${title}"`));
+    await waitFor(() => ['A', 'B', 'C'].every(heard));
     await waitFor(() => !sessions.all().some((s) => s.working));
-    await sleep(200);
+    await sleep(200); // for any second notice that should not come
     const told = jsonLines<Received>(stdin)
       .filter((r) => r.resume === 'h-orch' || r.text.startsWith('<kelpie-notification>'))
       .map((r) => r.text)
