@@ -134,8 +134,8 @@ describe('tickets', () => {
     const store = openStore(':memory:');
     store.createSession({ id: 'r', cwd: '/r' });
     store.createSession({ id: 'other', cwd: '/r' });
-    expect(store.linkTicket('r', ticket('https://acme.atlassian.net/browse/SHOP-412'), 'auto', undefined, 1000)).toBe(true);
-    expect(store.linkTicket('r', ticket('https://app.asana.com/0/1201/list'), 'orchestrator', 'Q4 checkout launch', 2000)).toBe(true);
+    expect(store.linkTicket('r', ticket('https://acme.atlassian.net/browse/SHOP-412'), 'auto', undefined, undefined, 1000)).toBe(true);
+    expect(store.linkTicket('r', ticket('https://app.asana.com/0/1201/list'), 'orchestrator', 'Q4 checkout launch', undefined, 2000)).toBe(true);
     // The same issue from a board link: already linked.
     expect(store.linkTicket('r', ticket('https://acme.atlassian.net/jira/software/projects/SHOP/boards/3?selectedIssue=SHOP-412'), 'auto')).toBe(false);
     store.linkTicket('other', ticket('https://acme.atlassian.net/browse/SHOP-412'), 'auto');
@@ -153,7 +153,32 @@ describe('tickets', () => {
     expect(store.linkTicket('r', t, 'orchestrator', '  Guest checkout  ')).toBe(true);
     expect(store.linkTicket('r', t, 'orchestrator', 'Guest checkout')).toBe(false);
     expect(store.linkTicket('r', t, 'orchestrator', '')).toBe(false);
-    expect(store.ticketsOf('r')).toMatchObject([{ title: 'Guest checkout', source: 'auto' }]);
+    expect(store.ticketsOf('r')).toMatchObject([{ title: 'Guest checkout', titleSource: 'orchestrator', source: 'auto' }]);
+  });
+
+  it("keeps the strongest title: the person's over the orchestrator's over a link's text", () => {
+    const store = openStore(':memory:');
+    store.createSession({ id: 'r', cwd: '/r' });
+    const t = ticket('https://app.asana.com/0/1201/1209');
+    // Found with its link text in the person's message.
+    expect(store.linkTicket('r', { ...t, title: 'Checkout flake' }, 'auto')).toBe(true);
+    expect(store.ticketsOf('r')).toMatchObject([{ title: 'Checkout flake', titleSource: 'link' }]);
+    expect(store.linkTicket('r', t, 'orchestrator', 'Fix checkout flake')).toBe(true);
+    // A link's text no longer replaces the orchestrator's title.
+    expect(store.linkTicket('r', { ...t, title: 'Flake' }, 'auto')).toBe(false);
+    expect(store.titleTicket('r', t.ref, 'Checkout: flaky e2e', 'person')).toBe(true);
+    expect(store.linkTicket('r', t, 'orchestrator', 'Something else')).toBe(false);
+    expect(store.titleTicket('r', t.ref, 'Other', 'link')).toBe(false);
+    expect(store.ticketsOf('r')).toMatchObject([{ title: 'Checkout: flaky e2e', titleSource: 'person' }]);
+    // The person clearing their name lets a found one in again.
+    expect(store.titleTicket('r', t.ref, '', 'person')).toBe(true);
+    expect(store.ticketsOf('r')).toMatchObject([{ title: null, titleSource: null }]);
+    expect(store.linkTicket('r', t, 'orchestrator', 'Fix checkout flake')).toBe(true);
+    // The person taking the orchestrator's title as theirs makes it theirs.
+    expect(store.titleTicket('r', t.ref, 'Fix checkout flake', 'person')).toBe(true);
+    expect(store.ticketsOf('r')).toMatchObject([{ titleSource: 'person' }]);
+    expect(store.titleTicket('r', 'asana:task:404', 'Nope', 'person')).toBeUndefined();
+    store.close();
   });
 
   it('unlinks a ticket, and drops them all with their round-up', () => {

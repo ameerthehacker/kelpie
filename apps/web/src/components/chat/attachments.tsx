@@ -2,8 +2,16 @@ import { FileTextIcon, PaperclipIcon, XIcon } from 'lucide-react';
 import { useCallback, useEffect, useState, type ClipboardEvent } from 'react';
 import { useDropzone } from 'react-dropzone';
 import type { Attachment } from '@kelpie/protocol';
+import { ticketPaste, type PastedLink } from '@/lib/tickets';
 import { fileSize, isImage, uploadUrl } from '@/lib/uploads';
 import { cn } from '@/lib/utils';
+
+/** The links in pasted HTML, with the text each showed. */
+function pastedLinks(html: string): PastedLink[] {
+  if (!html.includes('<a')) return [];
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  return [...doc.querySelectorAll('a[href]')].map((a) => ({ href: a.getAttribute('href') ?? '', text: a.textContent ?? '' }));
+}
 
 /** As many as one message may carry (the daemon's limit). */
 const MAX_FILES = 20;
@@ -20,8 +28,15 @@ export function useAttachedFiles() {
   const onPaste = useCallback(
     (e: ClipboardEvent) => {
       const pasted = [...e.clipboardData.files];
+      const plain = e.clipboardData.getData('text/plain');
+      // Rich text names its ticket links: keep the names, so the tickets are linked under them.
+      const named = plain && ticketPaste(plain, pastedLinks(e.clipboardData.getData('text/html')));
+      if (named && named !== plain && document.execCommand('insertText', false, named)) {
+        e.preventDefault();
+        return;
+      }
       // Rich apps (spreadsheets, slides) put a picture of the text on the clipboard too: the text wins.
-      if (!pasted.length || e.clipboardData.getData('text/plain')) return;
+      if (!pasted.length || plain) return;
       e.preventDefault();
       add(pasted);
     },

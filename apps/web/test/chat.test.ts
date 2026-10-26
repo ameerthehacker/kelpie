@@ -53,6 +53,17 @@ describe('buildChat', () => {
     expect(item).toMatchObject({ role: 'user', text: 'Why is this red?', attachments });
   });
 
+  it('leaves out the note about untitled tickets Kelpie adds for the orchestrator, before any files', () => {
+    const base = { id: 'e1', runId: 'r', seq: 0, ts: '2026-01-01T00:00:00.000Z', harness: 'claude-code' as const };
+    const note = '<tickets>\nLinked to this round-up without a title: https://app.asana.com/0/1/2\nOnce you know a ticket’s name, set it with link_ticket.\n</tickets>';
+    const [plain] = buildChat([{ ...base, kind: 'message', data: { role: 'user', text: `Fix https://app.asana.com/0/1/2\n\n${note}`, sent: true, source: 'user' } }]);
+    expect(plain).toMatchObject({ text: 'Fix https://app.asana.com/0/1/2' });
+    const attachments = [{ id: 'u1', name: 'shot.png', mime: 'image/png', size: 2048 }];
+    const text = `Fix it\n\n${note}\n\n<attachments>\n- /s/uploads/ab-shot.png (image/png, 2 KB)\n</attachments>`;
+    const [withFiles] = buildChat([{ ...base, kind: 'message', data: { role: 'user', text, sent: true, source: 'user', attachments } }]);
+    expect(withFiles).toMatchObject({ text: 'Fix it', attachments });
+  });
+
   it('alternates user turns and assistant replies', () => {
     expect(buildChat(events('multi-turn')).map((i) => (i.role === 'user' ? `user:${i.text.slice(0, 8)}` : `assistant:${i.parts.length}`))).toEqual([
       'user:Remember',

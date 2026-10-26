@@ -541,6 +541,60 @@ describe('orchestrator round-ups', () => {
     expect(ctx.store.ticketsOf(parent.id)).toHaveLength(1);
   });
 
+  it('names tickets by their link text, and tells the orchestrator which ones it could not name', async () => {
+    const ctx = setup({ FAKE_HANG: '1' });
+    const { parent, call } = await orchestrator(ctx);
+    await parent.send('Fix these:\n- Checkout flake on Safari: https://app.asana.com/0/1201/11\n- https://app.asana.com/0/1201/12');
+    expect(parent.info().tickets.map((t) => [t.ref, t.title, t.titleSource])).toEqual([
+      ['asana:task:11', 'Checkout flake on Safari', 'link'],
+      ['asana:task:12', undefined, undefined],
+    ]);
+    // Queued behind its first turn, or taken in already.
+    const sent = [
+      ...ctx.store.undelivered(parent.id).map((r) => r.text),
+      ...ctx.store.loadEvents(parent.id).flatMap((e) => (e.kind === 'message' && e.data.role === 'user' ? [e.data.text] : [])),
+    ].find((t) => t.includes('Fix these'));
+    expect(sent).toMatch(/<tickets>\nLinked to this round-up without a title: https:\/\/app\.asana\.com\/0\/1201\/12\n.*link_ticket.*\n<\/tickets>$/);
+    expect(sent!.slice(sent!.indexOf('<tickets>'))).not.toContain('/11');
+    expect((await call('list_agents')).data.untitledTickets).toEqual(['https://app.asana.com/0/1201/12']);
+    // The orchestrator names it; the person's own name for a ticket stays.
+    await call('link_ticket', { url: 'https://app.asana.com/0/1201/12', title: 'Login loop' });
+    expect((await call('list_agents')).data.untitledTickets).toBeUndefined();
+    parent.titleTicket('asana:task:12', 'Login loop after SSO', 'person');
+    const kept = await call('link_ticket', { url: 'https://app.asana.com/0/1201/12', title: 'Login' });
+    expect(kept.data.note).toMatch(/person named this ticket/);
+    expect(parent.info().tickets[1]).toMatchObject({ title: 'Login loop after SSO', titleSource: 'person' });
+  });
+
+  it('lets the person rename and unlink a ticket through the API', async () => {
+    const ctx = setup({ FAKE_HANG: '1' });
+    const parent = ctx.sessions.create();
+    await parent.send('https://acme.atlassian.net/browse/SHOP-412 and https://app.asana.com/0/1201/1209');
+    const agent = ctx.sessions.create(undefined, { parentId: parent.id, role: 'agent', title: 'A' });
+    const headers = { host: '127.0.0.1:7317', 'content-type': 'application/json' };
+    const at = (id: string, ref: string) => `/api/sessions/${id}/tickets/${encodeURIComponent(ref)}`;
+    const patch = (id: string, ref: string, body: unknown) => ctx.app.request(at(id, ref), { method: 'PATCH', headers, body: JSON.stringify(body) });
+    const renamed = await patch(parent.id, 'jira:acme.atlassian.net/SHOP-412', { title: '  Guest   checkout ' });
+    expect(renamed.status).toBe(200);
+    expect(await renamed.json()).toMatchObject({ key: 'SHOP-412', title: 'Guest checkout', titleSource: 'person' });
+    // An agent's id stands for its round-up.
+    expect((await patch(agent.id, 'asana:task:1209', { title: 'Refunds' })).status).toBe(200);
+    // The orchestrator can't rename what the person named.
+    parent.linkTickets([{ provider: 'asana', kind: 'task', url: 'https://app.asana.com/0/1201/1209', ref: 'asana:task:1209' }], 'orchestrator', 'Other');
+    expect(parent.info().tickets.map((t) => t.title)).toEqual(['Guest checkout', 'Refunds']);
+    // Clearing the person's name lets others name it again.
+    expect(await (await patch(parent.id, 'asana:task:1209', { title: '' })).json()).toMatchObject({ ref: 'asana:task:1209', provider: 'asana' });
+    expect(parent.info().tickets[1]!.title).toBeUndefined();
+    expect((await patch(parent.id, 'asana:task:1209', { title: 3 })).status).toBe(400);
+    expect((await patch(parent.id, 'asana:task:1209', { title: 'x'.repeat(201) })).status).toBe(400);
+    expect((await patch(parent.id, 'asana:task:404', { title: 'Nope' })).status).toBe(404);
+    expect((await patch('nope', 'asana:task:1209', { title: 'Nope' })).status).toBe(404);
+    const del = (ref: string) => ctx.app.request(at(parent.id, ref), { method: 'DELETE', headers });
+    expect((await del('jira:acme.atlassian.net/SHOP-412')).status).toBe(204);
+    expect((await del('jira:acme.atlassian.net/SHOP-412')).status).toBe(404);
+    expect(parent.info().tickets.map((t) => t.ref)).toEqual(['asana:task:1209']);
+  });
+
   it('deletes sub-agents with their orchestrator', async () => {
     const ctx = setup({ FAKE_HANG: '1' });
     const { parent, call } = await orchestrator(ctx);

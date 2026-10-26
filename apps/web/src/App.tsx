@@ -87,7 +87,7 @@ function TitleBlock({ roundUp, agents }: { roundUp: RoundUp; agents: AgentSummar
             <span aria-hidden="true" className="text-fa">
               ·
             </span>
-            <TicketChips tickets={roundUp.tickets} />
+            <TicketChips tickets={roundUp.tickets} roundUpId={roundUp.id} />
           </>
         )}
       </div>
