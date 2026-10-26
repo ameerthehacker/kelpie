@@ -1,5 +1,5 @@
 import { PanelLeftIcon } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type Ref } from 'react';
 import type { Mode } from '@kelpie/protocol';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMatch, useNavigate } from 'react-router';
@@ -22,6 +22,7 @@ import { WorkingStatus } from '@/components/chat/working-status';
 import { AgentCrumb } from '@/components/shell/agent-crumb';
 import { KelpieLogo } from '@/components/shell/brand';
 import { Search } from '@/components/shell/search';
+import { CompactTitle, StickyHead } from '@/components/shell/sticky-head';
 import { TicketChips } from '@/components/shell/tickets';
 import { AppSidebar } from '@/components/shell/sidebar';
 import { WorkbenchPage } from '@/components/workbench/workbench-page';
@@ -66,11 +67,11 @@ function useNavOpen(): [boolean, (open: boolean) => void] {
 }
 
 /** The round-up's name in the display face, with its repo, what it is up to, and its tickets. */
-function TitleBlock({ roundUp, agents }: { roundUp: RoundUp; agents: AgentSummary[] }) {
+function TitleBlock({ roundUp, agents, titleRef }: { roundUp: RoundUp; agents: AgentSummary[]; titleRef?: Ref<HTMLHeadingElement> }) {
   const now = useNow();
   return (
-    <div className="flex flex-col gap-2.5 pb-2">
-      <h1 className="font-heading text-[42px] leading-[1.05] font-semibold tracking-[-0.035em] text-balance max-sm:text-[32px]">{titleOf(roundUp)}</h1>
+    <div data-chat-head className="flex flex-col gap-2.5 pb-2">
+      <h1 ref={titleRef} className="font-heading text-[42px] leading-[1.05] font-semibold tracking-[-0.035em] text-balance max-sm:text-[32px]">{titleOf(roundUp)}</h1>
       <div className="text-mu flex flex-wrap items-center gap-2.5 text-[13px]">
         <span className="font-mono text-xs">{shortPath(roundUp.cwd)}</span>
         {roundUp.baseBranch && (
@@ -95,20 +96,38 @@ function TitleBlock({ roundUp, agents }: { roundUp: RoundUp; agents: AgentSummar
   );
 }
 
-/** An orchestrator round-up's two views: the conversation, and the feature branch's changes under review. */
-function RoundUpTabs({ roundUpId, value, onChange }: { roundUpId: string; value: RoundUpTab; onChange: (tab: RoundUpTab) => void }) {
+/**
+ * An orchestrator round-up's two views: the conversation, and the feature branch's changes under
+ * review. Pinned to the top as either scrolls, with the round-up's name once its title is gone.
+ */
+function RoundUpTabs({
+  roundUpId,
+  title,
+  titleEl,
+  value,
+  onChange,
+}: {
+  roundUpId: string;
+  title: string;
+  titleEl: Element | null;
+  value: RoundUpTab;
+  onChange: (tab: RoundUpTab) => void;
+}) {
   const files = useChanges(roundUpId, { patches: false }).data;
   return (
-    <TabStrip
-      label="Round-up views"
-      tabs={[
-        { id: 'conversation', label: 'Conversation' },
-        { id: 'changes', label: 'Changes', ...(files?.state === 'ready' ? { count: files.stats.files } : {}) },
-      ]}
-      value={value}
-      onChange={onChange}
-      className="-mt-3"
-    />
+    <StickyHead className="-mt-3">
+      <TabStrip
+        label="Round-up views"
+        tabs={[
+          { id: 'conversation', label: 'Conversation' },
+          { id: 'changes', label: 'Changes', ...(files?.state === 'ready' ? { count: files.stats.files } : {}) },
+        ]}
+        value={value}
+        onChange={onChange}
+      >
+        <CompactTitle title={title} titleEl={titleEl} />
+      </TabStrip>
+    </StickyHead>
   );
 }
 
@@ -179,7 +198,9 @@ export function App() {
   // The Changes tab (and full screen) are an orchestrator's: its feature branch, under review.
   const reviewable = !!roundUpId && current?.role === 'orchestrator';
   const onChanges = reviewable && nav.tab === 'changes';
-  const tabs = reviewable && <RoundUpTabs roundUpId={roundUpId} value={nav.tab} onChange={nav.setTab} />;
+  // The big title, for the tabs to show it small once it has scrolled away.
+  const [titleEl, setTitleEl] = useState<HTMLHeadingElement | null>(null);
+  const tabs = reviewable && <RoundUpTabs roundUpId={roundUpId} title={titleOf(current)} titleEl={titleEl} value={nav.tab} onChange={nav.setTab} />;
   const waiting = allApprovals.length + unseen.filter((i) => !isRequestKind(i.kind)).length;
 
   useEffect(() => {
@@ -278,7 +299,7 @@ export function App() {
               <>
                 <div className="min-h-0 flex-1 overflow-y-auto">
                   <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
-                    {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} />}
+                    {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} />}
                     {tabs}
                     <ChangesTab roundUpId={roundUpId} repo={current?.cwd.split('/').slice(-2).join('/')} />
                   </div>
@@ -296,7 +317,7 @@ export function App() {
               <>
                 <ChatLog key={roundUpId ?? 'new'} id={roundUpId} content={items} className="min-h-0 flex-1">
                   <ConversationContent className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
-                    {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} />}
+                    {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} />}
                     {tabs}
                     {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
                     {items.map((item) =>

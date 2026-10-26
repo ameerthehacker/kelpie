@@ -7,15 +7,33 @@ import { belowView, scrollTopFor, spotAt, type Spot } from '@/lib/scroll-spot';
 /** Where the person left each chat they had scrolled up in, for this page load. */
 const positions = new Map<string, Spot>();
 
+/**
+ * The chat's head: how many entries lead it (`data-chat-head`: the title, the tabs), and the
+ * height of the one stuck to the top that the rest scroll under. Spots count past the head, from
+ * its sticky bar's bottom edge: stuck, its box would read as the entry at the top.
+ */
+function headOf(content: HTMLElement): { skip: number; cover: number } {
+  let skip = 0;
+  let cover = 0;
+  for (const el of content.children) {
+    if (!(el instanceof HTMLElement) || el.dataset.chatHead === undefined) break;
+    skip++;
+    if (el.dataset.chatHead === 'sticky') cover = el.offsetHeight;
+  }
+  return { skip, cover };
+}
+
 function spotOf(scroller: HTMLElement, content: HTMLElement): Spot | undefined {
   const entries = content.children;
-  return spotAt(scroller.getBoundingClientRect().top, entries.length, (i) => entries[i]!.getBoundingClientRect());
+  const { skip, cover } = headOf(content);
+  return spotAt(scroller.getBoundingClientRect().top + cover, entries.length - skip, (i) => entries[skip + i]!.getBoundingClientRect());
 }
 
 /** The scroll offset that puts `spot` back at the top, or as far down as the chat goes while it isn't loaded yet. */
 function scrollTopOf(spot: Spot, scroller: HTMLElement, content: HTMLElement): number {
-  const entry = content.children[spot.index]?.getBoundingClientRect();
-  return scrollTopFor(spot, entry, { scrollTop: scroller.scrollTop, top: scroller.getBoundingClientRect().top, scrollHeight: scroller.scrollHeight });
+  const { skip, cover } = headOf(content);
+  const entry = content.children[skip + spot.index]?.getBoundingClientRect();
+  return scrollTopFor(spot, entry, { scrollTop: scroller.scrollTop, top: scroller.getBoundingClientRect().top + cover, scrollHeight: scroller.scrollHeight });
 }
 
 const QUIET_MS = 300; // the log's replay has gone this long without growing
