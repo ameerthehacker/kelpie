@@ -1,6 +1,6 @@
-import { MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, PencilIcon, PlusIcon, ShieldAlertIcon, SunIcon, Trash2Icon } from 'lucide-react';
+import { MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, PencilIcon, PlusIcon, ShieldAlertIcon, SquareKanbanIcon, SunIcon, Trash2Icon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useMatch } from 'react-router';
 import { StatusDot } from '@/components/agents/agent-bits';
 import { HarnessMark } from '@/components/harness-mark';
 import { Button } from '@/components/ui/button';
@@ -11,11 +11,13 @@ import { useApprovals } from '@/hooks/use-approvals';
 import { useNow } from '@/hooks/use-now';
 import { useRoundUpStatus } from '@/hooks/use-round-up-status';
 import { useUsage } from '@/hooks/use-usage';
+import { useWorkbench } from '@/hooks/use-workbench';
 import { harnessOf } from '@/lib/harnesses';
 import { relativeTime, roundUpPath, statusLine, titleOf, type RoundUp } from '@/lib/round-ups';
 import { GROUP_LABEL, type PlanGroup } from '@/lib/status';
 import { setTheme, useTheme, type Theme } from '@/lib/theme';
 import { metersOf } from '@/lib/usage';
+import { needsYouTotal } from '@/lib/workbench';
 import { cn } from '@/lib/utils';
 import { KelpieLogo, Wordmark } from './brand';
 import { NotificationPrompt, NotificationsMenu } from './notifications-menu';
@@ -224,6 +226,8 @@ export function AppSidebar({ roundUps, currentId, inAgent, onNavigate, onRename,
     return counts;
   }, [approvals]);
   const [confirming, setConfirming] = useState<RoundUp | undefined>();
+  const onWorkbench = !!useMatch({ path: '/workbench', end: false });
+  const boardWaiting = needsYouTotal(useWorkbench().cards, now);
 
   return (
     <nav aria-label="Round-ups" className={cn('bg-side flex w-[260px] shrink-0 flex-col gap-1.5 rounded-[22px] px-3 pt-3.5 pb-3', className)}>
@@ -235,9 +239,25 @@ export function AppSidebar({ roundUps, currentId, inAgent, onNavigate, onRename,
         </button>
       </div>
 
-      <Link to="/" onClick={onNavigate} className="bg-chip hover:bg-raise mt-2.5 mb-3.5 flex h-10 items-center gap-2.5 rounded-xl px-3 text-sm font-medium">
+      <Link to="/" onClick={onNavigate} className="bg-chip hover:bg-raise mt-2.5 flex h-10 items-center gap-2.5 rounded-xl px-3 text-sm font-medium">
         <PlusIcon className="size-4" strokeWidth={2} />
         New round-up
+      </Link>
+      <Link
+        to="/workbench"
+        onClick={onNavigate}
+        aria-current={onWorkbench ? 'page' : undefined}
+        title={boardWaiting ? `${boardWaiting} on the Workbench waiting on you` : undefined}
+        className={cn('hover:bg-hov mb-3.5 flex h-[38px] items-center gap-2.5 rounded-[10px] px-3 text-sm', onWorkbench && 'bg-sel font-medium')}
+      >
+        <SquareKanbanIcon className="text-fg2 size-4" strokeWidth={1.8} />
+        <span className="flex-1">Workbench</span>
+        {boardWaiting > 0 && (
+          <span className="text-wait text-xs font-semibold">
+            {boardWaiting}
+            <span className="sr-only"> need you</span>
+          </span>
+        )}
       </Link>
 
       {approvals.length > 0 && (

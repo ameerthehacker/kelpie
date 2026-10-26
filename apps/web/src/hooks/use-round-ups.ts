@@ -11,6 +11,7 @@ import { APPROVALS } from './use-approvals';
 import type { PendingApproval } from '@/lib/approvals';
 import { attention } from './use-attention';
 import { dropSession, SUB_AGENTS, upsertSubAgent } from './use-round-up-status';
+import { workbenchStream } from '@/lib/workbench';
 
 const ROUND_UPS = ['round-ups'] as const;
 
@@ -21,7 +22,7 @@ const upsert = (list: RoundUp[] = [], next: RoundUp) =>
 /**
  * The daemon's round-ups: fetched once, then kept live by its event stream; plus rename and
  * delete. The same stream keeps harness usage (use-usage) current, and tells notifications
- * (use-attention) what needs the person.
+ * (use-attention) what needs the person, and the Workbench's cards (use-workbench).
  */
 export function useRoundUps() {
   const queryClient = useQueryClient();
@@ -78,6 +79,8 @@ export function useRoundUps() {
             queryClient.setQueryData<PendingApproval[]>(APPROVALS, (all = []) => [...all.filter((a) => a.roundUpId !== roundUpId), ...approvals]);
             attention.approvals(roundUpId, approvals);
           },
+          // The Workbench: every card on the board as the stream connects, then each card as it changes.
+          ...workbenchStream(queryClient),
           deleted: (msg) => {
             const { id } = JSON.parse(msg.data) as { id: string };
             queryClient.setQueryData<RoundUp[]>(ROUND_UPS, (rows) => rows?.filter((r) => r.id !== id));
