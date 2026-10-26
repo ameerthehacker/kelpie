@@ -9,18 +9,22 @@ import { cn } from '@/lib/utils';
 import { LazyDiffView, type DiffScope } from './scope';
 import { quietButton, ThreadStrip } from './thread';
 
-/** The "Wrap lines" switch over a place's diffs (see useDiffWrap). */
-export function WrapToggle({ wrap, onToggle }: { wrap: boolean; onToggle: () => void }) {
+/**
+ * The "Wrap lines" switch over a place's diffs (see useDiffWrap). `iconOnly` where the toolbar is
+ * narrow (the agent pane); `className` to match its neighbours' height.
+ */
+export function WrapToggle({ wrap, onToggle, iconOnly, className }: { wrap: boolean; onToggle: () => void; iconOnly?: boolean; className?: string }) {
   return (
     <button
       type="button"
       aria-pressed={wrap}
       onClick={onToggle}
+      {...(iconOnly ? { 'aria-label': 'Wrap lines' } : {})}
       title={wrap ? 'Long lines wrap: scroll them sideways instead' : 'Long lines scroll sideways: wrap them instead'}
-      className={cn(quietButton, 'h-[30px] text-xs', wrap && 'text-fg shadow-[inset_0_0_0_1.5px_var(--acc)]')}
+      className={cn(quietButton, 'h-[30px] text-xs', iconOnly && 'w-[30px] justify-center px-0', wrap && 'text-fg shadow-[inset_0_0_0_1.5px_var(--acc)]', className)}
     >
       <WrapTextIcon className="size-3" />
-      Wrap lines
+      {!iconOnly && 'Wrap lines'}
     </button>
   );
 }

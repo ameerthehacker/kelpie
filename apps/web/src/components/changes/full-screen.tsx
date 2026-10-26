@@ -125,7 +125,7 @@ export function FullScreen({ roundUpId, roundUpTitle, which }: { roundUpId: stri
                     <ChevronRightIcon className="size-3.5" />
                   </button>
                 </span>
-                <WrapToggle wrap={wrap} onToggle={toggleWrap} />
+                <WrapToggle wrap={wrap} onToggle={toggleWrap} className="h-8" />
                 {href && (
                   <a href={href} className="bg-chip hover:bg-raise flex h-8 items-center gap-1.5 rounded-full px-3 text-xs">
                     <CodeXmlIcon className="text-run size-3.5" />

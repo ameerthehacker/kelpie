@@ -1,6 +1,6 @@
 import { getSingularPatch } from '@pierre/diffs';
 import { FileDiff, type DiffLineAnnotation, type FileDiffOptions } from '@pierre/diffs/react';
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { isStale, useReview } from '@/hooks/use-review';
 import { gutterNumbers, splitPath, type ChangedFile } from '@/lib/changes';
 import { anchorFor, annotationsFor, followDraft, lineTextAt, splitOutdated, type ReviewThread, type Side, type ThreadAnnotation } from '@/lib/review';
@@ -33,8 +33,9 @@ const DIFF_STYLE = {
   '--diffs-scrollbar-gutter-override': '10px',
 } as CSSProperties;
 
-const THUMB = 'color-mix(in lab, var(--diffs-fg) 22%, var(--diffs-bg))';
-const THUMB_HOVER = 'color-mix(in lab, var(--diffs-fg) 38%, var(--diffs-bg))';
+// About 3:1 against the diff's background in both themes, as a control should be.
+const THUMB = 'color-mix(in lab, var(--diffs-fg) 40%, var(--diffs-bg))';
+const THUMB_HOVER = 'color-mix(in lab, var(--diffs-fg) 55%, var(--diffs-bg))';
 
 /** What the diff's own CSS does not do as wanted; it is the shadow root's last layer. */
 const DIFF_CSS = [
@@ -46,12 +47,23 @@ const DIFF_CSS = [
   `[data-code]::-webkit-scrollbar-thumb { background-color: ${THUMB}; border-radius: 5px; border: 2px solid transparent; }`,
   `[data-code]::-webkit-scrollbar-thumb:hover { background-color: ${THUMB_HOVER}; }`,
   `@supports (-moz-appearance: none) { [data-code] { scrollbar-color: ${THUMB} transparent; } }`,
-  // A hunk's header stays in view as the code scrolls (or wraps), cut short with an ellipsis; its
-  // title has it whole. It sits right of its gutter cell (100%), so it gets the code's width (as
-  // the diff's own `line-info` separators measure it) less that. A block, not the diff's flex: a
-  // flex box's text gets no ellipsis.
+  // More to the right: the code fades out at the edge. The cue where the scrollbar hides until
+  // scrolled (Firefox on macOS ignores the height above). Under the gutter and the threads (grid
+  // items with their own z-index), over the code.
+  '[data-diff] { position: relative; }',
+  '[data-diff]::after { content: ""; position: absolute; top: 0; right: 0; bottom: var(--diffs-scrollbar-gutter); width: 32px; z-index: 1; pointer-events: none; background: linear-gradient(to right, transparent, var(--diffs-bg)); opacity: 0; transition: opacity 150ms; }',
+  ':host([data-more-right]) [data-diff]::after { opacity: 1; }',
+  // A hunk's header stays in view as the code scrolls, cut short with an ellipsis; its title has
+  // it whole. It sits right of its gutter cell (100%), so it gets the code's width (as the diff's
+  // own `line-info` separators measure it) less that. A block, not the diff's flex: a flex box's
+  // text gets no ellipsis.
   '[data-code] { container-type: inline-size; }',
-  '[data-gutter] [data-separator=metadata] [data-separator-wrapper] { display: block; align-content: center; min-width: 0; max-width: calc(100cqi - 100%); }',
+  '[data-overflow=scroll] [data-gutter] [data-separator=metadata] [data-separator-wrapper] { display: block; align-content: center; min-width: 0; max-width: calc(100cqi - 100%); }',
+  // Wrapping, it wraps too: shown from the code column's copy of the row (the diff hides it), which
+  // grows the row, rather than the gutter's, which overlays a row of fixed height.
+  '[data-overflow=wrap] [data-separator=metadata] { height: auto; min-height: 32px; }',
+  '[data-overflow=wrap] [data-gutter] [data-separator=metadata] [data-separator-wrapper] { display: none; }',
+  '[data-overflow=wrap] [data-content] [data-separator=metadata] [data-separator-wrapper] { display: block; position: static; height: auto; min-width: 0; padding-block: 6px; white-space: normal; overflow-wrap: anywhere; }',
 ].join('\n');
 
 /**
@@ -76,11 +88,41 @@ function numberBothSides(host: HTMLElement): void {
   }
 }
 
-/** A hunk's header is cut short when it is wider than the diff: hovering it shows it whole. */
-function titleHunks(host: HTMLElement): void {
+/**
+ * What depends on the diff's width and scroll: `data-more-right` on the host while code is hidden
+ * to the right (the fade), and a title on each hunk header cut short (only those: a whole one
+ * would be read twice).
+ */
+function measure(host: HTMLElement): void {
   const root = host.shadowRoot ?? host;
-  for (const el of root.querySelectorAll<HTMLElement>('[data-separator=metadata] [data-separator-wrapper]')) el.title = el.textContent?.trim() ?? '';
+  const code = root.querySelector<HTMLElement>('[data-code]');
+  host.toggleAttribute('data-more-right', !!code && code.scrollLeft + code.clientWidth < code.scrollWidth - 1);
+  for (const el of root.querySelectorAll<HTMLElement>('[data-separator=metadata] [data-separator-wrapper]')) {
+    if (el.scrollWidth > el.clientWidth) el.title = el.textContent?.trim() ?? '';
+    else el.removeAttribute('title');
+  }
 }
+
+/** Measures again as the diff scrolls sideways or is resized; the returned function stops it. */
+function watch(host: HTMLElement): () => void {
+  const root = host.shadowRoot ?? host;
+  let frame = 0;
+  const later = () => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => measure(host));
+  };
+  // Scroll events do not bubble, but they are seen on the way down.
+  root.addEventListener('scroll', later, { capture: true, passive: true });
+  const resize = new ResizeObserver(later);
+  resize.observe(host);
+  return () => {
+    cancelAnimationFrame(frame);
+    root.removeEventListener('scroll', later, { capture: true });
+    resize.disconnect();
+  };
+}
+
+const watched = new WeakMap<HTMLElement, () => void>();
 
 /**
  * One file's diff (@pierre/diffs, loaded lazily), with the review on it: threads on their lines,
@@ -89,6 +131,8 @@ function titleHunks(host: HTMLElement): void {
 export default function DiffView({ file, patch, threads, scope, wrap }: { file: ChangedFile; patch: string; threads: ReviewThread[]; scope: DiffScope; wrap?: boolean }) {
   const review = useReview(scope.roundUpId);
   const theme = useTheme();
+  // A switch re-renders every diff on show: the switch itself answers first.
+  const wrapped = useDeferredValue(wrap);
   const parsed = useMemo(() => {
     try {
       return getSingularPatch(patch);
@@ -142,7 +186,7 @@ export default function DiffView({ file, patch, threads, scope, wrap }: { file: 
       hunkSeparators: 'metadata',
       diffIndicators: 'classic',
       // Scrolling, the line numbers stay put and the threads keep to the visible width.
-      overflow: wrap ? 'wrap' : 'scroll',
+      overflow: wrapped ? 'wrap' : 'scroll',
       lineHoverHighlight: 'both',
       enableGutterUtility: true,
       // Context lines count as the new file's: they are anchored on `additions` by their new number.
@@ -150,12 +194,17 @@ export default function DiffView({ file, patch, threads, scope, wrap }: { file: 
       onLineNumberClick: ({ annotationSide, lineNumber }) => openAt.current(annotationSide, lineNumber),
       onGutterUtilityClick: ({ start, side }) => openAt.current(side ?? 'additions', start),
       onPostRender: (host, _diff, phase) => {
-        if (phase === 'unmount') return;
+        if (phase === 'unmount') {
+          watched.get(host)?.();
+          watched.delete(host);
+          return;
+        }
         numberBothSides(host);
-        titleHunks(host);
+        if (!watched.has(host)) watched.set(host, watch(host));
+        measure(host);
       },
     }),
-    [theme, wrap],
+    [theme, wrapped],
   );
 
   if (!parsed) return <p className="text-mu px-4 py-3 text-[13px]">Couldn't read this diff.</p>;

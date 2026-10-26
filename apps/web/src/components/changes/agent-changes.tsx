@@ -57,7 +57,7 @@ export function AgentChanges({ agent: a }: { agent: AgentSummary }) {
                 ))}
               </select>
             )}
-            <WrapToggle wrap={wrap} onToggle={toggleWrap} />
+            <WrapToggle wrap={wrap} onToggle={toggleWrap} iconOnly />
             <button type="button" disabled={!files.length} onClick={() => nav.openFull(a.id, files[0]?.path, round)} className={cn(quietButton, 'h-[30px] text-xs')}>
               <Maximize2Icon className="size-3" />
               Full screen

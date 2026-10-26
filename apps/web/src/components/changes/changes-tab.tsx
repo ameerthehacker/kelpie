@@ -39,10 +39,10 @@ export function Totals({ additions, deletions, className }: { additions: number;
 }
 
 /** Threads whose file is no longer in the diff at all. */
-export function OffDiffThreads({ threads, roundUpId }: { threads: ReviewThread[]; roundUpId: string }) {
+export function OffDiffThreads({ threads, roundUpId, className }: { threads: ReviewThread[]; roundUpId: string; className?: string }) {
   if (!threads.length) return null;
   return (
-    <section aria-label="Threads on files no longer changed" className="flex flex-col gap-2.5">
+    <section aria-label="Threads on files no longer changed" className={cn('flex flex-col gap-2.5', className)}>
       <h3 className="text-mu2 text-xs">Threads on files no longer changed</h3>
       {threads.map((t) => (
         <div key={t.id} className="flex flex-col gap-1">
@@ -56,6 +56,10 @@ export function OffDiffThreads({ threads, roundUpId }: { threads: ReviewThread[]
   );
 }
 
+/** Prose keeps the conversation's reading width; the diffs get more, capped so lines stay readable. */
+const READING = 'mx-auto w-full max-w-[760px]';
+const WIDE = 'mx-auto w-full max-w-[1440px]';
+
 /** A round-up's Changes tab: Kelpie's work tree (the feature branch), the review bar, and every changed file. */
 export function ChangesTab({ roundUpId, repo }: { roundUpId: string; repo?: string }) {
   const changes = useChanges(roundUpId);
@@ -68,11 +72,11 @@ export function ChangesTab({ roundUpId, repo }: { roundUpId: string; repo?: stri
   const threads = useMemo(() => threadsOn(state?.threads ?? [], 'feature'), [state?.threads]);
   const scope: DiffScope = { roundUpId, view: 'feature', commitSha: anchorSha(data) };
 
-  if (changes.error) return <p className="text-fail text-sm">Couldn't load the changes: {changes.error.message}</p>;
-  if (!data) return <p className="text-mu text-sm">Loading changes…</p>;
+  if (changes.error) return <p className={cn(READING, 'text-fail text-sm')}>Couldn't load the changes: {changes.error.message}</p>;
+  if (!data) return <p className={cn(READING, 'text-mu text-sm')}>Loading changes…</p>;
   if (data.state === 'none' || !files)
     return (
-      <div className="flex flex-col gap-6">
+      <div className={cn(READING, 'flex flex-col gap-6')}>
         <p className="text-mu bg-well rounded-2xl px-5 py-8 text-center text-sm">No changes yet: writers' work appears here once mustered.</p>
         <OffDiffThreads threads={threads} roundUpId={roundUpId} />
       </div>
@@ -81,7 +85,7 @@ export function ChangesTab({ roundUpId, repo }: { roundUpId: string; repo?: stri
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-1.5">
+      <div className={cn(READING, 'flex flex-col gap-1.5')}>
         <div className="flex flex-wrap items-center gap-2.5">
           <h2 className="text-[15px] font-semibold">Kelpie's work tree</h2>
           {data.branch && (
@@ -94,9 +98,9 @@ export function ChangesTab({ roundUpId, repo }: { roundUpId: string; repo?: stri
         <p className="text-mu text-xs">{musteredFromLabel(mustered)}</p>
       </div>
 
-      <ReviewBar roundUpId={roundUpId} />
+      <ReviewBar roundUpId={roundUpId} className={READING} />
 
-      <div className="flex flex-col gap-3">
+      <div className={cn(WIDE, 'flex flex-col gap-3')}>
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-[15px] font-semibold">Code changes</h3>
           <span className="text-mu font-mono text-xs">
@@ -137,7 +141,7 @@ export function ChangesTab({ roundUpId, repo }: { roundUpId: string; repo?: stri
         ))}
       </div>
 
-      <OffDiffThreads threads={threadsOffDiff(threads, files)} roundUpId={roundUpId} />
+      <OffDiffThreads threads={threadsOffDiff(threads, files)} roundUpId={roundUpId} className={READING} />
     </div>
   );
 }
