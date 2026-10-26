@@ -79,8 +79,20 @@ export const AgentUpdate = z.object({
   ahead: z.number().optional(),
   diffstat: z.string().optional(),
   deliver: z.enum(['muster', 'standalone']).optional(),
+  /** Review threads assigned to it, by status. */
+  reviewThreads: z.object({ open: z.number(), resolved: z.number() }).optional(),
 });
 export type AgentUpdate = z.infer<typeof AgentUpdate>;
+
+/** A review the person submitted, as its notification to the orchestrator carries it. */
+export const ReviewNotice = z.object({
+  reviewId: z.string(),
+  verdict: z.enum(['comment', 'request_changes', 'approve']),
+  /** Comments it published, and the threads they are on. */
+  comments: z.number(),
+  threads: z.number(),
+});
+export type ReviewNotice = z.infer<typeof ReviewNotice>;
 
 /** A file sent with a turn: uploaded by the person (it has an id), or handed on by the orchestrator. */
 export const Attachment = z.object({
@@ -107,6 +119,8 @@ export const Message = ev(
     agents: z.array(AgentUpdate).optional(),
     /** Files sent with the turn; the text lists their paths in an `<attachments>` block. */
     attachments: z.array(Attachment).optional(),
+    /** On the notification of a review the person submitted: what it was, for the UI. */
+    review: ReviewNotice.optional(),
   }),
 );
 

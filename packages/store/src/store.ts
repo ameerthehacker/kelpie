@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
-import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { HarnessUsage, KelpieEvent, type EventData, type EventKind, type EventOf } from '@kelpie/protocol';
@@ -18,6 +19,20 @@ export type OutboxSource = OutboxRow['source'];
 export type AttachmentRow = typeof schema.attachments.$inferSelect;
 export type NewAttachment = Omit<AttachmentRow, 'createdAt'>;
 export type PermissionRuleRow = typeof schema.permissionRules.$inferSelect;
+export type DeliveryRow = typeof schema.deliveries.$inferSelect;
+export type NewDelivery = Omit<DeliveryRow, 'id' | 'createdAt'>;
+export type ReviewRow = typeof schema.reviews.$inferSelect;
+export type ReviewVerdict = NonNullable<ReviewRow['verdict']>;
+export type ReviewThreadRow = typeof schema.reviewThreads.$inferSelect;
+export type ThreadStatus = ReviewThreadRow['status'];
+export type NewThread = Omit<ReviewThreadRow, 'id' | 'status' | 'assignedTo' | 'resolvedBy' | 'resolvedAt' | 'createdAt' | 'updatedAt'> & { id?: string; status?: ThreadStatus };
+export type ReviewCommentRow = typeof schema.reviewComments.$inferSelect;
+export type NewComment = Omit<ReviewCommentRow, 'id' | 'createdAt' | 'updatedAt'> & { id?: string };
+export interface ThreadFilter {
+  status?: ThreadStatus[];
+  assignedTo?: string;
+  ids?: string[];
+}
 
 const MIGRATIONS = join(import.meta.dirname, '../drizzle');
 
@@ -273,6 +288,196 @@ export class Store {
   /** Removes one of a round-up's rules; false if it has no such rule. */
   deleteRule(roundUpId: string, id: number): boolean {
     return this.db.delete(schema.permissionRules).where(and(eq(schema.permissionRules.id, id), eq(schema.permissionRules.roundUpId, roundUpId))).run().changes > 0;
+  }
+
+  // ── deliveries and reviews ───────────────────────────────────────────
+
+  /** Records a branch as it was mustered; one already recorded (same round-up and tip) is a no-op. */
+  addDelivery(d: NewDelivery, now = Date.now()): void {
+    this.db.insert(schema.deliveries).values({ ...d, createdAt: now }).onConflictDoNothing().run();
+  }
+
+  /** A round-up's deliveries, oldest first. */
+  deliveriesOf(roundUpId: string): DeliveryRow[] {
+    return this.db.select().from(schema.deliveries).where(eq(schema.deliveries.roundUpId, roundUpId)).orderBy(asc(schema.deliveries.id)).all();
+  }
+
+  /** The person's draft review of a round-up, if they have one. */
+  pendingReview(roundUpId: string): ReviewRow | undefined {
+    return this.db
+      .select()
+      .from(schema.reviews)
+      .where(and(eq(schema.reviews.roundUpId, roundUpId), eq(schema.reviews.state, 'pending')))
+      .get();
+  }
+
+  /** The draft review, made if there is none yet. */
+  ensurePendingReview(roundUpId: string, now = Date.now()): ReviewRow {
+    return this.atomically(
+      () => this.pendingReview(roundUpId) ?? this.db.insert(schema.reviews).values({ id: randomUUID(), roundUpId, state: 'pending', createdAt: now }).returning().get(),
+    );
+  }
+
+  review(id: string): ReviewRow | undefined {
+    return this.db.select().from(schema.reviews).where(eq(schema.reviews.id, id)).get();
+  }
+
+  /** Submitted reviews, newest first. */
+  submittedReviews(roundUpId: string, limit = 50): ReviewRow[] {
+    return this.db
+      .select()
+      .from(schema.reviews)
+      .where(and(eq(schema.reviews.roundUpId, roundUpId), eq(schema.reviews.state, 'submitted')))
+      .orderBy(desc(schema.reviews.submittedAt), desc(sql`rowid`))
+      .limit(limit)
+      .all();
+  }
+
+  addThread(t: NewThread, now = Date.now()): ReviewThreadRow {
+    return this.db
+      .insert(schema.reviewThreads)
+      .values({ ...t, id: t.id ?? randomUUID(), status: t.status ?? 'pending', createdAt: now, updatedAt: now })
+      .returning()
+      .get();
+  }
+
+  addComment(c: NewComment, now = Date.now()): ReviewCommentRow {
+    return this.atomically(() => {
+      const row = this.db
+        .insert(schema.reviewComments)
+        .values({ ...c, id: c.id ?? randomUUID(), createdAt: now, updatedAt: now })
+        .returning()
+        .get();
+      this.db.update(schema.reviewThreads).set({ updatedAt: now }).where(eq(schema.reviewThreads.id, c.threadId)).run();
+      return row;
+    });
+  }
+
+  comment(id: string): ReviewCommentRow | undefined {
+    return this.db.select().from(schema.reviewComments).where(eq(schema.reviewComments.id, id)).get();
+  }
+
+  updateComment(id: string, body: string, now = Date.now()): ReviewCommentRow | undefined {
+    return this.db.update(schema.reviewComments).set({ body, updatedAt: now }).where(eq(schema.reviewComments.id, id)).returning().get();
+  }
+
+  /** Deletes a comment; a thread left without any goes too. */
+  deleteComment(id: string): boolean {
+    return this.atomically(() => {
+      const row = this.db.delete(schema.reviewComments).where(eq(schema.reviewComments.id, id)).returning().get();
+      if (!row) return false;
+      const left = this.db.select({ n: sql<number>`count(*)` }).from(schema.reviewComments).where(eq(schema.reviewComments.threadId, row.threadId)).get()?.n ?? 0;
+      if (!left) this.db.delete(schema.reviewThreads).where(eq(schema.reviewThreads.id, row.threadId)).run();
+      return true;
+    });
+  }
+
+  /** Throws the person's draft away: its comments, the threads only it started, and the review itself. */
+  discardPending(roundUpId: string): boolean {
+    return this.atomically(() => {
+      const review = this.pendingReview(roundUpId);
+      if (!review) return false;
+      this.db.delete(schema.reviewComments).where(eq(schema.reviewComments.reviewId, review.id)).run();
+      this.db.delete(schema.reviewThreads).where(and(eq(schema.reviewThreads.roundUpId, roundUpId), eq(schema.reviewThreads.status, 'pending'))).run();
+      this.db.delete(schema.reviews).where(eq(schema.reviews.id, review.id)).run();
+      return true;
+    });
+  }
+
+  /** A round-up's threads, oldest first. */
+  threadsOf(roundUpId: string, filter: ThreadFilter = {}): ReviewThreadRow[] {
+    const t = schema.reviewThreads;
+    if (filter.ids && !filter.ids.length) return [];
+    return this.db
+      .select()
+      .from(t)
+      .where(
+        and(
+          eq(t.roundUpId, roundUpId),
+          filter.status ? inArray(t.status, filter.status) : undefined,
+          filter.assignedTo ? eq(t.assignedTo, filter.assignedTo) : undefined,
+          filter.ids ? inArray(t.id, filter.ids) : undefined,
+        ),
+      )
+      .orderBy(asc(t.createdAt), asc(sql`rowid`))
+      .all();
+  }
+
+  thread(id: string): ReviewThreadRow | undefined {
+    return this.db.select().from(schema.reviewThreads).where(eq(schema.reviewThreads.id, id)).get();
+  }
+
+  /** The comments on these threads, oldest first. */
+  commentsOf(threadIds: string[]): ReviewCommentRow[] {
+    if (!threadIds.length) return [];
+    return this.db
+      .select()
+      .from(schema.reviewComments)
+      .where(inArray(schema.reviewComments.threadId, threadIds))
+      .orderBy(asc(schema.reviewComments.createdAt), asc(sql`rowid`))
+      .all();
+  }
+
+  /** The comments a review holds (published with it, or still in the draft). */
+  commentsOfReview(reviewId: string): ReviewCommentRow[] {
+    return this.db.select().from(schema.reviewComments).where(eq(schema.reviewComments.reviewId, reviewId)).orderBy(asc(schema.reviewComments.createdAt), asc(sql`rowid`)).all();
+  }
+
+  /** Opens or resolves a thread; `by` is 'person' or the session that resolved it. */
+  setThreadStatus(id: string, status: ThreadStatus, by: string | null, now = Date.now()): ReviewThreadRow | undefined {
+    const resolved = status === 'resolved';
+    return this.db
+      .update(schema.reviewThreads)
+      .set({ status, resolvedBy: resolved ? by : null, resolvedAt: resolved ? now : null, updatedAt: now })
+      .where(eq(schema.reviewThreads.id, id))
+      .returning()
+      .get();
+  }
+
+  assignThreads(ids: string[], sessionId: string, now = Date.now()): void {
+    if (!ids.length) return;
+    this.db.update(schema.reviewThreads).set({ assignedTo: sessionId, updatedAt: now }).where(inArray(schema.reviewThreads.id, ids)).run();
+  }
+
+  /**
+   * Submits the draft, in one transaction: exactly `commentIds` are published, their threads open
+   * (again), and the review is marked submitted. Any other comment still pending in it (added while
+   * the person was submitting) moves to a fresh draft.
+   */
+  submitReview(reviewId: string, verdict: ReviewVerdict, body: string, commentIds: string[], now = Date.now()): ReviewRow {
+    return this.atomically(() => {
+      const review = this.review(reviewId);
+      if (!review || review.state !== 'pending') throw new Error('that review is not a draft any more');
+      const c = schema.reviewComments;
+      const published = commentIds.length
+        ? this.db
+            .update(c)
+            .set({ state: 'published', updatedAt: now })
+            .where(and(eq(c.reviewId, reviewId), eq(c.state, 'pending'), inArray(c.id, commentIds)))
+            .returning()
+            .all()
+        : [];
+      const threads = [...new Set(published.map((p) => p.threadId))];
+      if (threads.length) {
+        const t = schema.reviewThreads;
+        this.db
+          .update(t)
+          .set({ status: 'open', resolvedBy: null, resolvedAt: null, updatedAt: now })
+          .where(and(inArray(t.id, threads), ne(t.status, 'open')))
+          .run();
+      }
+      const done = this.db.update(schema.reviews).set({ state: 'submitted', verdict, body, submittedAt: now }).where(eq(schema.reviews.id, reviewId)).returning().get();
+      const strays = this.db
+        .select({ id: c.id })
+        .from(c)
+        .where(and(eq(c.reviewId, reviewId), eq(c.state, 'pending'), commentIds.length ? notInArray(c.id, commentIds) : undefined))
+        .all();
+      if (strays.length) {
+        const fresh = this.ensurePendingReview(review.roundUpId, now);
+        this.db.update(c).set({ reviewId: fresh.id }).where(inArray(c.id, strays.map((s) => s.id))).run();
+      }
+      return done!;
+    });
   }
 
   close(): void {

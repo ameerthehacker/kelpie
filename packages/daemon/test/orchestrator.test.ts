@@ -71,6 +71,9 @@ async function orchestrator(ctx: ReturnType<typeof setup>) {
   return { parent, argv, call, client, headers: headers as Record<string, string> };
 }
 
+/** An orchestrator's start (agents have the kelpie MCP server too, but not its prompt). */
+const isOrchestrator = (argv: string[]) => argv.some((a) => a.includes("You are Kelpie's orchestrator"));
+
 /** A variadic flag's values: everything after it up to the next flag. */
 function flag(args: string[], name: string): string[] {
   const i = args.indexOf(name);
@@ -124,7 +127,7 @@ describe('orchestrator round-ups', () => {
     const childArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
     // A reader may read the scratch folder, not write to it.
     expect(flag(childArgv, '--add-dir')).toEqual([scratch]);
-    expect(flag(childArgv, '--allowedTools')).toEqual([`Read(/${scratch}/**)`]);
+    expect(flag(childArgv, '--allowedTools')).toEqual([`Read(/${scratch}/**)`, 'mcp__kelpie']);
     expect(childArgv[childArgv.indexOf('--append-system-prompt') + 1]).toContain(`scratch folder, \`${scratch}\`, is shared`);
     const brief = await waitFor(() => jsonLines<{ text: string }>(stdin).find((l) => l.text.startsWith('Review the spec')));
     expect(brief.text).toBe(`Review the spec\n\n<attachments>\n- ${join(scratch, 'spec.md')} (file, 5 B)\n</attachments>`);
@@ -227,11 +230,13 @@ describe('orchestrator round-ups', () => {
     expect(ctx.sessions.children(parent.id).map((c) => c.id)).toEqual(ids);
     expect(ctx.sessions.list().map((s) => s.id)).toEqual([parent.id]); // children stay out of the sidebar
 
-    // Read-only agents get no edit tools and no kelpie MCP.
+    // Read-only agents get no edit tools; their kelpie MCP server has only the review tools, on a token of their own.
     const childArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile).length === 3 && jsonLines<string[]>(ctx.argsFile).slice(1));
     for (const argv of childArgv) {
       expect(argv[argv.indexOf('--tools') + 1]).toBe(READ_ONLY_TOOLS.join(','));
-      expect(argv).not.toContain('--mcp-config');
+      expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie']);
+      const token = JSON.parse(flag(argv, '--mcp-config')[0]!).mcpServers.kelpie.headers.Authorization.slice('Bearer '.length);
+      expect(ids).toContain(ctx.orch.authorize(token)!.id);
     }
 
     // One notification covering both, once both are idle.
@@ -347,7 +352,7 @@ describe('orchestrator round-ups', () => {
     const readerArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
     // Readers run in auto, with no blanket Bash allow: the harness's own checks decide.
     expect(flag(readerArgv, '--permission-mode')).toEqual(['auto']);
-    expect(readerArgv).not.toContain('--allowedTools');
+    expect(flag(readerArgv, '--allowedTools')).toEqual(['mcp__kelpie']);
     expect(ctx.sessions.get(reader.data.agentId)!.info().mode).toBe('plan');
 
     await ctx.sessions.setMode(parent, 'acceptEdits');
@@ -447,7 +452,7 @@ describe('orchestrator round-ups', () => {
     const other = ctx.sessions.create();
     await other.send('hi');
     const argv = await waitFor(() =>
-      jsonLines<string[]>(ctx.argsFile).find((a) => a.includes('--mcp-config') && JSON.stringify(a) !== JSON.stringify(first.argv)),
+      jsonLines<string[]>(ctx.argsFile).find((a) => isOrchestrator(a) && JSON.stringify(a) !== JSON.stringify(first.argv)),
     );
     const token = JSON.parse(argv[argv.indexOf('--mcp-config') + 1]!).mcpServers.kelpie.headers.Authorization.slice('Bearer '.length);
     const intruder = ctx.orch.authorize(token)!;

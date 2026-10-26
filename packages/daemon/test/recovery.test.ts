@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { openStore, type Store } from '@kelpie/store';
 import { Orchestrator, Session, SessionManager } from '../src/index.js';
+import { commit, lines, roundUp, setup as gitSetup, writer } from './review-fixtures.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
 const FIXTURE = join(import.meta.dirname, '../../adapters/fixtures/claude-code/plain.jsonl');
@@ -187,8 +188,8 @@ describe('recovery after Kelpie stops', () => {
     const second = start(store, { FAKE_HANG: '1', FAKE_ARGS_FILE: argsFile });
     expect(agents.map((a) => second.sessions.get(a.id)!.browser)).toEqual([true, true]);
     await second.orch.recover();
-    // The orchestrator's own start is the one with the kelpie MCP server.
-    const agentArgs = () => jsonLines<string[]>(argsFile).filter((a) => !a.includes('--mcp-config'));
+    // The orchestrator's own start is the one with its prompt.
+    const agentArgs = () => jsonLines<string[]>(argsFile).filter((a) => !a.some((x) => x.includes("You are Kelpie's orchestrator")));
     const [resumed] = await waitFor(() => agentArgs().length > 0 && agentArgs());
     await sleep(300);
     // The first is back in the browser; the other waits for it rather than share it.
@@ -198,6 +199,51 @@ describe('recovery after Kelpie stops', () => {
     expect(hs).toContain(resumed![resumed!.indexOf('--resume') + 1]);
     const parent = second.sessions.get(orchSession.id)!;
     expect((await second.orch.list(parent)).agents.map((a) => a.status).sort()).toEqual(['waiting', 'working']);
+  });
+
+  it('delivers a review submitted just before Kelpie stopped, once, after the restart', async () => {
+    const db = join(tmp('kelpie-home-'), 'kelpie.db');
+    const root = join(tmp('kelpie-home-'), 'worktrees');
+    let store = openStore(db);
+    const first = gitSetup({ store, root });
+    managers.push(first.sessions);
+    const parent = await roundUp(first);
+    const api = await writer(first, parent, 'API');
+    commit(api.cwd, 'app.txt', lines({ 2: 'L2 api' }));
+    await first.orch.muster(parent, [api.id]);
+    const head = (await first.orch.changes.of(parent.id))!.headSha!;
+    await first.orch.reviews.comment(parent.id, { anchor: { view: 'feature', path: 'app.txt', side: 'additions', line: 2, commitSha: head, lineText: 'L2 api' }, body: 'rename it' });
+    // Stopped dead right after the submit: the notification is in the outbox, never taken in.
+    await parent.stop();
+    vi.spyOn(parent as unknown as { launch: () => Promise<void> }, 'launch').mockResolvedValue(undefined);
+    const { review } = await first.orch.reviews.submit(parent.id, 'request_changes', 'Not yet');
+    expect(store.undelivered(parent.id).map((r) => r.text)).toEqual([expect.stringContaining('submitted a review')]);
+    await first.sessions.stopAll();
+    managers.length = 0;
+    store.close();
+
+    store = openStore(db);
+    const second = gitSetup({ store, root, checkout: first.checkout });
+    managers.push(second.sessions);
+    await second.orch.reconcile();
+    await second.orch.recover();
+    const told = () => jsonLines<Received>(second.stdinFile).filter((r) => r.text.includes('submitted a review'));
+    await waitFor(() => told().length === 1);
+    expect(told()[0]!.text).toContain('rename it');
+    const echo = await waitFor(() => second.sessions.get(parent.id)!.events().find((e) => e.kind === 'message' && e.data.review));
+    expect(echo.kind === 'message' && echo.data.review).toEqual({ reviewId: review.id, verdict: 'request_changes', comments: 1, threads: 1 });
+    expect(store.review(review.id)).toMatchObject({ state: 'submitted' });
+    expect(store.threadsOf(parent.id).map((t) => t.status)).toEqual(['open']);
+    await waitFor(() => store.undelivered(parent.id).length === 0);
+
+    // And never again.
+    await second.sessions.stopAll();
+    managers.length = 0;
+    const third = gitSetup({ store, root, checkout: first.checkout });
+    managers.push(third.sessions);
+    await third.orch.recover();
+    await sleep(300);
+    expect(jsonLines<Received>(third.stdinFile)).toEqual([]);
   });
 
   it('drops a turn its process died before reading, instead of retrying it forever', async () => {

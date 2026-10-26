@@ -1,4 +1,5 @@
-import { type AnySQLiteColumn, index, integer, primaryKey, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { type AnySQLiteColumn, index, integer, primaryKey, sqliteTable, text, unique, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /**
  * A round-up: one conversation with a harness, across however many processes it takes.
@@ -160,4 +161,99 @@ export const permissionRules = sqliteTable(
     createdAt: integer('created_at').notNull(),
   },
   (t) => [unique('permission_rules_round_up_rule').on(t.roundUpId, t.rule)],
+);
+
+/**
+ * One writer's branch as it was mustered: what it changed is `forkCommit..tipCommit`. Recorded
+ * before the branch is deleted, so the feature's changes can still be put down to the agent.
+ */
+export const deliveries = sqliteTable(
+  'deliveries',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    roundUpId: text('round_up_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    sessionId: text('session_id').references(() => sessions.id, { onDelete: 'set null' }),
+    title: text('title').notNull(),
+    harness: text('harness').notNull(),
+    branch: text('branch').notNull(),
+    forkCommit: text('fork_commit').notNull(),
+    tipCommit: text('tip_commit').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [index('deliveries_round_up_idx').on(t.roundUpId), unique('deliveries_tip').on(t.roundUpId, t.tipCommit)],
+);
+
+/** The person's reviews of a round-up's changes: at most one pending (the draft) at a time. */
+export const reviews = sqliteTable(
+  'reviews',
+  {
+    id: text('id').primaryKey(),
+    roundUpId: text('round_up_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    state: text('state', { enum: ['pending', 'submitted'] }).notNull(),
+    verdict: text('verdict', { enum: ['comment', 'request_changes', 'approve'] }),
+    body: text('body').notNull().default(''),
+    createdAt: integer('created_at').notNull(),
+    submittedAt: integer('submitted_at'),
+  },
+  (t) => [uniqueIndex('reviews_one_pending').on(t.roundUpId).where(sql`state = 'pending'`)],
+);
+
+/** A conversation on one line of a diff: the feature's, or one agent's. */
+export const reviewThreads = sqliteTable(
+  'review_threads',
+  {
+    id: text('id').primaryKey(),
+    roundUpId: text('round_up_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    view: text('view', { enum: ['feature', 'agent'] }).notNull(),
+    /** view 'agent': whose diff it was made on. */
+    viewSessionId: text('view_session_id').references(() => sessions.id, { onDelete: 'set null' }),
+    /** Owner: the agent whose change the line is (null: base code, Muster, unknown). */
+    agentId: text('agent_id').references(() => sessions.id, { onDelete: 'set null' }),
+    agentTitle: text('agent_title'),
+    path: text('path').notNull(),
+    side: text('side', { enum: ['additions', 'deletions'] }).notNull(),
+    line: integer('line').notNull(),
+    commitSha: text('commit_sha').notNull(),
+    baseSha: text('base_sha').notNull(),
+    lineText: text('line_text').notNull(),
+    diffHunk: text('diff_hunk').notNull(),
+    /** pending: only in the person's draft; open once submitted; resolved by the person or an agent. */
+    status: text('status', { enum: ['pending', 'open', 'resolved'] }).notNull(),
+    assignedTo: text('assigned_to').references(() => sessions.id, { onDelete: 'set null' }),
+    /** 'person', or the session id of the agent (or orchestrator) that resolved it. */
+    resolvedBy: text('resolved_by'),
+    resolvedAt: integer('resolved_at'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [index('review_threads_round_up_idx').on(t.roundUpId, t.status)],
+);
+
+export const reviewComments = sqliteTable(
+  'review_comments',
+  {
+    id: text('id').primaryKey(),
+    threadId: text('thread_id')
+      .notNull()
+      .references(() => reviewThreads.id, { onDelete: 'cascade' }),
+    roundUpId: text('round_up_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    /** The review a person's comment belongs to; null for agents' and the orchestrator's. */
+    reviewId: text('review_id').references(() => reviews.id, { onDelete: 'cascade' }),
+    author: text('author', { enum: ['person', 'orchestrator', 'agent'] }).notNull(),
+    authorSessionId: text('author_session_id').references(() => sessions.id, { onDelete: 'set null' }),
+    authorTitle: text('author_title'),
+    body: text('body').notNull(),
+    state: text('state', { enum: ['pending', 'published'] }).notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [index('review_comments_thread_idx').on(t.threadId, t.createdAt)],
 );

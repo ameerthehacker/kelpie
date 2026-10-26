@@ -4,6 +4,7 @@
  */
 
 import type { Mode } from '@kelpie/protocol';
+import type { ToolThread } from '../review/reviews.js';
 
 export const NOTIFICATION_TAG = 'kelpie-notification';
 
@@ -17,7 +18,7 @@ const ATTACHMENTS = `Files the person attaches arrive as an <attachments> block 
 
 /** What the person's mode asks of the orchestrator; auto asks nothing extra. */
 const MODE_RULES: Partial<Record<Mode, string>> = {
-  plan: `The person has this round-up in plan mode. Nothing may change files: investigate by reading the repo yourself and with read-only agents. While plan mode lasts, spawn_agent and message_agent refuse writers and browser agents, and muster_agents refuses. When your plan is ready (the units you would run as agents, writers marked), write it to your plan file and put it to the person with ExitPlanMode. If they approve it, the round-up has left plan mode: carry the plan out at once. If they don't, their reply says what to change.`,
+  plan: `The person has this round-up in plan mode. Nothing may change files: investigate by reading the repo yourself and with read-only agents. While plan mode lasts, spawn_agent and message_agent refuse writers and browser agents, and muster_agents refuses. When your plan is ready (the units you would run as agents, writers marked), write it to your plan file and put it to the person with ExitPlanMode. If they approve it, the round-up has left plan mode: carry the plan out at once. If they don't, their reply says what to change. Review threads need writers too: if the person submits a review meanwhile, tell them the fixes wait until the plan is approved.`,
   acceptEdits: `The person has this round-up in accept-edits mode: agents change files freely, but anything else that needs permission (most commands, web access) waits for the person's approval.`,
 };
 
@@ -38,6 +39,7 @@ export const orchestratorPrompt = (scratch?: string, mode: Mode = 'auto') => {
     `When an agent asks something only the person can answer, ask the person, then relay the answer with message_agent. Never invent answers.`,
     `When all of a request's agents are done, their reports accepted, and their work mustered (or standalone), give the person a short roll-up: the outcome of each unit, its branch, files changed, and anything left open. Refer to agents by title, not by id.`,
     `Keep your own messages short. You coordinate; the agents do the work.`,
+    `The person reviews the feature's changes in Kelpie, like a pull request, and a <${NOTIFICATION_TAG}> tells you when they submit a review: its threads grouped by the agent whose code each is on. Act on it at once: call assign_threads once per agent group with that agentId, and once without agentId for the "No agent" group (Kelpie starts a "Review fixes" writer for those). Answer a thread that is only a question yourself with reply_to_thread, and resolve_thread it once fully answered. A "Comment" review is routed the same way, but agents change code only where a comment asks for it. On "Approve" with nothing open, give the person the roll-up. When the assigned agents go idle, check their reports and read_review, follow up with message_agent on threads they left open, then call muster_agents on them so the fixes reach the feature branch (standalone agents' fixes stay on their own branch).`,
     `An agent may stop to ask the person's permission for something (list_agents shows it as "needs approval"). The person answers it in Kelpie; don't message the agent about it. If an agent reports that something was declined, tell the person what it needed and why.`,
     ...(MODE_RULES[mode] ? [MODE_RULES[mode]] : []),
   ];
@@ -78,6 +80,8 @@ const scratchNote = (writes: boolean, scratch: string) =>
 
 const BROWSER = `You have the Claude in Chrome tools (mcp__claude-in-chrome__*). They drive the person's own Chrome, where they are signed in to their accounts, and other agents may be using it too. Use the browser only for what your task needs: work in tabs you open yourself, leave the person's tabs alone, and close yours when you are done. Never submit, post, send, buy, or change anything on a site unless your task says to. If a page asks for a login or a CAPTCHA, stop and say so under Questions.`;
 
+const REVIEW = `The person reviews changes in Kelpie, like a pull request, and some of their comment threads may be assigned to you. Your kelpie tools are for those threads: list_review_threads lists them (each with the code it is on, and whether that has changed since: outdated), reply_to_thread answers one, and resolve_thread marks one done. When a message gives you review threads, address each one, commit, reply saying what you did, and resolve it; leave it open, with a reply saying why, if you disagree or need the person's answer.`;
+
 export const agentPrompt = (writes: boolean, place?: WorkPlace, scratch?: string, browser = false) => `# You are a sub-agent working for Kelpie's orchestrator
 
 An orchestrator agent coordinates several agents like you for a person. You cannot see that conversation: the task message is everything you know. Do the whole task yourself, and ask questions only if you are truly blocked.
@@ -89,6 +93,8 @@ ${scratch ? `${scratchNote(writes, scratch)}\n\n` : ''}${browser ? `${BROWSER}\n
 ${whereWriter(place)}` : WRITES) : READ_ONLY + (place ? `
 
 ${whereReader(place)}` : '')}
+
+${REVIEW}
 
 End every turn with a report for the orchestrator, at most 300 words, in exactly this shape:
 
@@ -136,3 +142,27 @@ export const AGENT_RESTARTED = `Kelpie restarted while you were working, and you
 export const ORCHESTRATOR_RESTARTED = `<${NOTIFICATION_TAG}>
 Kelpie restarted while you were working; your turn was cut off. Sub-agents that were working have been resumed. Call list_agents to pick your state back up, then carry on.
 </${NOTIFICATION_TAG}>`;
+
+/** A fence that no line of `text` can close early. */
+const fence = (text: string) => '`'.repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+
+/**
+ * The brief for a writer given review threads: what to do with them, then each thread with its
+ * code and comments. `fresh`: a new agent, so the code is the feature's rather than its own.
+ */
+export const reviewBrief = (threads: ToolThread[], notes?: string, fresh = false) => {
+  const parts = threads.map((t, i) => {
+    const where = `${t.path}:${t.currentLine ?? t.line} (${t.side})${t.outdated ? ' [outdated]' : ''}`;
+    const f = fence(t.diffHunk);
+    const said = t.comments.map((c) => `- ${c.author}: ${c.body.replace(/\n/g, '\n  ')}`);
+    return [`## ${i + 1}. ${where}`, `Thread: ${t.threadId}`, `${f}diff`, t.diffHunk, f, ...said].join('\n');
+  });
+  return [
+    `The person reviewed changes and left these threads on ${fresh ? "the feature's code" : 'code you changed'}. For each: make the change asked for (or decide not to), commit, then reply_to_thread saying what you did and resolve_thread once it's addressed. Leave it open, with a reply saying why, if you disagree or need the person's answer.`,
+    '',
+    ...parts.flatMap((p) => [p, '']),
+    ...(notes?.trim() ? [`Notes from the orchestrator: ${notes.trim()}`] : []),
+  ]
+    .join('\n')
+    .trim();
+};

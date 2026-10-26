@@ -7,8 +7,11 @@ import { Harness, type AgentUpdate, type EventData, type KelpieEvent, type Mode 
 import type { Store, WorktreeRow } from '@kelpie/store';
 import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
 import { logLines, report, type AgentReport, type LogPage } from './digest.js';
+import { ToolError } from '../errors.js';
 import { GitError, type Branch, type Worktrees } from '../worktrees.js';
-import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, musterPrompt, orchestratorPrompt, type WorkPlace } from './prompt.js';
+import { Changes } from '../review/changes.js';
+import { Reviews } from '../review/reviews.js';
+import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, musterPrompt, orchestratorPrompt, reviewBrief, type WorkPlace } from './prompt.js';
 
 /**
  * The orchestrator's built-in tools: read-only ones, for its repo checkout, its feature branch's
@@ -54,8 +57,7 @@ export const READ_ONLY_TOOLS = DEFAULT_TOOLS.filter((t) => !EDIT_TOOLS.has(t));
 
 const REPORT_CHARS = 2000;
 
-/** A refusal the orchestrator should read and act on (not a Kelpie bug). */
-export class ToolError extends Error {}
+export { ToolError };
 
 /** The base branch can't change: writers have already started from it. */
 export class BaseFixedError extends ToolError {}
@@ -165,6 +167,9 @@ export class Orchestrator implements SessionHooks {
   private readonly startingBrowser = new Set<string>();
   private readonly worktrees: Worktrees | undefined;
   private warnedUnfenced = false;
+  /** What changed in each round-up (diffs), and the person's reviews of it. */
+  readonly changes: Changes;
+  readonly reviews: Reviews;
 
   constructor(opts: OrchestratorOptions) {
     this.store = opts.store;
@@ -174,6 +179,8 @@ export class Orchestrator implements SessionHooks {
     this.mcpUrl = opts.mcpUrl;
     this.maxAgents = opts.maxAgents ?? 4;
     this.notifyDelayMs = opts.notifyDelayMs ?? 1500;
+    this.changes = new Changes(this.store);
+    this.reviews = new Reviews(this.store, this.changes, { publish: (u) => this.sessions?.publish(u), session: (id) => this.sessions?.get(id) });
   }
 
   attach(sessions: SessionManager): void {
@@ -190,6 +197,11 @@ export class Orchestrator implements SessionHooks {
   specFor(session: Session, run: RunContext): Partial<SessionDefaults> {
     const preface = run.fresh && run.hadHistory ? freshPreface(session.role, this.store.firstSent(session.id)?.text) : '';
     const scratch = session.scratch;
+    // Every process gets its own token for the kelpie MCP server, revoked when it exits: it says who is calling.
+    const token = randomBytes(32).toString('base64url');
+    this.tokens.set(token, session.id);
+    this.tokenOfRun.set(run.runId, token);
+    const mcpConfig = [JSON.stringify({ mcpServers: { kelpie: { type: 'http', url: this.mcpUrl, headers: { Authorization: `Bearer ${token}` } } } })];
     if (session.role === 'agent') {
       const place = this.placeOf(session);
       // Every agent may read the scratch folder (its brief's files are there); writers may leave files in it.
@@ -198,7 +210,9 @@ export class Orchestrator implements SessionHooks {
         tools: session.writes ? DEFAULT_TOOLS : READ_ONLY_TOOLS,
         // No blanket Bash: auto mode's checks or accept-edits' approvals decide what runs.
         permissionMode: agentMode(session.mode),
-        allowedTools: scratchRules,
+        // Its kelpie tools are only its review threads.
+        allowedTools: [...scratchRules, 'mcp__kelpie'],
+        mcpConfig,
         ...(scratch ? { addDirs: [scratch] } : {}),
         // The person's one browser, shared by every agent given it: only when the orchestrator asked.
         // Its tools are asked about like any other (auto mode's checks, or the person); none is allowed by rule.
@@ -207,10 +221,6 @@ export class Orchestrator implements SessionHooks {
           (session.kind === 'muster' && place ? musterPrompt(place) : agentPrompt(session.writes, place, scratch, session.browser)) + preface,
       };
     }
-    const token = randomBytes(32).toString('base64url');
-    this.tokens.set(token, session.id);
-    this.tokenOfRun.set(run.runId, token);
-    const mcp = { mcpServers: { kelpie: { type: 'http', url: this.mcpUrl, headers: { Authorization: `Bearer ${token}` } } } };
     // Deny beats allow, so a scratch folder inside the repo (KELPIE_HOME under it) would be denied
     // along with it: then `decide` alone keeps the orchestrator from editing the repo.
     const cwd = real(session.cwd) ?? session.cwd;
@@ -236,7 +246,7 @@ export class Orchestrator implements SessionHooks {
       // A backstop for edit rules in the project's or the person's own settings, which would settle
       // a request before `decide` sees it: never in the repo or in a worktree.
       ...(denied.length && scratch ? { disallowedTools: denied.flatMap((dir) => SCRATCH_TOOLS.map((t) => `${t}(${under(dir)})`)) } : {}),
-      mcpConfig: [JSON.stringify(mcp)],
+      mcpConfig,
       appendSystemPrompt: orchestratorPrompt(scratch, session.mode) + preface,
     };
   }
@@ -248,7 +258,11 @@ export class Orchestrator implements SessionHooks {
       this.tokenOfRun.delete(event.runId);
     }
     if (event.kind === 'activity' && !event.data.busy && session.role === 'agent') {
-      if (session.parentId) this.schedule(session.parentId);
+      if (session.parentId) {
+        this.schedule(session.parentId);
+        // Its Changes tab may show new work.
+        this.sessions?.publish({ type: 'changes', roundUpId: session.parentId, sessionId: session.id });
+      }
       // A slot or the repo may have freed up for an agent waiting to resume.
       if (this.waiting.size) this.resumeWaiting();
     }
@@ -340,7 +354,7 @@ export class Orchestrator implements SessionHooks {
     if (kept.length) console.log(`"${session.title}" deleted; kept branches with unmerged work: ${kept.join(', ')}`);
   }
 
-  /** The orchestrator round-up a bearer token belongs to, while its process runs. */
+  /** The session (an orchestrator, or an agent) a bearer token belongs to, while its process runs. */
   authorize(token: string | undefined): Session | undefined {
     const id = token ? this.tokens.get(token) : undefined;
     return id ? this.manager.get(id) : undefined;
@@ -348,14 +362,19 @@ export class Orchestrator implements SessionHooks {
 
   // ── tools ────────────────────────────────────────────────────────────
 
-  async spawn(parent: Session, input: SpawnInput): Promise<{ agentId: string; status: string }> {
+  /** `alsoInTx` runs in the transaction that queues the brief (e.g. assigning it review threads). */
+  async spawn(parent: Session, input: SpawnInput, internal: { alsoInTx?: (agentId: string) => void } = {}): Promise<{ agentId: string; status: string }> {
     const harness = Harness.safeParse(input.harness ?? 'claude-code');
     if (!harness.success) throw new ToolError(`unknown harness "${input.harness}"; available: ${Harness.options.join(', ')}`);
     if (!input.task.trim()) throw new ToolError('task is empty: give the agent a complete brief');
     if (input.writes && parent.mode === 'plan') throw new ToolError(PLANNING);
     if (input.browser && parent.mode === 'plan') throw new ToolError(PLANNING_BROWSER);
     const files = this.filesFrom(parent, input.files);
-    const send = (child: Session) => child.send(input.task, 'orchestrator', files.length ? { attachments: files } : {});
+    const send = (child: Session) =>
+      child.send(input.task, 'orchestrator', {
+        ...(files.length ? { attachments: files } : {}),
+        ...(internal.alsoInTx ? { alsoInTx: () => internal.alsoInTx!(child.id) } : {}),
+      });
     // One line: it heads notifications and the UI.
     const title = input.title.replace(/\s+/g, ' ').trim().slice(0, 120) || 'Agent';
     const opts = {
@@ -508,6 +527,7 @@ export class Orchestrator implements SessionHooks {
       }
       // The rest need judgement: Muster, in the feature branch's worktree.
       const rest = rows.slice(i);
+      if (merged.length) this.changesIn(parent.id);
       try {
         this.checkCap(parent);
         this.checkWriter(live.path);
@@ -526,6 +546,7 @@ export class Orchestrator implements SessionHooks {
       await this.reserving(muster, () => muster.send(this.musterBrief(live, rest, result.conflicts, notes), 'orchestrator'));
       return { merged, muster: { agentId: muster.id, branches: rest.map((r) => r.row.branch), conflicts: result.conflicts } };
     }
+    if (merged.length) this.changesIn(parent.id);
     return { merged };
   }
 
@@ -553,7 +574,7 @@ export class Orchestrator implements SessionHooks {
     return detail === 'log' ? { ...info, ...logLines(events, after, limit) } : { ...info, ...report(events) };
   }
 
-  async message(parent: Session, agentId: string, text: string, paths?: string[]): Promise<{ status: string }> {
+  async message(parent: Session, agentId: string, text: string, paths?: string[], alsoInTx?: () => void): Promise<{ status: string }> {
     const child = this.child(parent, agentId);
     if (!text.trim()) throw new ToolError('text is empty');
     const files = this.filesFrom(parent, paths);
@@ -569,7 +590,7 @@ export class Orchestrator implements SessionHooks {
     // A message picks up an agent still waiting to resume after a restart: no restart turn later.
     this.waiting.delete(child.id);
     child.clearResumePending();
-    await this.reserving(child, () => child.send(text, 'orchestrator', files.length ? { attachments: files } : {}));
+    await this.reserving(child, () => child.send(text, 'orchestrator', { ...(files.length ? { attachments: files } : {}), ...(alsoInTx ? { alsoInTx } : {}) }));
     return { status: 'working' };
   }
 
@@ -592,6 +613,35 @@ export class Orchestrator implements SessionHooks {
       const mime = getMimeType(path);
       return { name: basename(path), size: stat.size, path, ...(mime ? { mime } : {}) };
     });
+  }
+
+  /**
+   * Hands open review threads to a writer: one of the round-up's (picked up again, its worktree
+   * brought back from the feature branch if it was mustered), or without `agentId` a new one. The
+   * assignment lands with its brief, in one transaction.
+   */
+  async assignThreads(parent: Session, input: { threadIds: string[]; agentId?: string | undefined; title?: string | undefined; notes?: string | undefined }): Promise<{ agentId: string; status: string; threads: number }> {
+    if (!input.threadIds.length) throw new ToolError('threadIds is empty: name the open threads to assign');
+    const rows = this.reviews.openThreads(parent.id, input.threadIds);
+    const ids = rows.map((r) => r.id);
+    const threads = await this.reviews.toolThreads(rows, false);
+    let result: { agentId: string; status: string };
+    if (input.agentId) {
+      const child = this.child(parent, input.agentId);
+      if (!child.writes || child.kind !== 'worker') {
+        throw new ToolError(`"${child.title}" ${child.kind === 'muster' ? 'is Muster' : 'is read-only'}: review threads go to a writing agent; omit agentId to start one`);
+      }
+      const r = await this.message(parent, child.id, reviewBrief(threads, input.notes), undefined, () => this.store.assignThreads(ids, child.id));
+      result = { agentId: child.id, ...r };
+    } else {
+      result = await this.spawn(
+        parent,
+        { title: input.title?.trim() || 'Review fixes', task: reviewBrief(threads, input.notes, true), writes: true, deliver: 'muster' },
+        { alsoInTx: (agentId) => this.store.assignThreads(ids, agentId) },
+      );
+    }
+    this.reviews.changed(parent.id);
+    return { ...result, threads: ids.length };
   }
 
   async interrupt(parent: Session, agentId: string): Promise<{ status: string }> {
@@ -668,6 +718,7 @@ export class Orchestrator implements SessionHooks {
     const agents: (AgentUpdate & { report: string })[] = [];
     for (const { agent } of owed) {
       const r = report(agent.events());
+      const review = this.reviews.countsFor(parentId, agent.id);
       agents.push({
         agentId: agent.id,
         title: agent.title,
@@ -676,6 +727,7 @@ export class Orchestrator implements SessionHooks {
         ...(r.error ? { error: r.error } : {}),
         ...(r.filesChanged.length ? { filesChanged: r.filesChanged } : {}),
         ...(await this.branchOf(agent, home)),
+        ...(review ? { reviewThreads: review } : {}),
       });
     }
     // Muster's outcome is what git says is in the feature branch, not what its report claims.
@@ -713,13 +765,14 @@ export class Orchestrator implements SessionHooks {
     for (const row of this.store.worktreesOf(parentId)) {
       if (row.kind !== 'agent' || row.deliver !== 'muster' || row.state === 'mustered') continue;
       const agent = this.manager.get(row.sessionId);
-      if (!agent || this.isWorking(agent)) continue;
+      if (!agent || this.isWorking(agent) || agent.resumePending) continue;
       if (await this.worktrees.musteredIn(row, home)) {
         await this.worktrees.mustered(row, home);
         agent.summaryChanged();
         out.merged.push(agent.title);
       } else if ((await this.worktrees.ownCommits(row)) > 0) out.pending.push(agent.title);
     }
+    if (out.merged.length) this.changesIn(parentId);
     return out;
   }
 
@@ -737,6 +790,16 @@ export class Orchestrator implements SessionHooks {
   async reconcile(): Promise<void> {
     if (!this.worktrees) return;
     await this.worktrees.reconcile((row) => this.manager.children(row.roundUpId).some((c) => c.kind === 'muster' && c.cwd === row.path && c.resumePending));
+    // Branches merged just before a crash, never marked mustered (or recorded as delivered): settled now.
+    for (const home of this.store.allWorktrees().filter((r) => r.kind === 'home')) {
+      if (!this.manager.get(home.roundUpId)) continue;
+      await this.settleMuster(home.roundUpId).catch((err) => console.error(`round-up ${home.roundUpId}: could not settle its mustered branches`, err));
+    }
+  }
+
+  /** The feature branch moved: its Changes tab should refetch. */
+  private changesIn(roundUpId: string): void {
+    this.sessions?.publish({ type: 'changes', roundUpId, sessionId: roundUpId });
   }
 
   /** Ends the idle harness processes running in a worktree about to be removed. */
@@ -864,10 +927,11 @@ function notification(agents: (AgentUpdate & { report: string })[], mustered?: {
     const text = a.report.length > REPORT_CHARS ? `${a.report.slice(0, REPORT_CHARS)}…\n(report cut; read_agent has all of it)` : a.report;
     const files = a.filesChanged ? `\nFiles changed: ${a.filesChanged.map((f) => `${f.path} (+${f.added} -${f.removed})`).join(', ')}` : '';
     const error = a.error ? `\nError: ${a.error}` : '';
+    const review = a.reviewThreads ? `\nReview threads: ${a.reviewThreads.resolved} resolved, ${a.reviewThreads.open} open` : '';
     const branch = a.branch
       ? `\nBranch: ${a.branch} (${a.ahead ?? 0} commit${a.ahead === 1 ? '' : 's'} ahead of the feature branch${a.diffstat ? `; ${a.diffstat}` : ''}; ${a.deliver === 'standalone' ? 'standalone' : 'to muster'})`
       : '';
-    return `## Agent "${a.title}" (${a.agentId}) is idle: turn ${a.status}${error}${files}${branch}\n\n${text || '(no report)'}`;
+    return `## Agent "${a.title}" (${a.agentId}) is idle: turn ${a.status}${error}${files}${branch}${review}\n\n${text || '(no report)'}`;
   });
   const settled = mustered
     ? `\n\nIn the feature branch now (checked with git): ${mustered.merged.join(', ') || 'nothing new'}.${mustered.pending.length ? ` Still not mustered: ${mustered.pending.join(', ')}.` : ''}`

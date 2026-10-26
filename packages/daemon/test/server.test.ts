@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openStore } from '@kelpie/store';
 import { createApp, safeName, SessionManager } from '../src/index.js';
+import { commit, lines, roundUp, setup as gitSetup, writer } from './review-fixtures.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
 const FIXTURE = join(import.meta.dirname, '../../adapters/fixtures/claude-code/plain.jsonl');
@@ -349,5 +350,82 @@ describe('uploads', () => {
   it('turns uploads away when Kelpie keeps no scratch folder', async () => {
     const { app, sessions } = setup();
     expect((await upload(app, sessions.create().id, 'x')).status).toBe(400);
+  });
+});
+
+describe('changes and review API', () => {
+  it('is not there without an orchestrator', async () => {
+    const { app, sessions } = setup();
+    const id = sessions.create().id;
+    for (const path of ['changes', 'changes/file?path=a', 'review']) expect((await app.request(`/api/sessions/${id}/${path}`, { headers: local })).status).toBe(404);
+    expect((await app.request(`/api/sessions/${id}/review/submit`, { method: 'POST', headers: local, body: '{"verdict":"approve"}' })).status).toBe(404);
+  });
+
+  it('checks every request, and refuses a review while Kelpie shuts down', async () => {
+    const ctx = gitSetup();
+    try {
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      commit(api.cwd, 'app.txt', lines({ 2: 'L2 api' }));
+      await ctx.orch.muster(parent, [api.id]);
+      const r = (path: string) => `/api/sessions/${parent.id}/${path}`;
+      const head = (await ctx.api('GET', r('changes'))).body.headSha as string;
+
+      // Unknown sessions, threads, comments and files.
+      expect((await ctx.api('GET', '/api/sessions/nope/changes')).status).toBe(404);
+      expect((await ctx.api('GET', '/api/sessions/nope/review')).status).toBe(404);
+      expect((await ctx.api('GET', r('changes/file?path=nope.txt'))).status).toBe(404);
+      expect((await ctx.api('POST', r('review/comments'), { threadId: 'nope', body: 'x' })).status).toBe(404);
+      expect((await ctx.api('PATCH', r('review/comments/nope'), { body: 'x' })).status).toBe(404);
+      expect((await ctx.api('DELETE', r('review/comments/nope'))).status).toBe(404);
+      expect((await ctx.api('POST', r('review/threads/nope/resolve'), { resolved: true })).status).toBe(404);
+      const anchor = { view: 'feature', path: 'app.txt', side: 'additions', line: 2, commitSha: head, lineText: 'L2 api' };
+      expect((await ctx.api('POST', r('review/comments'), { anchor: { ...anchor, view: 'agent', viewSessionId: 'nope' }, body: 'x' })).status).toBe(404);
+
+      // Malformed ones.
+      expect((await ctx.api('GET', r('changes?round=0'))).status).toBe(400);
+      expect((await ctx.api('GET', r('changes/file'))).status).toBe(400);
+      expect((await ctx.api('GET', `/api/sessions/${api.id}/changes?round=7`))).toMatchObject({ status: 400, body: { error: expect.stringMatching(/no round 7/) } });
+      expect((await ctx.api('POST', r('review/comments'), { body: 'x' })).status).toBe(400);
+      expect((await ctx.api('POST', r('review/comments'), { anchor: { ...anchor, side: 'left' }, body: 'x' })).status).toBe(400);
+      expect((await ctx.api('POST', r('review/comments'), { anchor: { ...anchor, line: 0 }, body: 'x' })).status).toBe(400);
+      expect((await ctx.api('POST', r('review/comments'), { anchor, body: '' })).status).toBe(400);
+      expect((await ctx.api('POST', r('review/comments'), { anchor, body: 'x'.repeat(10_001) })).status).toBe(400);
+      expect((await ctx.api('POST', r('review/submit'), { verdict: 'lgtm' })).status).toBe(400);
+      expect((await ctx.api('POST', r('review/submit'), { verdict: 'request_changes' })).body).toEqual({ error: expect.stringMatching(/comment or a summary/) });
+      expect((await ctx.api('POST', r('review/submit'), { verdict: 'comment', body: '   ' })).status).toBe(400);
+
+      // A thread in the draft: edited and deleted while pending; resolving waits for the submit.
+      const made = await ctx.api('POST', r('review/comments'), { anchor, body: 'first' });
+      expect(made.status).toBe(201);
+      const commentId = made.body.thread.comments[0].id as string;
+      const threadId = made.body.thread.id as string;
+      expect((await ctx.api('PATCH', r(`review/comments/${commentId}`), { body: 'better' })).body).toMatchObject({ id: commentId, body: 'better', state: 'pending' });
+      expect((await ctx.api('PATCH', r(`review/comments/${commentId}`), { body: '' })).status).toBe(400);
+      expect((await ctx.api('POST', r(`review/threads/${threadId}/resolve`), { resolved: true })).status).toBe(409);
+      expect((await ctx.api('POST', r(`review/threads/${threadId}/resolve`), { resolved: 'yes' })).status).toBe(400);
+      expect((await ctx.api('DELETE', r(`review/comments/${commentId}`))).status).toBe(204);
+      expect((await ctx.api('GET', r('review'))).body.threads).toEqual([]);
+      const again = await ctx.api('POST', r('review/comments'), { anchor, body: 'again' });
+      expect((await ctx.api('DELETE', r('review/pending'))).status).toBe(204);
+      expect((await ctx.api('GET', r('review'))).body).toMatchObject({ pending: null, threads: [] });
+      expect(again.status).toBe(201);
+
+      // Submitted: a published comment no longer changes; the person resolves and reopens.
+      const kept = await ctx.api('POST', r('review/comments'), { anchor, body: 'kept' });
+      expect((await ctx.api('POST', r('review/submit'), { verdict: 'comment' })).status).toBe(200);
+      expect((await ctx.api('PATCH', r(`review/comments/${kept.body.thread.comments[0].id}`), { body: 'x' })).status).toBe(409);
+      expect((await ctx.api('DELETE', r(`review/comments/${kept.body.thread.comments[0].id}`))).status).toBe(409);
+      const resolved = await ctx.api('POST', r(`review/threads/${kept.body.thread.id}/resolve`), { resolved: true });
+      expect(resolved.body).toMatchObject({ status: 'resolved', resolvedBy: 'person' });
+      expect((await ctx.api('POST', r(`review/threads/${kept.body.thread.id}/resolve`), { resolved: false })).body).toMatchObject({ status: 'open' });
+      expect((await ctx.api('GET', `/api/sessions/${parent.id}/changes/file?path=app.txt`)).body).toMatchObject({ path: 'app.txt', patch: expect.stringContaining('+L2 api') });
+
+      ctx.sessions.prepareShutdown();
+      expect(await ctx.api('POST', r('review/submit'), { verdict: 'approve' })).toEqual({ status: 409, body: { error: 'Kelpie is shutting down' } });
+      expect((await ctx.api('GET', r('review'))).body).toMatchObject({ pending: null, reviews: [{ verdict: 'comment' }] });
+    } finally {
+      await ctx.sessions.stopAll();
+    }
   });
 });

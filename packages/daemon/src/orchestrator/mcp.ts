@@ -6,7 +6,8 @@ import { z } from 'zod';
 import { Harness } from '@kelpie/protocol';
 import { isLocalHost } from '../local.js';
 import type { Session } from '../sessions.js';
-import { ToolError, type Orchestrator } from './orchestrator.js';
+import { ToolError } from '../errors.js';
+import type { Orchestrator } from './orchestrator.js';
 
 const agentId = z.string().describe('The id spawn_agent returned.');
 const files = z
@@ -24,9 +25,76 @@ async function result(fn: () => unknown): Promise<CallToolResult> {
   }
 }
 
-/** The kelpie tools, bound to the orchestrator round-up that is calling. */
-function server(orch: Orchestrator, parent: Session): McpServer {
+const threadId = z.string().describe('A thread id, from list_review_threads or the review notification.');
+const replyBody = z.string().min(1).max(10_000);
+
+/** The review tools every session has: on the threads assigned to it, or for the orchestrator every published one. */
+function reviewTools(mcp: McpServer, orch: Orchestrator, session: Session, scope: string): void {
+  mcp.registerTool(
+    'list_review_threads',
+    {
+      description:
+        `The person's review threads ${scope}: each with the line it is on (currentLine: where that line is now; outdated: it has changed since), ` +
+        'the code excerpt (diffHunk) and the comments so far.',
+      inputSchema: { status: z.enum(['open', 'resolved', 'all']).optional().describe('Default "open".') },
+    },
+    ({ status }) => result(() => orch.reviews.list(session, status)),
+  );
+  mcp.registerTool(
+    'reply_to_thread',
+    {
+      description: 'Reply on a review thread: what you did about it, or why not, or an answer. The person sees it at once.',
+      inputSchema: { threadId, body: replyBody.describe('Your reply, in markdown.') },
+    },
+    ({ threadId, body }) => result(() => orch.reviews.reply(session, threadId, body)),
+  );
+  mcp.registerTool(
+    'resolve_thread',
+    {
+      description: 'Mark a review thread resolved once it is addressed, with an optional last reply.',
+      inputSchema: { threadId, body: replyBody.optional().describe('A reply to add first, e.g. what you changed.') },
+    },
+    ({ threadId, body }) => result(() => orch.reviews.resolve(session, threadId, body)),
+  );
+}
+
+/** A sub-agent's kelpie tools: only its review threads. */
+function agentServer(orch: Orchestrator, agent: Session): McpServer {
   const mcp = new McpServer({ name: 'kelpie', version: '0.0.0' });
+  reviewTools(mcp, orch, agent, 'assigned to you');
+  return mcp;
+}
+
+/** The kelpie tools, bound to the orchestrator round-up that is calling. */
+function orchestratorServer(orch: Orchestrator, parent: Session): McpServer {
+  const mcp = new McpServer({ name: 'kelpie', version: '0.0.0' });
+  reviewTools(mcp, orch, parent, 'in this round-up (submitted ones)');
+
+  mcp.registerTool(
+    'read_review',
+    {
+      description: "A review the person submitted (default: the latest), with its threads and every thread still open, each with whose code it is on and who it is assigned to.",
+      inputSchema: { reviewId: z.string().optional().describe('From the review notification; omit for the latest.') },
+    },
+    ({ reviewId }) => result(() => orch.reviews.read(parent.id, reviewId)),
+  );
+
+  mcp.registerTool(
+    'assign_threads',
+    {
+      description:
+        'Hand open review threads to a writer to fix, reply on and resolve. With agentId: that writing agent of yours, picked up again with a brief of the threads ' +
+        '(a mustered one gets a fresh worktree from your feature branch). Without: Kelpie starts a new writer ("Review fixes", deliver "muster") with them. ' +
+        'You are notified when it goes idle, as for any agent.',
+      inputSchema: {
+        threadIds: z.array(z.string()).min(1).describe('Open threads of this round-up.'),
+        agentId: z.string().optional().describe('A writing agent to give them to; omit to start a new one.'),
+        title: z.string().optional().describe('The new agent\'s title, when there is no agentId. Default "Review fixes".'),
+        notes: z.string().optional().describe('Anything the agent should know beyond the threads themselves.'),
+      },
+    },
+    (input) => result(() => orch.assignThreads(parent, input)),
+  );
 
   mcp.registerTool(
     'spawn_agent',
@@ -138,21 +206,22 @@ function server(orch: Orchestrator, parent: Session): McpServer {
 }
 
 /**
- * The kelpie MCP server over Streamable HTTP, stateless: each request gets a fresh server
- * bound to the orchestrator its bearer token belongs to. Loopback only, like the API.
+ * The kelpie MCP server over Streamable HTTP, stateless: each request gets a fresh server bound
+ * to the session its bearer token belongs to (an orchestrator's tools, or an agent's review
+ * tools). Loopback only, like the API.
  */
 export async function handleMcp(c: Context, orch: Orchestrator): Promise<Response> {
   if (!isLocalHost(c.req.header('host'))) return c.text('forbidden host', 403);
   // Harnesses send no Origin; a browser page always does.
   if (c.req.header('origin')) return c.text('forbidden origin', 403);
   const token = c.req.header('authorization')?.match(/^Bearer (.+)$/)?.[1];
-  const parent = orch.authorize(token);
-  if (!parent) return c.json({ error: 'unknown or expired token' }, 401);
+  const session = orch.authorize(token);
+  if (!session) return c.json({ error: 'unknown or expired token' }, 401);
   // Stateless mode has no server-to-client stream to offer.
   if (c.req.method !== 'POST') return c.json({ error: 'method not allowed' }, 405);
 
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-  const mcp = server(orch, parent);
+  const mcp = session.role === 'orchestrator' ? orchestratorServer(orch, session) : agentServer(orch, session);
   await mcp.connect(transport);
   try {
     return await transport.handleRequest(c.req.raw);

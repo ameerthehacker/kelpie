@@ -10,6 +10,9 @@ import { Mode } from '@kelpie/protocol';
 import { isLocalHost, isLocalOrigin } from './local.js';
 import { handleMcp } from './orchestrator/mcp.js';
 import { BaseFixedError, type Orchestrator } from './orchestrator/orchestrator.js';
+import { ReviewError } from './errors.js';
+import { NoSuchRound } from './review/changes.js';
+import type { NewAnchor } from './review/reviews.js';
 import type { SessionManager } from './sessions.js';
 
 
@@ -79,6 +82,29 @@ function sse(c: Context, start: (send: (m: SSEMessage) => void, end: () => void)
 
 const jsonBody = <T>(c: Context) => c.req.json<T>().catch(() => ({}) as T);
 
+/** A review refusal as the API answers it; anything else is Kelpie's own failure. */
+function reviewError(c: Context, err: unknown): Response {
+  if (err instanceof ReviewError) return c.json({ error: err.message, ...(err.stale ? { stale: true } : {}) }, err.status);
+  if (err instanceof NoSuchRound) return c.json({ error: err.message }, 400);
+  throw err;
+}
+
+const VERDICTS = ['comment', 'request_changes', 'approve'] as const;
+
+/** A new thread's anchor, as the web sends it; undefined if it isn't one. */
+function anchorOf(a: unknown): NewAnchor | undefined {
+  if (!a || typeof a !== 'object') return undefined;
+  const { view, viewSessionId, path, side, line, commitSha, lineText } = a as Record<string, unknown>;
+  if (view !== 'feature' && view !== 'agent') return undefined;
+  if (view === 'agent' && typeof viewSessionId !== 'string') return undefined;
+  if (typeof path !== 'string' || !path || path.length > 4096) return undefined;
+  if (side !== 'additions' && side !== 'deletions') return undefined;
+  if (typeof line !== 'number' || !Number.isInteger(line) || line < 1) return undefined;
+  if (typeof commitSha !== 'string' || !/^[0-9a-f]{4,64}$/.test(commitSha)) return undefined;
+  if (typeof lineText !== 'string' || lineText.length > 100_000) return undefined;
+  return { view, ...(view === 'agent' ? { viewSessionId: viewSessionId as string } : {}), path, side, line, commitSha, lineText };
+}
+
 export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono {
   const app = new Hono();
   app.use('/api/*', localOnly);
@@ -108,6 +134,8 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
         else if (u.type === 'agent') send({ event: 'agent', data: JSON.stringify(u.agent) });
         else if (u.type === 'approvals') send({ event: 'approvals', data: JSON.stringify({ roundUpId: u.roundUpId, approvals: u.approvals }) });
         else if (u.type === 'usage') send({ event: 'usage', data: JSON.stringify(u.usage) });
+        else if (u.type === 'review') send({ event: 'review', data: JSON.stringify({ roundUpId: u.roundUpId, state: u.state }) });
+        else if (u.type === 'changes') send({ event: 'changes', data: JSON.stringify({ roundUpId: u.roundUpId, sessionId: u.sessionId }) });
       });
     }),
   );
@@ -304,6 +332,123 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     return sse(c, (send, end) =>
       s.subscribe((u) => send({ event: 'kef', id: String(u.index), data: JSON.stringify(u.event) }), Number.isFinite(lastId) ? lastId + 1 : 0, end),
     );
+  });
+
+  // ── changes and review ──────────────────────────────────────────────
+  // What changed (a round-up's feature branch, or one agent's work) and the person's review of it.
+  // `/api/events` sends `changes` when a diff may have moved on, and `review` with the whole state.
+
+  /** The round-up a review route is about (an agent's id is taken as its round-up's). */
+  const roundUpOf = (c: Context) => {
+    const s = orch && sessions.get(c.req.param('id') ?? '');
+    return s ? s.roundUpId : undefined;
+  };
+  const roundOf = (c: Context): number | undefined | null => {
+    const r = c.req.query('round');
+    if (r === undefined || r === '') return undefined;
+    return /^[1-9]\d{0,5}$/.test(r) ? Number(r) : null;
+  };
+
+  app.get('/api/sessions/:id/changes', async (c) => {
+    if (!orch || !sessions.get(c.req.param('id'))) return c.json({ error: 'no such session' }, 404);
+    const round = roundOf(c);
+    if (round === null) return c.json({ error: 'round must be a round number' }, 400);
+    try {
+      const changes = await orch.changes.of(c.req.param('id'), { patches: c.req.query('patches') !== '0', ...(round ? { round } : {}) });
+      return changes ? c.json(changes) : c.json({ error: 'no such session' }, 404);
+    } catch (err) {
+      return reviewError(c, err);
+    }
+  });
+
+  app.get('/api/sessions/:id/changes/file', async (c) => {
+    if (!orch || !sessions.get(c.req.param('id'))) return c.json({ error: 'no such session' }, 404);
+    const path = c.req.query('path');
+    const round = roundOf(c);
+    if (!path) return c.json({ error: 'path is required' }, 400);
+    if (round === null) return c.json({ error: 'round must be a round number' }, 400);
+    try {
+      const file = await orch.changes.file(c.req.param('id'), path, round ?? undefined);
+      return file ? c.json(file) : c.json({ error: file === null ? 'that file did not change' : 'no such session' }, 404);
+    } catch (err) {
+      return reviewError(c, err);
+    }
+  });
+
+  app.get('/api/sessions/:id/review', async (c) => {
+    const roundUp = roundUpOf(c);
+    if (!roundUp || !orch) return c.json({ error: 'no such session' }, 404);
+    return c.json(await orch.reviews.state(roundUp));
+  });
+
+  // A comment for the person's draft: a new thread ({ anchor, body }) or a reply ({ threadId, body }).
+  app.post('/api/sessions/:id/review/comments', async (c) => {
+    const roundUp = roundUpOf(c);
+    if (!roundUp || !orch) return c.json({ error: 'no such session' }, 404);
+    const body = await jsonBody<{ anchor?: unknown; threadId?: unknown; body?: unknown }>(c);
+    try {
+      if (typeof body.threadId === 'string') return c.json(await orch.reviews.comment(roundUp, { threadId: body.threadId, body: body.body as string }), 201);
+      const anchor = anchorOf(body.anchor);
+      if (!anchor) return c.json({ error: 'send { threadId, body } to reply, or { anchor: { view, viewSessionId?, path, side, line, commitSha, lineText }, body }' }, 400);
+      return c.json(await orch.reviews.comment(roundUp, { anchor, body: body.body as string }), 201);
+    } catch (err) {
+      return reviewError(c, err);
+    }
+  });
+
+  app.patch('/api/sessions/:id/review/comments/:commentId', async (c) => {
+    const roundUp = roundUpOf(c);
+    if (!roundUp || !orch) return c.json({ error: 'no such session' }, 404);
+    const body = await jsonBody<{ body?: unknown }>(c);
+    try {
+      return c.json(orch.reviews.editComment(roundUp, c.req.param('commentId'), body.body));
+    } catch (err) {
+      return reviewError(c, err);
+    }
+  });
+
+  app.delete('/api/sessions/:id/review/comments/:commentId', (c) => {
+    const roundUp = roundUpOf(c);
+    if (!roundUp || !orch) return c.json({ error: 'no such session' }, 404);
+    try {
+      orch.reviews.deleteComment(roundUp, c.req.param('commentId'));
+      return c.body(null, 204);
+    } catch (err) {
+      return reviewError(c, err);
+    }
+  });
+
+  app.delete('/api/sessions/:id/review/pending', (c) => {
+    const roundUp = roundUpOf(c);
+    if (!roundUp || !orch) return c.json({ error: 'no such session' }, 404);
+    orch.reviews.discard(roundUp);
+    return c.body(null, 204);
+  });
+
+  // Submits the draft: { verdict: comment | request_changes | approve, body? }. The orchestrator is told at once.
+  app.post('/api/sessions/:id/review/submit', async (c) => {
+    const roundUp = roundUpOf(c);
+    if (!roundUp || !orch) return c.json({ error: 'no such session' }, 404);
+    const body = await jsonBody<{ verdict?: unknown; body?: unknown }>(c);
+    if (!VERDICTS.includes(body.verdict as (typeof VERDICTS)[number])) return c.json({ error: `verdict must be one of: ${VERDICTS.join(', ')}` }, 400);
+    if (body.body !== undefined && typeof body.body !== 'string') return c.json({ error: 'body must be text' }, 400);
+    try {
+      return c.json(await orch.reviews.submit(roundUp, body.verdict as (typeof VERDICTS)[number], (body.body as string | undefined) ?? ''));
+    } catch (err) {
+      return reviewError(c, err);
+    }
+  });
+
+  app.post('/api/sessions/:id/review/threads/:threadId/resolve', async (c) => {
+    const roundUp = roundUpOf(c);
+    if (!roundUp || !orch) return c.json({ error: 'no such session' }, 404);
+    const body = await jsonBody<{ resolved?: unknown }>(c);
+    if (typeof body.resolved !== 'boolean') return c.json({ error: 'resolved must be true or false' }, 400);
+    try {
+      return c.json(await orch.reviews.resolveByPerson(roundUp, c.req.param('threadId'), body.resolved));
+    } catch (err) {
+      return reviewError(c, err);
+    }
   });
 
   // Keep unknown API paths out of the SPA fallback below.
