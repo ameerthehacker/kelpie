@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import { useChanges } from '@/hooks/use-changes';
 import { useChangesNav } from '@/hooks/use-changes-nav';
 import { useReview } from '@/hooks/use-review';
-import { filesLabel, type ChangedFile } from '@/lib/changes';
+import { anchorSha, filesLabel, type ChangedFile } from '@/lib/changes';
 import { threadsOffDiff, threadsOn, type ReviewThread } from '@/lib/review';
 import { cn } from '@/lib/utils';
 import { FileCard, FilePath } from './file-card';
@@ -64,7 +64,7 @@ export function ChangesTab({ roundUpId, repo }: { roundUpId: string; repo?: stri
   const files = data?.state === 'ready' ? data.files : undefined;
   const collapse = useCollapsed(files);
   const threads = useMemo(() => threadsOn(state?.threads ?? [], 'feature'), [state?.threads]);
-  const scope: DiffScope = { roundUpId, view: 'feature', commitSha: data?.headSha };
+  const scope: DiffScope = { roundUpId, view: 'feature', commitSha: anchorSha(data) };
 
   if (changes.error) return <p className="text-fail text-sm">Couldn't load the changes: {changes.error.message}</p>;
   if (!data) return <p className="text-mu text-sm">Loading changes…</p>;

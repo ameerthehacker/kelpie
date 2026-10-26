@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentsOf, filesLabel, groupByDir, neighbors, splitPath, statSquares, vscodeUrl } from '../src/lib/changes.js';
+import { agentsOf, anchorSha, filesLabel, groupByDir, neighbors, splitPath, statSquares, vscodeUrl } from '../src/lib/changes.js';
 
 describe('splitPath', () => {
   it('splits a path into its directory and its name', () => {
@@ -67,5 +67,19 @@ describe('small labels', () => {
   it('opens a file in VS Code only when the branch is checked out', () => {
     expect(vscodeUrl('/Users/me/wt/abc/', 'src/a.ts')).toBe('vscode://file/Users/me/wt/abc/src/a.ts');
     expect(vscodeUrl(undefined, 'src/a.ts')).toBeUndefined();
+  });
+});
+
+describe('anchorSha', () => {
+  const rounds = [
+    { index: 1, state: 'mustered' as const, baseSha: 'f0', headSha: 'g1' },
+    { index: 2, state: 'active' as const, baseSha: 'f1', headSha: 'g2-at-pick' },
+  ];
+  it('is the picked round’s head, or the diff’s head for the active or default round', () => {
+    expect(anchorSha({ headSha: 'h', rounds }, 1)).toBe('g1');
+    expect(anchorSha({ headSha: 'h', rounds }, 2)).toBe('h');
+    expect(anchorSha({ headSha: 'h', rounds })).toBe('h');
+    expect(anchorSha({ headSha: 'h' })).toBe('h');
+    expect(anchorSha(undefined, 1)).toBeUndefined();
   });
 });

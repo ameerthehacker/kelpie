@@ -89,6 +89,29 @@ export interface Anchor {
   lineText: string;
 }
 
+/** Which diff a comment is made on, and the commit its lines are read at. */
+export interface DiffScope {
+  roundUpId: string;
+  view: ReviewView;
+  /** The agent, for its own diff. */
+  viewSessionId?: string;
+  /** The commit the diff's lines are read at: see `anchorSha`. */
+  commitSha?: string;
+}
+
+/** The anchor for a comment on one line of a diff: the one place a new thread's anchor is built. */
+export function anchorFor(scope: DiffScope, at: { path: string; side: Side; line: number; lineText: string }): Anchor {
+  return {
+    view: scope.view,
+    ...(scope.view === 'agent' && scope.viewSessionId ? { viewSessionId: scope.viewSessionId } : {}),
+    path: at.path,
+    side: at.side,
+    line: at.line,
+    commitSha: scope.commitSha ?? '',
+    lineText: at.lineText,
+  };
+}
+
 export const VERDICT_LABEL: Record<Verdict, string> = { comment: 'Comment', request_changes: 'Request changes', approve: 'Approve' };
 
 /** The threads made on one diff: the feature's, or one agent's. */

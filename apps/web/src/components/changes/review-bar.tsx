@@ -67,13 +67,14 @@ function SubmitPopover({ verdict, roundUpId, pending }: { verdict: Verdict; roun
 }
 
 /** "Click any line to comment", where the review stands, and the three ways to submit it. */
-export function ReviewBar({ roundUpId, className }: { roundUpId: string; className?: string }) {
+export function ReviewBar({ roundUpId, compact, className }: { roundUpId: string; compact?: boolean; className?: string }) {
   const { state } = useReview(roundUpId);
   const counts = reviewCounts(state?.threads ?? []);
   return (
     <div className={cn('bg-well flex flex-wrap items-center gap-3 rounded-2xl py-2.5 pr-2.5 pl-4', className)}>
-      <p className="text-fg2 min-w-0 flex-1 text-[13px] leading-[1.45]">
-        Click any line to comment · {counts.open} open, {counts.resolved} resolved
+      <p className={cn('text-fg2 min-w-0 flex-1 text-[13px] leading-[1.45]', compact && 'max-lg:hidden')}>
+        {!compact && 'Click any line to comment · '}
+        {counts.open} open, {counts.resolved} resolved
         {counts.pending > 0 && (
           <span className="text-wait">
             {' '}

@@ -78,6 +78,15 @@ export function statSquares(add: number, del: number): StatSquare[] {
   return [...Array<StatSquare>(a).fill('add'), ...Array<StatSquare>(5 - a).fill('del')];
 }
 
+/**
+ * The commit a comment's anchor names (`anchor.commitSha`): the head of the agent's round the person
+ * picked, or `Changes.headSha` for the feature diff and for an agent's active or default round.
+ */
+export function anchorSha(changes: Pick<Changes, 'headSha' | 'rounds'> | undefined, selectedRound?: number): string | undefined {
+  const r = selectedRound === undefined ? undefined : changes?.rounds?.find((x) => x.index === selectedRound);
+  return r && r.state !== 'active' ? r.headSha : changes?.headSha;
+}
+
 /** "1 file", "185 files". */
 export const filesLabel = (n: number) => `${n} file${n === 1 ? '' : 's'}`;
 

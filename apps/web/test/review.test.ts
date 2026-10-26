@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parsePatchFiles } from '@pierre/diffs';
 import {
+  anchorFor,
   annotationsFor,
   authorLabel,
   canSubmit,
@@ -173,5 +174,24 @@ describe('lineTextAt', () => {
   it('knows nothing of lines no hunk shows', () => {
     expect(lineTextAt(diff, 'additions', 2)).toBeUndefined();
     expect(lineTextAt(diff, 'deletions', 8)).toBeUndefined();
+  });
+});
+
+describe('anchorFor', () => {
+  const at = { path: 'gateway-web/package.json', side: 'additions' as const, line: 6, lineText: '"node": ">=22"' };
+
+  it('pins a feature-diff line at the diff’s head', () => {
+    expect(anchorFor({ roundUpId: 'r', view: 'feature', commitSha: 'h1', viewSessionId: 'ignored' }, at)).toEqual({
+      view: 'feature',
+      path: 'gateway-web/package.json',
+      side: 'additions',
+      line: 6,
+      commitSha: 'h1',
+      lineText: '"node": ">=22"',
+    });
+  });
+
+  it('names the agent for a line in an agent’s diff, at the commit it was read at', () => {
+    expect(anchorFor({ roundUpId: 'r', view: 'agent', viewSessionId: 'a1', commitSha: 'g1' }, at)).toEqual({ ...at, view: 'agent', viewSessionId: 'a1', commitSha: 'g1' });
   });
 });

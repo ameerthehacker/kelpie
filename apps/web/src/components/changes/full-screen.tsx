@@ -5,7 +5,7 @@ import { HarnessMark } from '@/components/harness-mark';
 import { useChanges } from '@/hooks/use-changes';
 import { useChangesNav } from '@/hooks/use-changes-nav';
 import { useReview } from '@/hooks/use-review';
-import { filesLabel, groupByDir, neighbors, splitPath, vscodeUrl } from '@/lib/changes';
+import { anchorSha, filesLabel, groupByDir, neighbors, splitPath, vscodeUrl } from '@/lib/changes';
 import { threadsOn } from '@/lib/review';
 import { cn } from '@/lib/utils';
 import { FileBody, FilePath, FileStat } from './file-card';
@@ -29,7 +29,12 @@ export function FullScreen({ roundUpId, roundUpTitle, which }: { roundUpId: stri
   const at = neighbors(files, nav.file ?? files[0]?.path);
   const file = at.current;
   const threads = useMemo(() => threadsOn(state?.threads ?? [], feature ? 'feature' : 'agent', sessionId), [state?.threads, feature, sessionId]);
-  const scope: DiffScope = { roundUpId, view: feature ? 'feature' : 'agent', ...(feature ? {} : { viewSessionId: sessionId }), commitSha: changes.data?.headSha };
+  const scope: DiffScope = {
+    roundUpId,
+    view: feature ? 'feature' : 'agent',
+    commitSha: anchorSha(changes.data, feature ? undefined : nav.round),
+    ...(feature ? {} : { viewSessionId: sessionId }),
+  };
   const name = feature ? roundUpTitle : (agent?.title ?? 'agent');
   const href = file && vscodeUrl(changes.data?.checkoutPath, file.path);
   const list = useRef<HTMLDivElement>(null);
@@ -55,18 +60,17 @@ export function FullScreen({ roundUpId, roundUpTitle, which }: { roundUpId: stri
 
   return (
     <div role="dialog" aria-modal="true" aria-label={`${name} · Changes`} className="bg-background shadow-card fixed inset-2.5 z-50 flex flex-col overflow-hidden rounded-3xl max-sm:inset-0 max-sm:rounded-none">
-      <header className="border-ln flex shrink-0 flex-wrap items-center gap-3 border-b px-4 py-3">
-        <button type="button" onClick={nav.closeFull} className="bg-chip hover:bg-raise flex h-9 items-center gap-2 rounded-full px-3.5 text-[13px] font-medium">
-          <ArrowLeftIcon className="size-3.5" />
-          Back to {name}
+      <header className="border-ln flex shrink-0 items-center gap-3 border-b px-4 py-3">
+        <button type="button" onClick={nav.closeFull} className="bg-chip hover:bg-raise flex h-9 max-w-64 shrink-0 items-center gap-2 rounded-full px-3.5 text-[13px] font-medium">
+          <ArrowLeftIcon className="size-3.5 shrink-0" />
+          <span className="truncate">Back to {name}</span>
         </button>
-        <div className="flex min-w-0 flex-col">
+        <div className="flex min-w-0 flex-1 flex-col">
           <h2 className="truncate text-sm font-semibold">{name} · Changes</h2>
           <span className="text-mu text-xs">{filesLabel(files.length)} changed</span>
         </div>
-        <span className="flex-1" />
-        {feature && <ReviewBar roundUpId={roundUpId} className="bg-transparent py-0" />}
-        <span className="text-mu flex items-center gap-1.5 text-xs max-sm:hidden">
+        {feature && <ReviewBar roundUpId={roundUpId} compact className="shrink-0 flex-nowrap bg-transparent py-0" />}
+        <span className="text-mu flex shrink-0 items-center gap-1.5 text-xs whitespace-nowrap max-xl:hidden">
           <kbd className="bg-chip text-fg2 rounded-md px-1.5 py-0.5 font-mono text-[11px]">Esc</kbd> to go back
         </span>
         <button type="button" onClick={nav.closeFull} aria-label="Leave full screen" title="Leave full screen" className="text-mu2 hover:bg-hov hover:text-fg flex size-8 items-center justify-center rounded-full">

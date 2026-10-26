@@ -4,7 +4,7 @@ import { useChanges } from '@/hooks/use-changes';
 import { useChangesNav } from '@/hooks/use-changes-nav';
 import { useReview } from '@/hooks/use-review';
 import type { AgentSummary } from '@/lib/agents';
-import { filesLabel } from '@/lib/changes';
+import { anchorSha, filesLabel } from '@/lib/changes';
 import { reviewCounts, threadsOffDiff, threadsOn } from '@/lib/review';
 import { cn } from '@/lib/utils';
 import { OffDiffThreads, Totals, useCollapsed } from './changes-tab';
@@ -24,7 +24,7 @@ export function AgentChanges({ agent: a }: { agent: AgentSummary }) {
   const collapse = useCollapsed(files, 1);
   const threads = useMemo(() => threadsOn(state?.threads ?? [], 'agent', a.id), [state?.threads, a.id]);
   const pending = reviewCounts(state?.threads ?? []).pending;
-  const scope: DiffScope = { roundUpId: a.parentId, view: 'agent', viewSessionId: a.id, commitSha: data?.headSha };
+  const scope: DiffScope = { roundUpId: a.parentId, view: 'agent', viewSessionId: a.id, commitSha: anchorSha(data, round) };
   const rounds = data?.rounds ?? [];
 
   return (

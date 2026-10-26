@@ -3,7 +3,7 @@ import { FileDiff, type DiffLineAnnotation, type FileDiffOptions } from '@pierre
 import { useMemo, useRef, useState, type CSSProperties } from 'react';
 import { isStale, useReview } from '@/hooks/use-review';
 import { splitPath, type ChangedFile } from '@/lib/changes';
-import { annotationsFor, lineTextAt, splitOutdated, type ReviewThread, type Side, type ThreadAnnotation } from '@/lib/review';
+import { anchorFor, annotationsFor, lineTextAt, splitOutdated, type ReviewThread, type Side, type ThreadAnnotation } from '@/lib/review';
 import { useTheme } from '@/lib/theme';
 import { CommentBox, ThreadStrip, ThreadView } from './thread';
 import type { DiffScope } from './scope';
@@ -80,15 +80,7 @@ export default function DiffView({ file, patch, threads, scope }: { file: Change
           onSubmit={async (body) => {
             try {
               await review.comment({
-                anchor: {
-                  view: scope.view,
-                  ...(scope.viewSessionId ? { viewSessionId: scope.viewSessionId } : {}),
-                  path: file.path,
-                  side: draft.side,
-                  line: draft.line,
-                  commitSha: scope.commitSha ?? '',
-                  lineText: draft.text,
-                },
+                anchor: anchorFor(scope, { path: file.path, side: draft.side, line: draft.line, lineText: draft.text }),
                 body,
               });
             } catch (err) {
