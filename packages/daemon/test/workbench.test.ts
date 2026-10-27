@@ -176,6 +176,25 @@ describe('the feature board', () => {
     expect(await ctx.api('POST', `/api/workbench/${id}/merge`)).toMatchObject({ status: 409, body: { error: expect.stringMatching(/^nothing to merge/) } });
   });
 
+  it("won't land without an agent's work that is pushed elsewhere but not mustered", async () => {
+    const ctx = start();
+    const parent = await roundUp(ctx);
+    const orch = await orchestratorOf(ctx);
+    const id = (await orch.call('create_card', { title: 'Checkout' })).data.card as string;
+    const seed = await writer(ctx, parent, 'Seed');
+    commit(seed.cwd, 'seed.txt', 'seed\n');
+    await ctx.orch.muster(parent, [seed.id]);
+    const api = await writer(ctx, parent, 'API');
+    commit(api.cwd, 'app.txt', lines({ 2: 'L2 api' }));
+    git(api.cwd, 'push', '-q', 'origin', 'HEAD:api-pr');
+    git(api.cwd, 'fetch', '-q', 'origin');
+    expect(await ctx.api('POST', `/api/workbench/${id}/merge`)).toMatchObject({ status: 409, body: { error: '“API” isn’t in the feature branch yet: ask Kelpie to muster first' } });
+    expect((await ctx.orch.muster(parent, [api.id])).merged).toEqual(['API']);
+    expect(ctx.store.worktreeOf(api.id)!.state).toBe('mustered');
+    expect((await ctx.api('POST', `/api/workbench/${id}/merge`)).status).toBe(200);
+    expect(git(ctx.checkout, 'show', 'main:app.txt')).toContain('L2 api');
+  });
+
   it('keeps an agent on one card: adding it to another takes it off the first, and both go out again', async () => {
     const ctx = start();
     const seen: ManagerUpdate[] = [];
