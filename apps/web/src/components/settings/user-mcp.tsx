@@ -30,7 +30,7 @@ const chip = 'rounded-full px-2 py-px text-[11px] font-medium';
 /** Why a row isn't simply on or off, in words a screen reader hears with its checkbox. */
 function rowNote(row: McpRow): string | undefined {
   if (row.state === 'blocked') return row.server?.blocked;
-  if (row.state === 'changed') return 'Its command or URL changed since you allowed it, so agents don’t get it. Tick it to allow it as it is now.';
+  if (row.state === 'changed') return 'It changed since you allowed it (what it runs, where it connects, or its settings), so agents don’t get it. Tick it to allow it as it is now.';
   if (row.state === 'missing') return 'Claude Code no longer has it here. Untick it to forget it.';
   return undefined;
 }
@@ -47,7 +47,7 @@ function ServerRow({ row, onToggle }: { row: McpRow; onToggle: (on: boolean) => 
         disabled={row.state === 'blocked'}
         onCheckedChange={(v) => onToggle(v === true)}
         className="mt-0.5"
-        aria-describedby={`${id}-meta${note ? ` ${id}-note` : ''}`}
+        aria-describedby={`${id}-meta${s?.runs ? ` ${id}-runs` : ''}${note ? ` ${id}-note` : ''}`}
       />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <label htmlFor={id} className={cn('truncate text-[13px] font-medium', row.state === 'blocked' ? 'text-mu' : 'text-fg cursor-pointer')}>
@@ -70,6 +70,16 @@ function ServerRow({ row, onToggle }: { row: McpRow; onToggle: (on: boolean) => 
             </span>
           )}
         </span>
+        {s?.runs && (
+          <div id={`${id}-runs`} className="flex flex-col gap-0.5">
+            <span className="text-mu text-xs">This repo’s server runs:</span>
+            {s.runs.map((line, i) => (
+              <code key={i} className="bg-chip text-fg2 rounded-md px-2 py-1 font-mono text-[11px] break-all">
+                {line}
+              </code>
+            ))}
+          </div>
+        )}
         {note && (
           <p id={`${id}-note`} className={cn('flex items-start gap-1.5 text-xs', row.state === 'blocked' ? 'text-fail' : 'text-wait')}>
             <TriangleAlertIcon aria-hidden="true" className="mt-px size-3.5 shrink-0" strokeWidth={2} />
@@ -235,7 +245,7 @@ export function UserMcp({ value, allow }: { value: boolean; allow: McpGrant[] })
             A stdio server runs a command on this Mac, as you, each time an agent starts. Allow only ones you trust.
           </p>
           <p className="text-mu2 text-xs leading-relaxed">
-            Each one is allowed on its own, claude.ai connectors included, and only as it is now: if its command or URL changes, it needs allowing again. A repo’s own
+            Each one is allowed on its own, claude.ai connectors included, and only as it is now: if what it runs or its settings change, it needs allowing again. A repo’s own
             servers (Project) are allowed for that repo only, and Kelpie doesn’t start them just to check them.
           </p>
         </div>

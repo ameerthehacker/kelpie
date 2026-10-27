@@ -8,6 +8,8 @@ import { grantKey, type McpGrant, type McpScope, type McpServerInfo, type McpSer
 
 type Obj = Record<string, any>;
 
+const isObj = (v: unknown): v is Obj => !!v && typeof v === 'object' && !Array.isArray(v);
+
 export type { McpGrant, McpScope, McpServerInfo, McpServerList, McpStatus };
 
 /** One of the person's servers as Kelpie would hand it to an agent: its entry as written, secrets and all. Never sent to the UI. */
@@ -71,18 +73,31 @@ export function blockedReason(name: string, scope: McpScope): string | undefined
   const c = canonical(name);
   const own = RESERVED_MCP.find((r) => c === r || c.startsWith(`${r}_`));
   if (own) return `Its name is too close to Kelpie's own ${own === 'kelpie' ? 'server' : 'browser tools'} (“${own.replaceAll('_', '-')}”), whose tools agents use without asking. Rename it in Claude Code to use it.`;
-  if (scope !== 'claudeai' && (c.startsWith('claude_ai_') || c.startsWith('claudeai_'))) return "Its name looks like a claude.ai connector's, but it isn't one. Rename it in Claude Code to use it.";
+  // As Claude Code tells connector names (its Z5o): with a `_` after, so `claude-ai` is one too.
+  if (scope !== 'claudeai' && (`${c}_`.startsWith('claude_ai_') || `${c}_`.startsWith('claudeai_'))) return "Its name looks like a claude.ai connector's, but it isn't one. Rename it in Claude Code to use it.";
   return undefined;
 }
 
+/** JSON with every object's keys sorted, so a hash doesn't change with key order. */
+function stable(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stable).join(',')}]`;
+  if (isObj(v)) return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stable(v[k])}`).join(',')}}`;
+  return JSON.stringify(v) ?? 'null';
+}
+
+/** An object's keys, each with its value left out (null). */
+const keysOnly = (v: unknown) => (isObj(v) ? Object.fromEntries(Object.keys(v).map((k) => [k, null])) : v);
+
 /**
- * What a server runs or reaches, as a short hash: its type and command and arguments, or its URL
- * (and a connector's id). Not its env or headers, so a rotated token keeps it allowed; a new
- * command or URL does not.
+ * What a server is, as a short hash: change anything that decides what it runs or reaches and it
+ * is no longer the server the person allowed. A repo's own server (project) and a local one: the
+ * whole entry, `headersHelper` and `env` included (`NODE_OPTIONS`, or `PATH` for an `npx`, run code
+ * too; a secret there is usually a `${VAR}`). A user one: the whole entry but the values of its env
+ * and headers (their names count), so a rotated token keeps it allowed. A connector: its URL and id.
  */
 export function fingerprint(scope: McpScope, config: Obj): string {
-  const what = scope === 'claudeai' ? [config.url, config.id] : [config.type ?? null, config.command ?? null, config.args ?? null, config.url ?? null];
-  return createHash('sha256').update(JSON.stringify(what)).digest('hex').slice(0, 16);
+  const what = scope === 'claudeai' ? { type: config.type, url: config.url, id: config.id } : scope === 'user' ? { ...config, env: keysOnly(config.env), headers: keysOnly(config.headers) } : config;
+  return createHash('sha256').update(stable(what)).digest('hex').slice(0, 16);
 }
 
 /** An empty list this long after start is taken as none (before then the CLI may still be reading its config). */
@@ -91,24 +106,36 @@ const EMPTY_AFTER_MS = 4000;
 /** Scopes from weakest to strongest: of two allowed servers with one name, an agent gets the stronger, as in Claude Code. */
 const PRECEDENCE: McpScope[] = ['claudeai', 'user', 'project', 'local'];
 
-const isObj = (v: unknown): v is Obj => !!v && typeof v === 'object' && !Array.isArray(v);
 
-/** A JSON file's contents; undefined if it is missing or unreadable (Claude Code may be mid-write). */
-function readJson(path: string): Obj | undefined {
+/** A config file that is there but can't be read as JSON: Claude Code may read it all the same. */
+class Unreadable extends Error {}
+
+/**
+ * A JSON file's contents, as Claude Code reads it (a UTF-8 BOM first is skipped); undefined if it is
+ * missing. One that is there but won't parse is `Unreadable` (Claude Code may be mid-write, or read
+ * it some other way); it is logged by its path only, as the parser's message quotes the file around
+ * the error, which may be a token.
+ */
+function readConfig(path: string): Obj | Unreadable | undefined {
   if (!existsSync(path)) return undefined;
   try {
-    const json: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    return isObj(json) ? json : undefined;
+    const json: unknown = JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
+    return isObj(json) ? json : new Unreadable(path);
   } catch {
-    // Not the parser's message: it quotes the file around the error, which may be a token.
     console.warn(`kelpie: could not read MCP servers from ${path}: not valid JSON`);
-    return undefined;
+    return new Unreadable(path);
   }
 }
 
+/** A config file's contents, or nothing if it is missing or unreadable. */
+const readJson = (path: string): Obj | undefined => {
+  const c = readConfig(path);
+  return c instanceof Unreadable ? undefined : c;
+};
+
 const entries = (servers: unknown): [string, Obj][] => (isObj(servers) ? Object.entries(servers).filter((e): e is [string, Obj] => isObj(e[1])) : []);
 
-/** The git repository `dir` is in, if any: where `.mcp.json` files stop being looked for. */
+/** The git repository `dir` is in, if any: a local server may be configured for it. */
 function repoRoot(dir: string): string | undefined {
   for (let d = dir; ; d = dirname(d)) {
     if (existsSync(join(d, '.git'))) return d;
@@ -116,14 +143,39 @@ function repoRoot(dir: string): string | undefined {
   }
 }
 
-/** `dir` and the directories above it up to its repo root, nearest first. */
+/**
+ * `dir` and every directory above it, nearest first: Claude Code reads a `.mcp.json` in each (up to,
+ * not in, the filesystem root, which is listed too, to be safe).
+ */
 function upToRoot(dir: string): string[] {
-  const root = repoRoot(dir);
   const dirs: string[] = [];
   for (let d = dir; ; d = dirname(d)) {
     dirs.push(d);
-    if (d === root || !root || dirname(d) === d) return dirs;
+    if (dirname(d) === d) return dirs;
   }
+}
+
+const LINE = 300;
+const clip = (line: string) => (line.length > LINE ? `${line.slice(0, LINE - 1)}…` : line);
+/** A word of a command line, quoted if it needs to be to read as one. */
+const word = (w: unknown) => {
+  const t = String(w);
+  return /^[\w@%+=:,./-]+$/.test(t) ? t : `'${t.replaceAll("'", "'\\''")}'`;
+};
+
+/**
+ * What a repo's own server would run or reach, a line each: its command line or URL, its headers
+ * helper (a command too), and the names of the env and headers it sets.
+ */
+function runsOf(config: Obj): string[] {
+  const lines: string[] = [];
+  if (typeof config.command === 'string') lines.push([config.command, ...(Array.isArray(config.args) ? config.args : [])].map(word).join(' '));
+  if (typeof config.url === 'string') lines.push(config.url);
+  if (typeof config.headersHelper === 'string') lines.push(`headersHelper: ${config.headersHelper}`);
+  if (isObj(config.env) && Object.keys(config.env).length) lines.push(`env: ${Object.keys(config.env).join(', ')}`);
+  if (isObj(config.headers) && Object.keys(config.headers).length) lines.push(`headers: ${Object.keys(config.headers).join(', ')}`);
+  if (isObj(config.oauth)) lines.push('oauth: configured');
+  return lines.length ? lines.map(clip) : ['(no command or URL)'];
 }
 
 /** A server's transport, as the UI shows it. */
@@ -202,6 +254,8 @@ export class McpServers {
         scope: s.scope,
         ...(s.repo ? { repo: s.repo } : {}),
         fingerprint: fingerprint(s.scope, s.config),
+        // A repo's own server is the repo's, not the person's secret: show what allowing it would run.
+        ...(s.scope === 'project' ? { runs: runsOf(s.config) } : {}),
         // Kelpie doesn't start a repo's own servers to check them.
         status: s.scope === 'project' ? 'unchecked' : (probed.get(`${s.scope}\0${s.name}`) ?? 'unchecked'),
         ...(blocked ? { blocked } : {}),
@@ -243,8 +297,9 @@ export class McpServers {
       const fp = granted.get(keyOf(s));
       if (fp === undefined) continue;
       const blocked = blockedReason(s.name, s.scope);
-      const prefix = mcpToolPrefix(s.name);
-      if (fp !== fingerprint(s.scope, s.config)) skipped.push({ name: s.name, reason: 'its command or URL changed since it was allowed' });
+      // Compared as Claude Code would mix them up: `foo_` and `foo` give the tool `mcp__foo___bar` (tools `bar` and `_bar`).
+      const prefix = canonical(s.name);
+      if (fp !== fingerprint(s.scope, s.config)) skipped.push({ name: s.name, reason: 'it changed since it was allowed' });
       else if (blocked) skipped.push({ name: s.name, reason: blocked });
       else if (s.name in servers) skipped.push({ name: s.name, reason: `a ${s.scope} server of that name is allowed too, and the other one wins` });
       else if (prefixes.has(prefix)) skipped.push({ name: s.name, reason: `its tools would have the same names as ${prefixes.get(prefix)}'s` });
@@ -328,14 +383,26 @@ export class McpServers {
 
   /**
    * Asks Claude Code which servers it loads in `dir` and how they are (its `mcp_status` control
-   * request), with no turn sent, so no model is called. The repo's own `.mcp.json` servers are
-   * turned off for it: Kelpie must not run a cloned repo's commands just to list them.
+   * request), with no turn sent, so no model is called. Nothing of the repo's is loaded: Kelpie
+   * must not run a cloned repo's commands just to list servers. So local servers are not checked either.
    */
   private probe(dir: string): Promise<Probed[]> {
     const project = new Set<string>();
-    for (const d of upToRoot(dir)) for (const [name] of entries(readJson(join(d, '.mcp.json'))?.mcpServers)) project.add(name);
+    for (const d of upToRoot(dir)) {
+      const config = readConfig(join(d, '.mcp.json'));
+      // What Kelpie can't read it can't turn off: Claude Code might read it, and start what it names.
+      if (config instanceof Unreadable) return Promise.reject(new Error(`${config.message} can't be read, so Kelpie won't start Claude Code there to check servers`));
+      for (const [name] of entries(config?.mcpServers)) project.add(name);
+    }
     const settings = JSON.stringify({ enableAllProjectMcpServers: false, disabledMcpjsonServers: [...project] });
-    const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'default', '--tools', 'Read', '--no-chrome', '--settings', settings];
+    const args = [
+      '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'default', '--tools', 'Read', '--no-chrome',
+      // Only the person's own settings: Claude Code then loads no project or local MCP servers at all
+      // (and none of the repo's settings, whose hooks would run), whatever the files say.
+      '--setting-sources', 'user',
+      // And should it load them anyway, the repo's servers named in its files are off.
+      '--settings', settings,
+    ];
     return new Promise((done, fail) => {
       const child = spawn(this.bin, args, { cwd: dir, env: { ...process.env, ...this.env }, stdio: ['pipe', 'pipe', 'pipe'] });
       const started = Date.now();

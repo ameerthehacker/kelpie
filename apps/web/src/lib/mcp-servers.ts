@@ -16,8 +16,8 @@ export const STATUS_LABEL: Record<McpStatus, string> = {
 };
 
 /**
- * A row in Settings. `allowed`: agents get it. `changed`: allowed once, but its command or URL is
- * not what it was then, so agents don't get it until it's ticked again. `blocked`: its name could
+ * A row in Settings. `allowed`: agents get it. `changed`: allowed once, but its entry (what it runs,
+ * where it connects, its settings) is not what it was then, so agents don't get it until it's ticked again. `blocked`: its name could
  * pass for another server's tools. `missing`: allowed, but Claude Code no longer has it here.
  */
 export type McpRowState = 'allowed' | 'changed' | 'off' | 'blocked' | 'missing';

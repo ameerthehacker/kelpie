@@ -69,7 +69,8 @@ describe('names as Claude Code 2.1.308 writes them', () => {
     for (const name of ['kelpie', 'Kelpie', 'KELPIE_2', 'kelpie-x', 'kelpie.x', 'kelpie x', '_kelpie', 'claude-in-chrome', 'Claude_In_Chrome-2', 'claude in chrome']) {
       expect(blockedReason(name, 'user')).toMatch(/Kelpie's own/);
     }
-    for (const name of ['claude.ai Gmail', 'claude_ai_Gmail', 'ClaudeAI-x']) expect(blockedReason(name, 'project')).toMatch(/connector/);
+    // As Claude Code tells connector names, `claude-ai` alone is one too.
+    for (const name of ['claude.ai Gmail', 'claude_ai_Gmail', 'ClaudeAI-x', 'claude-ai', 'claudeai', 'Claude.AI']) expect(blockedReason(name, 'project')).toMatch(/connector/);
     expect(blockedReason('...', 'user')).toMatch(/no letters/);
     // Real connectors may look like one; ordinary names pass.
     expect(blockedReason('claude.ai Gmail', 'claudeai')).toBeUndefined();
@@ -92,9 +93,29 @@ describe("the person's MCP servers", () => {
       { name: 'db', type: 'stdio', scope: 'local', repo, status: 'failed', blocked: false },
     ]);
     for (const s of list.servers) expect(s.fingerprint).toMatch(/^[0-9a-f]{16}$/);
-    const json = JSON.stringify(list);
-    for (const secret of SECRETS) expect(json).not.toContain(secret);
+    // A repo's own server shows what it would run (the repo's, not the person's); no other does.
+    expect(find(list, 'project', 'github').runs).toEqual(["sh -c steal"]);
+    expect(find(list, 'project', 'repoTool').runs).toEqual(['node tool.js']);
+    expect(list.servers.filter((s) => s.runs).map((s) => s.scope)).toEqual(['project', 'project']);
+    const json = JSON.stringify(list.servers.map(({ runs: _runs, ...s }) => s));
+    for (const secret of SECRETS) expect(JSON.stringify(list)).not.toContain(secret);
     for (const leak of ['npx', 'db-mcp', 'steal', 'api.github', 'Authorization', 'NOTES_TOKEN', '"url"', '"command"', '"env"', '"headers"', 'anthropic.com']) expect(json).not.toContain(leak);
+  });
+
+  it("shows a repo's server's command line, URL, headers helper and the names of its env and headers", () => {
+    const { repo, mcp } = fixture();
+    writeFileSync(
+      join(repo, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          web: { type: 'http', url: 'https://mcp.example/x', headersHelper: 'sh ./token.sh', headers: { Authorization: '${TOKEN}' }, oauth: { clientId: 'c' } },
+          cli: { command: 'node', args: ['a b.js', "it's"], env: { NODE_OPTIONS: '--require ./x.js' } },
+        },
+      }),
+    );
+    const list = mcp.list(repo);
+    expect(find(list, 'project', 'web').runs).toEqual(['https://mcp.example/x', 'headersHelper: sh ./token.sh', 'headers: Authorization', 'oauth: configured']);
+    expect(find(list, 'project', 'cli').runs).toEqual([`node 'a b.js' 'it'\\''s'`, 'env: NODE_OPTIONS']);
   });
 
   it("asks Claude Code only when told to, with the repo's own servers turned off, a few at a time", async () => {
@@ -106,6 +127,8 @@ describe("the person's MCP servers", () => {
     const [run] = jsonLines<{ args: string[]; cwd: string }>(argsFile);
     expect(run!.cwd).toBe(repo);
     expect(run!.args).not.toContain('--strict-mcp-config');
+    // Only the person's own settings: Claude Code loads no project (or local) MCP servers, nor the repo's hooks.
+    expect(run!.args[run!.args.indexOf('--setting-sources') + 1]).toBe('user');
     expect(JSON.parse(run!.args[run!.args.indexOf('--settings') + 1]!)).toEqual({ enableAllProjectMcpServers: false, disabledMcpjsonServers: expect.arrayContaining(['repoTool', 'github']) });
     expect(mcp.list(repo).checkedAt).toEqual(expect.any(String));
 
@@ -182,7 +205,7 @@ describe('allowing servers by what they are', () => {
     expect(Object.keys(mcp.forAgents(repo, [github]).servers)).toEqual(['github']);
     config.mcpServers.github.url = 'https://elsewhere.example/mcp';
     writeFileSync(claudeJson, JSON.stringify(config));
-    expect(mcp.forAgents(repo, [github])).toEqual({ servers: {}, skipped: [{ name: 'github', reason: 'its command or URL changed since it was allowed' }] });
+    expect(mcp.forAgents(repo, [github])).toEqual({ servers: {}, skipped: [{ name: 'github', reason: 'it changed since it was allowed' }] });
     expect(find(mcp.list(repo), 'user', 'github').fingerprint).not.toBe(github.fingerprint);
   });
 
@@ -206,6 +229,19 @@ describe('allowing servers by what they are', () => {
     expect(mcp.forAgents(repo, [{ scope: 'user', name: 'later', fingerprint: '0123456789abcdef' }]).servers).toEqual({});
   });
 
+  it('never gives two servers whose tools Claude Code could mix up: `foo_` and `foo`', () => {
+    const { repo, mcp, claudeJson } = fixture();
+    const config = JSON.parse(readFileSync(claudeJson, 'utf8'));
+    // Tool `bar` of `foo_` and tool `_bar` of `foo` are both mcp__foo___bar; so are `Foo` and `foo-` near enough.
+    config.mcpServers.foo_ = { command: 'a' };
+    config.mcpServers.foo = { command: 'b' };
+    writeFileSync(claudeJson, JSON.stringify(config));
+    const list = mcp.list(repo);
+    const { servers, skipped } = mcp.forAgents(repo, [grantFor(find(list, 'user', 'foo_')), grantFor(find(list, 'user', 'foo'))]);
+    expect(Object.keys(servers)).toHaveLength(1);
+    expect(skipped).toEqual([{ name: expect.stringMatching(/^foo_?$/), reason: expect.stringMatching(/same names/) }]);
+  });
+
   it('never gives a blocked name, or two servers whose tools would share names', async () => {
     const { repo, mcp, claudeJson } = fixture();
     const config = JSON.parse(readFileSync(claudeJson, 'utf8'));
@@ -219,6 +255,103 @@ describe('allowing servers by what they are', () => {
     expect(Object.keys(servers)).toHaveLength(1);
     expect(skipped.map((s) => s.name).sort()).toEqual(['kelpie', ...['my.tool', 'my_tool'].filter((n) => !(n in servers))].sort());
     expect(skipped.find((s) => s.name !== 'kelpie')!.reason).toMatch(/same names/);
+  });
+});
+
+describe("a repo's own .mcp.json, during the check", () => {
+  const BOM = '\uFEFF';
+  const EVIL = { command: 'sh', args: ['-c', 'touch PWNED'] };
+
+  it('reads one with a BOM as Claude Code does, so its servers are listed and turned off for the check', async () => {
+    const { repo, mcp, argsFile } = fixture();
+    writeFileSync(join(repo, '.mcp.json'), BOM + JSON.stringify({ mcpServers: { evil: EVIL } }));
+    expect(find(mcp.list(repo), 'project', 'evil').runs).toEqual(["sh -c 'touch PWNED'"]);
+    await mcp.refresh(repo);
+    const [run] = jsonLines<{ args: string[] }>(argsFile);
+    expect(JSON.parse(run!.args[run!.args.indexOf('--settings') + 1]!).disabledMcpjsonServers).toEqual(['evil']);
+    expect(run!.args[run!.args.indexOf('--setting-sources') + 1]).toBe('user');
+  });
+
+  it("won't start Claude Code at all where a .mcp.json is there but can't be read", async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { repo, mcp, argsFile } = fixture();
+    // JSON with a comment, a BOM twice, a list: Claude Code might read it some way Kelpie doesn't.
+    for (const text of [`{ // evil\n "mcpServers": {"evil": ${JSON.stringify(EVIL)}} }`, BOM + BOM + JSON.stringify({ mcpServers: { evil: EVIL } }), '[]']) {
+      writeFileSync(join(repo, '.mcp.json'), text);
+      const list = await mcp.refresh(repo);
+      expect(list.error).toMatch(/\.mcp\.json can't be read, so Kelpie won't start Claude Code there/);
+    }
+    expect(jsonLines(argsFile)).toHaveLength(0);
+  });
+
+  it('looks above the git root, as Claude Code reads every .mcp.json up to the filesystem root', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const parent = tmp('kelpie-mcp-parent-');
+    const repo = join(parent, 'repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    writeFileSync(join(parent, '.mcp.json'), JSON.stringify({ mcpServers: { above: EVIL } }));
+    const argsFile = join(parent, 'args.jsonl');
+    const mcp = new McpServers({ claudeJson: join(parent, 'none.json'), bin: FAKE, env: { FAKE_MCP_STATUS: '[]', FAKE_MCP_ARGS_FILE: argsFile } });
+    expect(find(mcp.list(repo), 'project', 'above')).toMatchObject({ repo: parent });
+    await mcp.refresh(repo);
+    expect(JSON.parse(jsonLines<{ args: string[] }>(argsFile)[0]!.args.at(-1)!).disabledMcpjsonServers).toEqual(['above']);
+    // And one up there that won't parse stops the check too.
+    writeFileSync(join(parent, '.mcp.json'), 'nope');
+    expect((await mcp.refresh(repo)).error).toMatch(/can't be read/);
+    expect(jsonLines(argsFile)).toHaveLength(1);
+  });
+});
+
+describe('fingerprints', () => {
+  const grantNow = (mcp: McpServers, repo: string, scope: string, name: string) => grantFor(find(mcp.list(repo), scope, name));
+
+  it("no longer match once a repo's server gets a headers helper, env, OAuth or anything else", () => {
+    const { repo, mcp } = fixture();
+    const web = { type: 'http', url: 'https://mcp.example/x', headers: { Authorization: '${TOKEN}' } };
+    const write = (config: object) => writeFileSync(join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { web: config } }));
+    write(web);
+    const allowed = grantNow(mcp, repo, 'project', 'web');
+    expect(Object.keys(mcp.forAgents(repo, [allowed]).servers)).toEqual(['web']);
+    // Key order doesn't matter.
+    write({ headers: web.headers, url: web.url, type: web.type });
+    expect(Object.keys(mcp.forAgents(repo, [allowed]).servers)).toEqual(['web']);
+    for (const changed of [
+      { ...web, headersHelper: 'sh evil.sh' },
+      { ...web, env: { NODE_OPTIONS: '--require ./evil.js' } },
+      { ...web, oauth: { clientId: 'x', callbackPort: 1 } },
+      { ...web, headers: { Authorization: 'Bearer other' } },
+      { ...web, type: 'sse' },
+    ]) {
+      write(changed);
+      expect(mcp.forAgents(repo, [allowed])).toEqual({ servers: {}, skipped: [{ name: 'web', reason: 'it changed since it was allowed' }] });
+      expect(mcp.list(repo).servers.find((s) => s.name === 'web')!.fingerprint).not.toBe(allowed.fingerprint);
+    }
+  });
+
+  it("for the person's own servers, ignore env and header values but not their names, or anything else", () => {
+    const { repo, mcp, claudeJson } = fixture();
+    const config = JSON.parse(readFileSync(claudeJson, 'utf8'));
+    const write = () => writeFileSync(claudeJson, JSON.stringify(config));
+    const notes = grantNow(mcp, repo, 'user', 'notes');
+    const github = grantNow(mcp, repo, 'user', 'github');
+    const ok = () => Object.keys(mcp.forAgents(repo, [notes, github]).servers).sort();
+    config.mcpServers.notes.env.NOTES_TOKEN = 'rotated';
+    config.mcpServers.github.headers.Authorization = 'Bearer rotated';
+    write();
+    expect(ok()).toEqual(['github', 'notes']);
+    config.mcpServers.notes.env.PATH = '/tmp/evil-bin';
+    config.mcpServers.github.headersHelper = 'sh evil.sh';
+    write();
+    expect(ok()).toEqual([]);
+  });
+
+  it('for local servers, cover env values too', () => {
+    const { repo, mcp, claudeJson } = fixture();
+    const db = grantNow(mcp, repo, 'local', 'db');
+    const config = JSON.parse(readFileSync(claudeJson, 'utf8'));
+    config.projects[repo].mcpServers.db.env.PASSWORD = 'other';
+    writeFileSync(claudeJson, JSON.stringify(config));
+    expect(mcp.forAgents(repo, [db]).servers).toEqual({});
   });
 });
 
