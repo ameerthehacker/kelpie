@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CHAT_MIN, clampPaneWidth, loadPaneWidth, PANE_DEFAULT, PANE_MIN, paneLimits, savePaneWidth } from '../src/lib/pane-width.js';
+import { clampPaneWidth, loadPaneWidth, PANE_DEFAULT, PANE_MIN, savePaneWidth } from '../src/lib/pane-width.js';
 
 function memory(initial?: string) {
   const items = new Map<string, string>(initial === undefined ? [] : [['kelpie.pane-width', initial]]);
@@ -11,30 +11,10 @@ function memory(initial?: string) {
   };
 }
 
-describe('paneLimits', () => {
-  it('lets the pane take up to 70% of a wide room', () => {
-    expect(paneLimits(2000)).toEqual({ min: PANE_MIN, max: 1400 });
-  });
-
-  it('keeps the chat at its minimum when 70% would leave it less', () => {
-    expect(paneLimits(1200)).toEqual({ min: PANE_MIN, max: 1200 - CHAT_MIN });
-  });
-
-  it('shrinks the pane below its minimum rather than the chat when there is no room for both', () => {
-    expect(paneLimits(700)).toEqual({ min: 280, max: 280 });
-    expect(paneLimits(300)).toEqual({ min: 0, max: 0 });
-  });
-});
-
 describe('clampPaneWidth', () => {
-  it('holds a width within the limits for the room', () => {
-    expect(clampPaneWidth(100, 1600)).toBe(PANE_MIN);
-    expect(clampPaneWidth(5000, 1600)).toBe(1120);
-    expect(clampPaneWidth(500.4, 1600)).toBe(500);
-  });
-
-  it('only keeps it above the minimum with no room measured', () => {
+  it('keeps a width in whole pixels and above the minimum', () => {
     expect(clampPaneWidth(100)).toBe(PANE_MIN);
+    expect(clampPaneWidth(500.4)).toBe(500);
     expect(clampPaneWidth(5000)).toBe(5000);
   });
 });
@@ -70,6 +50,8 @@ describe('loadPaneWidth / savePaneWidth', () => {
       },
     };
     expect(loadPaneWidth(broken)).toBe(PANE_DEFAULT);
-    expect(loadPaneWidth(undefined)).toBe(PANE_DEFAULT);
+    // No localStorage here (node): reaching for it throws, and is caught.
+    expect(loadPaneWidth()).toBe(PANE_DEFAULT);
+    expect(() => savePaneWidth(600)).not.toThrow();
   });
 });
