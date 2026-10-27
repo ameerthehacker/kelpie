@@ -63,6 +63,11 @@ export function AgentChanges({ agent: a }: { agent: AgentSummary }) {
               Full screen
             </button>
           </div>
+          {data.inProgress && (
+            <p role="status" className="text-mu bg-well rounded-xl px-3 py-2 text-xs">
+              A {data.inProgress} is in progress in its worktree. These are its committed changes; what the {data.inProgress} brings shows once it is finished.
+            </p>
+          )}
           {pending > 0 && (
             <p className="text-mu text-xs">
               {pending} pending comment{pending === 1 ? '' : 's'} ·{' '}
