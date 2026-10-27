@@ -49,6 +49,8 @@ export interface Changes {
   headSha?: string;
   /** Agent: the diff includes uncommitted and untracked work in its worktree. */
   dirty?: boolean;
+  /** Agent scope: a merge, rebase, cherry-pick or revert under way in its worktree; the files are its branch's committed work. */
+  inProgress?: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
   /** Where it is checked out, while on disk (for "Open in VS Code"). */
   checkoutPath?: string;
   /** Feature: every agent with a delivery. */

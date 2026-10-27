@@ -9,7 +9,7 @@ import type { Connections } from '../connectors/connector.js';
 import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
 import { logLines, report, type AgentReport, type LogPage } from './digest.js';
 import { ToolError } from '../errors.js';
-import { GitError, type Branch, type Worktrees } from '../worktrees.js';
+import { GitError, operationIn, type Branch, type Worktrees } from '../worktrees.js';
 import { Changes } from '../review/changes.js';
 import { Reviews, type ReviewClaim } from '../review/reviews.js';
 import { SavedSettings } from '../settings.js';
@@ -605,6 +605,9 @@ export class Orchestrator implements SessionHooks {
       if (this.isWorking(agent)) throw new ToolError(`"${agent.title}" is still working; muster it once it is done`);
       if (!row) throw new ToolError(`"${agent.title}" is read-only: it has no branch to muster`);
       if (row.deliver === 'standalone') throw new ToolError(`"${agent.title}" is standalone: its branch ships on its own and is never mustered`);
+      // Half a merge or rebase can't be mustered, and isn't committed as if it were done.
+      const op = row.state === 'active' && existsSync(row.path) ? await operationIn(row.path) : undefined;
+      if (op) throw new ToolError(`"${agent.title}" has a ${op} in progress in its worktree: ask it to finish or abort it, then muster`);
       // Whatever it left uncommitted is part of its work.
       if (row.state === 'active') await this.worktrees.checkpoint(row, agent.title);
       if ((await this.worktrees.ownCommits(row)) === 0) throw new ToolError(`"${agent.title}" has nothing to muster: no commits on ${row.branch} beyond the feature branch it was cut from`);

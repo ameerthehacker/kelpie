@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdtempSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import { baseCommit, ownWork, Worktrees } from '../src/worktrees.js';
 
@@ -12,7 +12,15 @@ import { baseCommit, ownWork, Worktrees } from '../src/worktrees.js';
  * muster and landing go by.
  */
 
-const ENV = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+// Hermetic: the person's own git config (conflict style, signing, encodings) plays no part, here or in the code under test.
+const HERMETIC = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+const saved = Object.fromEntries(Object.keys(HERMETIC).map((k) => [k, process.env[k]]));
+Object.assign(process.env, HERMETIC);
+afterAll(() => {
+  for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k];
+  else process.env[k] = v;
+});
+const ENV = { ...process.env, ...HERMETIC, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env: ENV, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const c = (dir: string, file: string, msg: string, text = `${file}\n`) => {
   writeFileSync(join(dir, file), text);
@@ -184,7 +192,8 @@ describe('own work', () => {
     expect(await own(hotfix.ag)).toMatchObject({ commits: ['agent a3', 'agent a2', 'agent a1'], files: ['a1.txt', 'a2.txt', 'a3.txt'] });
 
     const bottom = agentWithWork();
-    git(bottom.F, 'cherry-pick', sha(bottom.R, 'ag~1'));
+    // -x: a copy, not the same commit made again (onto its own parent, in the same second, it would be a1 itself).
+    git(bottom.F, 'cherry-pick', '-x', sha(bottom.R, 'ag~1'));
     expect(await own(bottom.ag)).toMatchObject({ commits: ['agent a2', 'agent a1'], files: ['a1.txt', 'a2.txt'] });
   });
 
@@ -310,7 +319,8 @@ describe('own work', () => {
     expect(await wt.musteredIn(ag, row(r.R, { kind: 'home', branch: 'feat', fork: r.fork0 }))).toBe(true);
   });
 
-  it('keeps an agent its work when the feature fast-forwards onto it, and sees it mustered (s11)', async () => {
+  it("reads the feature fast-forwarded onto an agent's work as the feature's: it shows nothing, and blocks nothing (s11)", async () => {
+    // The same graph as an agent fast-forwarding onto the feature (n1): the safe reading of both is "not the agent's".
     const r = repo();
     c(r.F, 'seed.txt', 'feat seed');
     const fork = sha(r.R, 'feat');
@@ -318,8 +328,143 @@ describe('own work', () => {
     c(A, 'a1.txt', 'agent a1');
     git(r.F, 'merge', '-q', '--ff-only', 'ag');
     const ag = row(r.R, { kind: 'agent', branch: 'ag', fork });
+    expect(await own(ag)).toEqual({ commits: [], merges: [], count: 0, files: [] });
+    expect(await wt.musteredIn(ag, row(r.R, { kind: 'home', branch: 'feat', fork: r.fork0 }))).toBe(false);
+  });
+
+  it("doesn't take the feature's direct commits or musters as an agent's when it fast-forwards onto them (n1)", async () => {
+    for (const order of ['fixup only', 'fixup then muster', 'muster then fixup'] as const) {
+      const r = repo();
+      c(r.F, 'seed.txt', 'feat seed');
+      const fork = sha(r.R, 'feat');
+      const A = r.add('ag', 'feat');
+      const S = r.add('sib', 'feat');
+      c(S, 's1.txt', 'sib s1');
+      if (order === 'muster then fixup') git(r.F, 'merge', '-q', '--no-ff', '-m', 'Muster: sib', 'sib');
+      c(r.F, 'fixup.txt', 'feat direct fixup');
+      if (order === 'fixup then muster') git(r.F, 'merge', '-q', '--no-ff', '-m', 'Muster: sib', 'sib');
+      git(A, 'merge', '-q', '--ff-only', 'feat');
+      const ag = row(r.R, { kind: 'agent', branch: 'ag', fork });
+      expect(await own(ag), order).toEqual({ commits: [], merges: [], count: 0, files: [] });
+      c(A, 'b1.txt', 'agent b1');
+      expect(await own(ag), order).toEqual({ commits: ['agent b1'], merges: [], count: 1, files: ['b1.txt'] });
+    }
+  });
+
+  it("doesn't take the feature's direct commits or musters as an agent's when it rebases onto them (n2 N2a, N2b)", async () => {
+    for (const muster of [false, true]) {
+      const r = repo();
+      c(r.F, 'seed.txt', 'feat seed');
+      const fork = sha(r.R, 'feat');
+      const A = r.add('ag', 'feat');
+      const S = r.add('sib', 'feat');
+      c(A, 'a1.txt', 'agent a1');
+      c(S, 's1.txt', 'sib s1');
+      c(r.F, 'fixup.txt', 'feat direct fixup');
+      if (muster) git(r.F, 'merge', '-q', '--no-ff', '-m', 'Muster: sib', 'sib');
+      git(A, 'rebase', '-q', 'feat');
+      expect(await own(row(r.R, { kind: 'agent', branch: 'ag', fork })), `muster: ${muster}`).toEqual({ commits: ['agent a1'], merges: [], count: 1, files: ['a1.txt'] });
+    }
+  });
+
+  it("keeps the feature's later work out when a mustered agent merges the feature again: criss-cross (n2 N2f)", async () => {
+    const r = repo();
+    c(r.F, 'seed.txt', 'feat seed');
+    const fork = sha(r.R, 'feat');
+    const A = r.add('ag', 'feat');
+    const S = r.add('sib', 'feat');
+    const ag = row(r.R, { kind: 'agent', branch: 'ag', fork });
+    c(A, 'a1.txt', 'agent a1');
+    c(r.F, 'f2.txt', 'feat f2');
+    git(A, 'merge', '-q', '--no-edit', 'feat');
+    git(r.F, 'merge', '-q', '--no-ff', '-m', 'Muster: ag', 'ag');
+    c(A, 'a2.txt', 'agent a2');
+    expect(await own(ag)).toMatchObject({ commits: ['agent a2', 'agent a1'], count: 2, files: ['a1.txt', 'a2.txt'] });
+    c(r.F, 'f3.txt', 'feat f3');
+    c(S, 's1.txt', 'sib s1');
+    git(r.F, 'merge', '-q', '--no-ff', '-m', 'Muster: sib', 'sib');
+    git(A, 'merge', '-q', '--no-edit', 'feat');
+    const work = await own(ag);
+    // Its commits, not Muster's, f3 or the sibling's; its diff is what it would bring the feature (a1 is there already).
+    expect(work).toEqual({ commits: ['agent a2', 'agent a1'], merges: ["Merge branch 'feat' into ag", "Merge branch 'feat' into ag"], count: 2, files: ['a2.txt'] });
+  });
+
+  it("doesn't count an empty commit as a copy of the feature's when it rebases (n4 N4a)", async () => {
+    const r = repo();
+    c(r.F, 'seed.txt', 'feat seed');
+    git(r.F, 'commit', '-q', '--allow-empty', '-m', 'feat empty ci');
+    const fork = sha(r.R, 'feat');
+    const A = r.add('ag', 'feat');
+    git(A, 'commit', '-q', '--allow-empty', '-m', 'agent empty');
+    c(A, 'a1.txt', 'agent a1');
+    r.upstream('up.txt');
+    git(A, 'rebase', '-q', '--empty=keep', 'origin/main');
+    expect(await own(row(r.R, { kind: 'agent', branch: 'ag', fork }))).toMatchObject({ commits: ['agent a1', 'agent empty'], count: 2, files: ['a1.txt'] });
+  });
+
+  it('takes an agent with a merge under way at its branch, leaving out what the merge brings (n4 N4b)', async () => {
+    const s = agentWithWork();
+    git(s.M, 'pull', '-q');
+    c(s.M, 'base.txt', 'main base', 'main\n');
+    git(s.M, 'push', '-q');
+    git(s.R, 'fetch', '-q');
+    c(s.A, 'base.txt', 'agent base', 'agent\n');
+    expect(() => git(s.A, 'merge', '--no-edit', 'origin/main')).toThrow();
+    expect(await own(s.ag)).toMatchObject({ commits: ['agent base', 'agent a2', 'agent a1'], files: ['a1.txt', 'a2.txt', 'base.txt'] });
+  });
+
+  it('keeps the feature its work after a fast-forward landing on local main, until that is pushed (n7)', async () => {
+    const r = repo();
+    git(r.R, 'branch', '-q', '--set-upstream-to=origin/main', 'main');
+    c(r.F, 'w1.txt', 'feat w1');
+    const home = row(r.R, { kind: 'home', branch: 'feat', fork: r.fork0, baseBranch: 'main' });
+    git(r.R, 'merge', '-q', '--ff-only', 'feat');
+    expect(await own(home)).toEqual({ commits: ['feat w1'], merges: [], count: 1, files: ['w1.txt'] });
+    c(r.F, 'w2.txt', 'feat w2');
+    expect(await own(home)).toMatchObject({ commits: ['feat w2', 'feat w1'], files: ['w1.txt', 'w2.txt'] });
+  });
+
+  it('diffs against a base of three commits: its fork, a local main and origin main it merged', async () => {
+    const r = repo();
+    git(r.R, 'branch', '-q', '--set-upstream-to=origin/main', 'main');
+    c(r.F, 'seed.txt', 'feat seed');
+    const fork = sha(r.R, 'feat');
+    const A = r.add('ag', 'feat');
+    c(A, 'a1.txt', 'agent a1');
+    c(r.R, 'local.txt', 'local main commit');
+    r.upstream('up.txt');
+    git(A, 'merge', '-q', '--no-edit', 'origin/main', 'main');
+    const ag = row(r.R, { kind: 'agent', branch: 'ag', fork, baseBranch: 'main' });
+    const work = await ownWork(ag, sha(r.R, 'ag'));
+    expect(work.base.split('+').sort()).toEqual([fork, sha(r.R, 'main'), sha(r.R, 'origin/main')].sort());
     expect(await own(ag)).toMatchObject({ commits: ['agent a1'], count: 1, files: ['a1.txt'] });
-    expect(await wt.musteredIn(ag, row(r.R, { kind: 'home', branch: 'feat', fork: r.fork0 }))).toBe(true);
+  });
+
+  it("makes a base's merge the same commit every time, whatever the config, and again after gc prunes it", async () => {
+    const r = repo();
+    const M = r.upstream();
+    c(M, 'base.txt', 'main base', 'main\n');
+    git(M, 'push', '-q');
+    git(r.R, 'fetch', '-q');
+    c(r.F, 'base.txt', 'feat base', 'feat\n');
+    const base = `${sha(r.R, 'feat')}+${sha(r.R, 'origin/main')}`;
+    // Fresh modules each time: no cache between them.
+    const fresh = async () => {
+      vi.resetModules();
+      return (await import('../src/worktrees.js')).baseCommit(r.R, base);
+    };
+    const first = await fresh();
+    expect(await fresh()).toBe(first);
+    git(r.R, 'config', 'merge.conflictStyle', 'zdiff3');
+    git(r.R, 'config', 'i18n.commitEncoding', 'ISO-8859-1');
+    expect(await fresh()).toBe(first);
+    expect(git(r.R, 'show', `${first}:base.txt`)).toContain('<<<<<<<');
+    // Pruned, it is made again, even by a module that had it cached.
+    expect(await baseCommit(r.R, base)).toBe(first);
+    git(r.R, 'gc', '-q', '--prune=now');
+    expect(() => git(r.R, 'cat-file', '-e', first)).toThrow();
+    expect(await baseCommit(r.R, base)).toBe(first);
+    expect(git(r.R, 'cat-file', '-t', first)).toBe('commit');
   });
 
   it("doesn't take the feature's musters as an agent's when it fast-forwards onto the feature with nothing of its own", async () => {

@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import { LRUCache } from 'lru-cache';
 
@@ -155,7 +155,7 @@ const owned = new LRUCache<string, OwnWork>({ max: 500 });
  * agent's feature branch), and its base in both its forms, local and remote (`main` with its upstream,
  * or origin's `main` if it has none; `origin/main` with the local `main` if that tracks it).
  */
-async function othersOf(row: WorktreeRow): Promise<{ parent?: string; base: string[] }> {
+async function othersOf(row: WorktreeRow): Promise<{ parent?: string; base: { sha: string; remote: boolean }[] }> {
   const b = row.baseBranch;
   const refs = new Map<string, { sha: string; upstream: string }>();
   for (const l of lines(await ok(row.repoRoot, ['for-each-ref', '--format=%(refname)%00%(objectname)%00%(upstream)', 'refs/heads', `refs/remotes/${b}`, `refs/remotes/origin/${b}`]))) {
@@ -171,13 +171,14 @@ async function othersOf(row: WorktreeRow): Promise<{ parent?: string; base: stri
     const namesake = `refs/heads/${b.slice(b.indexOf('/') + 1)}`;
     if (refs.get(namesake)?.upstream === `refs/remotes/${b}`) names.add(namesake);
   }
-  const base: string[] = [];
+  const base: { sha: string; remote: boolean }[] = [];
   for (const name of [...names].sort()) {
-    if (refs.has(name)) base.push(refs.get(name)!.sha);
+    const remote = name.startsWith('refs/remotes/');
+    if (refs.has(name)) base.push({ sha: refs.get(name)!.sha, remote });
     else {
       // An upstream on another remote, not listed above; gone, it just doesn't count.
       const r = await git(row.repoRoot, ['rev-parse', '--verify', '--quiet', `${name}^{commit}`]);
-      if (r.code === 0) base.push(r.stdout.trim());
+      if (r.code === 0) base.push({ sha: r.stdout.trim(), remote });
     }
   }
   const parent = row.kind === 'agent' ? refs.get(`refs/heads/${row.parentBranch}`)?.sha : undefined;
@@ -192,20 +193,37 @@ async function firstParent(repo: string, sha: string): Promise<string | undefine
 
 /**
  * `ref` as it was before it took in any of a branch's own line (`l0` its oldest commit): the
- * commit before the earliest on `ref`'s first-parent line that has `l0` in its history, whether by
- * a merge (Muster, a landing, a pull of a PR merged elsewhere: any merge, however indirect) or by a
- * fast-forward onto the line itself. `ref` as it is if it has none of the line; undefined if it took
- * the line in from the start (it has no commit before).
+ * commit before the earliest on `ref`'s first-parent line that has `l0` in its history, by any
+ * merge, however indirect (Muster, a landing, a pull of a PR merged elsewhere), or by a fast-forward
+ * onto the line itself. With it, `after`: `ref`'s first-parent commits since (with their parents),
+ * which are its own, not the branch's. `ref` as it is if it has none of the line; `was` undefined if
+ * it took the line in from the start (it has no commit before).
  */
-async function before(repo: string, ref: string, l0: string | undefined): Promise<string | undefined> {
-  if (!l0 || !(await ancestor(repo, l0, ref))) return ref;
-  if (ref === l0) return firstParent(repo, l0);
-  const line = lines(await ok(repo, ['rev-list', '--first-parent', '--parents', ref, `^${l0}`])).map((l) => l.split(' '));
-  const since = new Set(lines(await ok(repo, ['rev-list', '--ancestry-path', `${l0}..${ref}`])));
-  const earliest = line.filter(([c]) => since.has(c!)).at(-1);
-  if (!earliest) return ref;
-  // Its first parent is the line itself: `ref` fast-forwarded onto it, and was `l0`'s parent before.
-  return earliest[1] === l0 ? firstParent(repo, l0) : earliest[1];
+async function before(repo: string, ref: string, l0: string | undefined): Promise<{ was: string | undefined; after: string[][] }> {
+  if (!l0 || !(await ancestor(repo, l0, ref))) return { was: ref, after: [] };
+  let was: string | undefined;
+  if (ref === l0) was = await firstParent(repo, l0);
+  else {
+    const line = lines(await ok(repo, ['rev-list', '--first-parent', '--parents', ref, `^${l0}`])).map((l) => l.split(' '));
+    const since = new Set(lines(await ok(repo, ['rev-list', '--ancestry-path', `${l0}..${ref}`])));
+    const earliest = line.filter(([c]) => since.has(c!)).at(-1);
+    if (!earliest) return { was: ref, after: [] };
+    // Its first parent is the line itself: `ref` fast-forwarded onto it, and was `l0`'s parent before.
+    was = earliest[1] === l0 ? await firstParent(repo, l0) : earliest[1];
+  }
+  const after = lines(await ok(repo, ['rev-list', '--first-parent', '--parents', ref, ...(was ? [`^${was}`] : [])])).map((l) => l.split(' '));
+  return { was, after };
+}
+
+/** Which of `commits` (none of them merges) change nothing. */
+async function emptyOf(repo: string, commits: string[]): Promise<string[]> {
+  // Each commit's id, then the paths it changes: none for an empty one.
+  const out = await ok(repo, ['log', '--no-walk=unsorted', '--format=%x01%H', '--name-only', ...commits]);
+  return out
+    .split('\x01')
+    .map((entry) => lines(entry))
+    .filter((entry) => entry.length === 1)
+    .map(([c]) => c!);
 }
 
 /**
@@ -214,47 +232,77 @@ async function before(repo: string, ref: string, l0: string | undefined): Promis
  *
  * Its own commits are those `head` has that its fork, the branch it was cut from (an agent's
  * feature branch) and its base (see `othersOf`) don't. Each of those branches counts as it was
- * before it took in any of the worktree's line (its first parents since its fork, less its base's
- * own first parents; see `before`), so
- * work merged or fast-forwarded on stays its own. Copies of the feature's commits that a rebase
- * replays under its own are left out. No other branch counts: pushing a branch anywhere changes
- * nothing.
+ * before it took in any of the worktree's line (its first parents since its fork, less those
+ * branches' own first parents; see `before`), so work merged on stays its own; and what a branch
+ * did on its own line after that stays out, even once merged back in (a criss-cross). Copies of
+ * the feature's commits that a rebase replays under its own are left out. No other branch counts:
+ * pushing a branch anywhere changes nothing.
  *
  * Its base is what its own commits sit on: the commits outside them that they have as parents,
  * less any that another has in its history. One is the base; several (its fork and a main it merged
  * in) are joined by `+`, their merge (see `baseCommit`). With no commits of its own, its base is
  * `head`. A git failure is thrown, never taken for "no work".
+ *
+ * Two readings are deliberate. The feature fast-forwarded onto an agent's commits is the same graph
+ * as the agent fast-forwarding onto the feature's, so both read as the feature's: the agent shows
+ * nothing and blocks nothing (Kelpie and Muster merge with --no-ff). And a squash merge copies work
+ * into a commit of the feature's own, which git can't tie back: the agent still shows its work, and
+ * is mustered once its branch is merged. A base is always a branch: a tag or bare commit can't be one.
  */
 export async function ownWork(row: WorktreeRow, head: string): Promise<OwnWork> {
   const repo = row.repoRoot;
   const fork = forkOf(row);
   const others = await othersOf(row);
-  const key = [repo, row.kind, fork, head, others.parent ?? '', ...others.base].join('\0');
+  const key = [repo, row.kind, fork, head, others.parent ?? '', ...others.base.map((b) => `${b.remote}:${b.sha}`)].join('\0');
   const cached = owned.get(key);
   if (cached) return cached;
 
-  // Its line: its first parents since the fork, less its base's own (its first parents: a branch
-  // reset or rebased onto a newer main has them below its work, and main lands work by merging).
+  // Its line: its first parents since the fork, less those of the branches it came from: its base's
+  // (a branch reset or rebased onto a newer main has them below its work) and, for an agent, the
+  // feature's (fast-forwarded or rebased onto, they are the feature's, never the agent's). For the
+  // feature, only its base's remote form when it has one: a fast-forward landing on local main is
+  // still its work, until pushed.
   const onFork = await ancestor(repo, fork, head);
-  const mains = new Set<string>();
-  for (const b of others.base) for (const c of lines(await ok(repo, ['rev-list', '--first-parent', b, `^${fork}`]))) mains.add(c);
-  const line = lines(await ok(repo, ['rev-list', '--first-parent', '--parents', head, `^${fork}`]))
-    .map((l) => l.split(' '))
-    .filter(([c]) => !mains.has(c!));
-  // An agent's line starting with merges is the feature fast-forwarded in (Muster's merges): not its own.
-  if (row.kind === 'agent') while (line.length && line.at(-1)!.length > 2) line.pop();
-  const l0 = line.at(-1)?.[0];
+  const from = row.kind === 'agent' || !others.base.some((b) => b.remote) ? others.base : others.base.filter((b) => b.remote);
+  const theirs = new Set<string>();
+  for (const ref of [...from.map((b) => b.sha), ...(others.parent ? [others.parent] : [])]) for (const c of lines(await ok(repo, ['rev-list', '--first-parent', ref, `^${fork}`]))) theirs.add(c);
+  const line = lines(await ok(repo, ['rev-list', '--first-parent', head, `^${fork}`])).filter((c) => !theirs.has(c));
+  const onLine = new Set(line);
+  const l0 = line.at(-1);
 
-  const parent = others.parent ? await before(repo, others.parent, l0) : undefined;
-  const not = [fork, ...(parent ? [parent] : [])];
-  for (const b of others.base) {
-    const was = await before(repo, b, l0);
+  // Each branch as it was before it took in the line; what it did since on its own line is its own.
+  const not = [fork];
+  const since: string[][] = [];
+  let parent: string | undefined;
+  for (const [i, ref] of [...(others.parent ? [others.parent] : []), ...others.base.map((b) => b.sha)].entries()) {
+    const { was, after } = await before(repo, ref, l0);
+    if (i === 0 && others.parent) parent = was;
     if (was) not.push(was);
+    since.push(...after.filter(([c]) => !onLine.has(c!)));
   }
-  let own = lines(await ok(repo, ['rev-list', '--topo-order', '--parents', head, ...not.map((n) => `^${n}`)])).map((l) => l.split(' '));
+  const revs = async (extra: string[]) => lines(await ok(repo, ['rev-list', '--topo-order', '--parents', head, ...[...not, ...extra].map((n) => `^${n}`)])).map((l) => l.split(' '));
+  let own = await revs([]);
+  const theirsSince = new Set(since.map(([c]) => c!));
+  if (own.some(([c]) => theirsSince.has(c!))) {
+    // It merged the branch again after that (a criss-cross): what came with those commits stays
+    // out, unless it has the line in it (its own work, mustered and merged back).
+    const extra: string[] = [];
+    for (const [c, , ...others] of since) if (own.some(([o]) => o === c)) for (const q of others) if (!(await ancestor(repo, l0!, q))) extra.push(q);
+    own = (extra.length ? await revs(extra) : own).filter(([c]) => !theirsSince.has(c!));
+  }
   if (row.kind === 'agent' && parent && !onFork && own.length) {
     // A rebase replays the feature's commits under its own: copies at the bottom of its work go.
-    const copies = new Set(lines(await ok(repo, ['rev-list', '--cherry-mark', '--right-only', '--no-merges', `${parent}...${head}`])).filter((l) => l.startsWith('=')).map((l) => l.slice(1)));
+    const range = [`${parent}...${head}`, ...not.slice(2).map((b) => `^${b}`)];
+    const marked = lines(await ok(repo, ['rev-list', '--cherry-mark', '--right-only', '--no-merges', ...range]));
+    const copies = new Set(marked.filter((l) => l.startsWith('=')).map((l) => l.slice(1)));
+    // Every empty commit has the same patch: an empty one is a copy only of one with its author, date and subject.
+    const empty = copies.size ? await emptyOf(repo, [...copies]) : [];
+    if (empty.length) {
+      const id = '%an%x00%ae%x00%ad%x00%s';
+      const feature = new Set(lines(await ok(repo, ['log', '--left-only', '--no-merges', `--format=${id}`, ...range])));
+      const ids = lines(await ok(repo, ['log', '--no-walk=unsorted', `--format=%H%x00${id}`, ...empty]));
+      for (const l of ids) if (!feature.has(l.slice(l.indexOf('\0') + 1))) copies.delete(l.slice(0, l.indexOf('\0')));
+    }
     const all = new Set(own.map(([c]) => c!));
     const bottom = new Set<string>();
     for (const [c, ...ps] of [...own].reverse()) if (copies.has(c!) && ps.every((p) => !all.has(p) || bottom.has(p))) bottom.add(c!);
@@ -277,7 +325,9 @@ export const ownBase = async (row: WorktreeRow, head: string) => (await ownWork(
 
 /** A fixed identity and date for the merge bases Kelpie makes: the same parents always give the same commit. */
 const MADE = { GIT_AUTHOR_NAME: 'Kelpie', GIT_AUTHOR_EMAIL: 'kelpie@localhost', GIT_COMMITTER_NAME: 'Kelpie', GIT_COMMITTER_EMAIL: 'kelpie@localhost', GIT_AUTHOR_DATE: '@0 +0000', GIT_COMMITTER_DATE: '@0 +0000' };
-/** Made bases, by repo and base; for an hour, so each is written again (fresh to gc) when it is used. */
+/** Config that would make the same merge a different commit (its conflict markers, its encoding), pinned. */
+const PINNED = ['-c', 'merge.conflictStyle=merge', '-c', 'i18n.commitEncoding=UTF-8'];
+/** Made bases, by repo and base, for an hour (each is checked for before it is used). */
 const made = new LRUCache<string, string>({ max: 500, ttl: 60 * 60 * 1000 });
 
 /**
@@ -289,19 +339,36 @@ export async function baseCommit(repo: string, base: string): Promise<string> {
   if (!base.includes('+')) return base;
   const key = `${repo}\0${base}`;
   const cached = made.get(key);
-  if (cached) return cached;
+  // Still there: gc may have pruned it (no ref keeps it), and then it is made again.
+  if (cached && (await git(repo, ['cat-file', '-e', `${cached}^{commit}`])).code === 0) return cached;
   const [first, ...rest] = base.split('+');
   let commit = first!;
   for (const next of rest) {
-    const tree = await git(repo, ['merge-tree', '--write-tree', commit, next]);
+    const tree = await git(repo, [...PINNED, 'merge-tree', '--write-tree', commit, next]);
     // 1 is a conflict, its tree still written.
     if (tree.code > 1) throw new GitError(`git merge-tree failed: ${tree.stderr.trim()}`, tree.stderr);
-    const c = await runGit(repo, ['commit-tree', tree.stdout.split('\n')[0]!, '-p', commit, '-p', next, '-m', 'kelpie: merge base'], { env: MADE });
+    const c = await runGit(repo, [...PINNED, 'commit-tree', tree.stdout.split('\n')[0]!, '-p', commit, '-p', next, '-m', 'kelpie: merge base'], { env: MADE });
     if (c.code !== 0) throw new GitError(`git commit-tree failed: ${c.stderr.trim()}`, c.stderr);
     commit = c.stdout.trim();
   }
   made.set(key, commit);
   return commit;
+}
+
+/** What git has under way in a worktree, waiting on someone to finish or abort it. */
+export type Operation = 'merge' | 'rebase' | 'cherry-pick' | 'revert';
+
+/** The merge, rebase, cherry-pick or revert under way in a worktree, if any. */
+export async function operationIn(dir: string): Promise<Operation | undefined> {
+  const marks: [string, Operation][] = [
+    ['rebase-merge', 'rebase'],
+    ['rebase-apply', 'rebase'],
+    ['MERGE_HEAD', 'merge'],
+    ['CHERRY_PICK_HEAD', 'cherry-pick'],
+    ['REVERT_HEAD', 'revert'],
+  ];
+  const paths = lines(await ok(dir, ['rev-parse', ...marks.flatMap(([m]) => ['--git-path', m])]));
+  return marks.find((_, i) => paths[i] && existsSync(isAbsolute(paths[i]!) ? paths[i]! : join(dir, paths[i]!)))?.[1];
 }
 
 /** What a removal is about to take away: work that would be lost is committed first. */
@@ -485,14 +552,16 @@ export class Worktrees {
   }
 
   async dirty(path: string): Promise<boolean> {
-    return (await ok(path, ['status', '--porcelain'])).length > 0;
+    // A merge or rebase under way holds work too, even with nothing to show in status yet.
+    return (await ok(path, ['status', '--porcelain'])).length > 0 || (await operationIn(path)) !== undefined;
   }
 
   /** Commits whatever is uncommitted, so nothing a later merge or removal relies on is lost. True if it did. */
   async checkpoint(row: WorktreeRow, what: string): Promise<boolean> {
     if (!existsSync(row.path)) return false;
     return this.locked(row.repoRoot, async () => {
-      if (!(await this.dirty(row.path))) return false;
+      // Half a merge or rebase is not work to commit: it stays as it is, for whoever finishes it.
+      if ((await operationIn(row.path)) || !(await this.dirty(row.path))) return false;
       await ok(row.path, ['add', '-A']);
       // No hooks: a checkpoint must not be refused by a linter. Kelpie's name only if git has none.
       await ok(row.path, [...(await this.identity(row.path)), 'commit', '--quiet', '--no-verify', '-m', CHECKPOINT(what)]);
@@ -605,8 +674,9 @@ export class Worktrees {
     return (await this.workOf(row))?.count ?? 0;
   }
 
-  /** An agent's work is in home: it has commits of its own, and home has all of them. */
+  /** An agent's work is in home: it has commits of its own, and home has all of them (and no merge or rebase is under way in it). */
   async musteredIn(row: WorktreeRow, home: WorktreeRow): Promise<boolean> {
+    if (existsSync(row.path) && (await operationIn(row.path))) return false;
     return (await this.ownCommits(row)) > 0 && (await this.isMerged(row.repoRoot, row.branch, home.branch));
   }
 

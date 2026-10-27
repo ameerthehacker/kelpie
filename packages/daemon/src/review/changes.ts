@@ -4,7 +4,7 @@ import { isAbsolute, join } from 'node:path';
 import { parsePatch } from 'diff';
 import { LRUCache } from 'lru-cache';
 import type { DeliveryRow, Store } from '@kelpie/store';
-import { baseCommit, ownBase, runGit } from '../worktrees.js';
+import { baseCommit, operationIn, ownBase, runGit, type Operation } from '../worktrees.js';
 import type { AgentRef, ChangedFile, Changes as ChangesView, Round, Side } from './types.js';
 
 /** A whole feature's patch may be this big before every file is sent as too large. */
@@ -37,6 +37,8 @@ export interface View {
   /** An agent's work under way: its worktree's files are the new side, uncommitted work included. */
   workdir?: string;
   dirty?: boolean;
+  /** A merge or rebase under way in its worktree: the view is of its branch's commits instead. */
+  inProgress?: Operation;
   branch: string;
   baseRef: string;
   checkoutPath?: string;
@@ -228,12 +230,15 @@ export class Changes {
     const delivered = this.store.deliveriesOf(session.parentId).filter((d) => d.sessionId === session.id);
     const rounds: Round[] = delivered.map((d, i) => ({ index: i + 1, state: 'mustered', baseSha: d.forkCommit, headSha: d.tipCommit }));
     let workdir: string | undefined;
+    let inProgress: Operation | undefined;
     const onDisk = (row.state === 'active' || row.state === 'creating') && existsSync(row.path);
     if (onDisk) {
-      const head = await this.revParse(row.path, 'HEAD');
+      // Half a merge or rebase isn't its work (yet): what its branch has committed is.
+      inProgress = await operationIn(row.path);
+      const head = inProgress ? await this.revParse(row.repoRoot, `refs/heads/${row.branch}`) : await this.revParse(row.path, 'HEAD');
       if (head) {
         rounds.push({ index: rounds.length + 1, state: 'active', baseSha: await ownBase(row, head), headSha: head });
-        workdir = row.path;
+        if (!inProgress) workdir = row.path;
       }
     } else if (row.state === 'removed') {
       // Swept off disk, its work not mustered: its branch is the work.
@@ -261,6 +266,7 @@ export class Changes {
       base: await baseCommit(row.repoRoot, picked.baseSha),
       headSha: picked.headSha,
       ...(live ? { workdir: workdir!, dirty, checkoutPath: workdir! } : {}),
+      ...(picked.state === 'active' && inProgress ? { inProgress, checkoutPath: row.path } : {}),
       branch: row.branch,
       baseRef: row.parentBranch,
       rounds,
@@ -302,6 +308,7 @@ export class Changes {
       baseSha: view.baseSha,
       headSha: view.headSha,
       ...(view.scope === 'agent' ? { dirty: !!view.dirty } : {}),
+      ...(view.inProgress ? { inProgress: view.inProgress } : {}),
       ...(view.checkoutPath ? { checkoutPath: view.checkoutPath } : {}),
       ...(musteredFrom ? { musteredFrom } : {}),
       ...(view.rounds ? { rounds: view.rounds, round: view.round! } : {}),

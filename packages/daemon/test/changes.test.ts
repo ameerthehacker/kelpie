@@ -317,6 +317,38 @@ describe('changes', () => {
       expect(feature.baseSha).toBe(git(ctx.checkout, 'rev-parse', 'origin/main'));
       expect(brief(feature.files)).toEqual([['api.txt', 'added', 1, 0, 'API']]);
     });
+    it('shows only committed work while a merge or rebase is under way, never commits it as a checkpoint, and refuses to muster it (n4)', async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      const row = ctx.store.worktreeOf(api.id)!;
+      commit(api.cwd, 'api.txt', 'api\n');
+      commit(api.cwd, 'base.txt', 'agent\n');
+      git(ctx.checkout, 'pull', '-q');
+      commit(ctx.checkout, 'base.txt', 'main\n');
+      mainMovesOn(ctx, 1);
+      expect(() => git(api.cwd, 'merge', '--no-edit', 'origin/main')).toThrow();
+
+      const merging = (await ctx.orch.changes.of(api.id))!;
+      expect(merging).toMatchObject({ inProgress: 'merge', dirty: false, headSha: git(api.cwd, 'rev-parse', 'HEAD') });
+      expect(merging.files.map((f) => f.path)).toEqual(['api.txt', 'base.txt']);
+      expect(await ctx.worktrees.checkpoint(row, 'test')).toBe(false);
+      expect(git(api.cwd, 'rev-parse', '-q', '--verify', 'MERGE_HEAD')).toBeTruthy();
+      expect(await ctx.worktrees.dirty(row.path)).toBe(true);
+      await expect(ctx.orch.muster(parent, [api.id])).rejects.toThrow(/merge in progress/);
+      git(api.cwd, 'merge', '--abort');
+
+      // A rebase stopped part way: its branch, not the detached HEAD, is its work.
+      const tip = git(api.cwd, 'rev-parse', 'HEAD');
+      expect(() => git(api.cwd, 'rebase', 'origin/main')).toThrow();
+      const rebasing = (await ctx.orch.changes.of(api.id))!;
+      expect(rebasing).toMatchObject({ inProgress: 'rebase', headSha: tip });
+      expect(rebasing.files.map((f) => f.path)).toEqual(['api.txt', 'base.txt']);
+      expect(await ctx.worktrees.checkpoint(row, 'test')).toBe(false);
+      git(api.cwd, 'rebase', '--abort');
+      expect((await ctx.orch.changes.of(api.id))!.inProgress).toBeUndefined();
+    });
+
     it('keeps an agent its work when its branch is pushed anywhere, and muster takes it', async () => {
       const ctx = start();
       const parent = await roundUp(ctx);
