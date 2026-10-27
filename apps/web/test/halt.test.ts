@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { haltLine, haltNote, type KelpieEvent } from '@kelpie/protocol';
+import { attachmentsBlock, haltLine, haltNote, KelpieEvent } from '@kelpie/protocol';
 import { STATUS_LABEL, type AgentSummary } from '../src/lib/agents.js';
 import { buildChat } from '../src/lib/chat.js';
 import { haltState, resumeLabel } from '../src/lib/halt.js';
@@ -58,7 +58,8 @@ describe('stopped by the person', () => {
 
   it('offers Stop all while agents work, asking first when more than one would stop, and Resume all while stopped', () => {
     expect(haltState(r({}), [agent({})])).toMatchObject({ canStop: true, confirm: false, halted: false });
-    expect(haltState(r({ busy: true }), [agent({})])).toMatchObject({ canStop: true, confirm: true });
+    expect(haltState(r({ busy: true }), [agent({})])).toMatchObject({ canStop: true, confirm: true, kelpieWorking: true });
+    expect(haltState(r({}), [agent({})]).kelpieWorking).toBe(false);
     expect(haltState(r({}), [agent({ id: 'a' }), agent({ id: 'b', status: 'needs-approval' })])).toMatchObject({ stoppable: 2, confirm: true });
     // Paused at the usage limit with Kelpie due to resume it: Stop all stops that too.
     expect(haltState(r({}), [agent({ status: 'paused', limited: { since: 0, retryAt: 10, attempts: 0, message: '' } })]).stoppable).toBe(1);
@@ -88,5 +89,22 @@ describe('stopped by the person', () => {
       ],
     });
     expect(haltLine({ action: 'stopped', agents: 1 })).toBe('You stopped 1 agent');
+  });
+
+  it("leaves the person's files as chips when the note comes after them", () => {
+    const files = attachmentsBlock([{ path: '/s/uploads/a.png', mime: 'image/png', size: 10 }]);
+    const [item] = buildChat([
+      ev('message', { role: 'user', text: `Look at this\n\n${files}\n\n${haltNote([])}`, sent: true, source: 'user', attachments: [{ id: 'u', name: 'a.png', mime: 'image/png', size: 10 }] }),
+    ]);
+    expect(item).toMatchObject({ role: 'user', text: 'Look at this', attachments: [{ name: 'a.png' }] });
+  });
+
+  it('keeps the note sent to a working orchestrator out of the chat after a reload too', () => {
+    // As the store reads it back: through the schema, which keeps what it declares.
+    const stored = KelpieEvent.parse(ev('message', { role: 'user', text: haltNote([{ agentId: 'a', title: 'API' }]), sent: true, source: 'kelpie', halt: 'stopped' }));
+    expect(stored.kind === 'message' && stored.data.halt).toBe('stopped');
+    expect(buildChat([stored, ev('halt', { action: 'stopped', agents: 1 }, 1)])).toEqual([
+      { role: 'assistant', id: 'halt-1', parts: [{ type: 'halt', action: 'stopped', text: 'You stopped 1 agent', ts: '2026-10-27T10:00:00.000Z' }] },
+    ]);
   });
 });

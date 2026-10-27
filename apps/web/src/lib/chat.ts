@@ -194,7 +194,7 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
         break;
       case 'message':
         // What Kelpie told the orchestrator of the person stopping or resuming everything: the halt line says it.
-        if (ev.data.role === 'user' && fromKelpie(ev.data) && (ev.data.resumed === 'halt' || (ev.data as { halt?: unknown }).halt)) break;
+        if (ev.data.role === 'user' && fromKelpie(ev.data) && (ev.data.resumed === 'halt' || ev.data.halt)) break;
         // Turns Kelpie sent itself (notifications, restarts) are not the person speaking.
         if (ev.data.role === 'user' && fromKelpie(ev.data) && ev.data.resumed === 'limit') assistant(ev.id).push({ type: 'resumed', ts: ev.ts });
         else if (ev.data.role === 'user' && fromKelpie(ev.data)) assistant(ev.id).push(...kelpieTurn(ev.data, ev.ts));
@@ -203,7 +203,8 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
             role: 'user',
             id: ev.id,
             // Kelpie's notes to the orchestrator (tickets it linked, agents the person stopped) are not the person's.
-            text: stripTicketsNote(stripHaltNote(ev.data.attachments?.length ? stripAttachments(ev.data.text) : ev.data.text)),
+            // The halt note comes last (after the files' block, which must end the text to be found), the tickets note before the files.
+            text: stripTicketsNote(ev.data.attachments?.length ? stripAttachments(stripHaltNote(ev.data.text)) : stripHaltNote(ev.data.text)),
             ts: ev.ts,
             ...(ev.data.source ? { source: ev.data.source } : {}),
             ...(ev.data.attachments?.length ? { attachments: ev.data.attachments } : {}),

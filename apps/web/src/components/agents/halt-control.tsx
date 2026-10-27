@@ -1,5 +1,5 @@
 import { PlayIcon, SquareIcon } from 'lucide-react';
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from '@/components/ui/popover';
 import { Switch } from '@/components/ui/switch';
@@ -18,6 +18,14 @@ export function HaltControl({ roundUpId, state }: { roundUpId: string; state: Ha
   const [open, setOpen] = useState(false);
   const [withKelpie, setWithKelpie] = useState(true);
   const switchId = useId();
+  const titleId = useId();
+  const descId = useId();
+  const cancel = useRef<HTMLButtonElement>(null);
+  // Each time it asks, it starts from stopping everything.
+  const openChange = (next: boolean) => {
+    if (next) setWithKelpie(true);
+    setOpen(next);
+  };
   if (!state.canStop && !state.halted) return null;
   const stopButton = (
     <Button
@@ -25,7 +33,7 @@ export function HaltControl({ roundUpId, state }: { roundUpId: string; state: Ha
       size="xs"
       disabled={pending}
       onClick={state.confirm ? undefined : () => stopAll(true)}
-      title={`Stop ${agents(state.stoppable)} and Kelpie's own turn; they keep their work, and Resume all picks them up again`}
+      title={`Stop ${agents(state.stoppable)}${state.kelpieWorking ? " and Kelpie's own turn" : ''}; they keep their work, and Resume all picks them up again`}
       className="text-mu hover:text-fg"
     >
       <SquareIcon aria-hidden="true" className="fill-current" />
@@ -47,25 +55,36 @@ export function HaltControl({ roundUpId, state }: { roundUpId: string; state: Ha
       )}
       {state.canStop &&
         (state.confirm ? (
-          <Popover open={open} onOpenChange={setOpen}>
+          <Popover open={open} onOpenChange={openChange}>
             <PopoverTrigger asChild>{stopButton}</PopoverTrigger>
-            <PopoverContent align="end" className="w-64">
+            <PopoverContent
+              align="end"
+              className="w-64"
+              aria-labelledby={titleId}
+              aria-describedby={descId}
+              // The safe choice has focus: Enter right after opening doesn't stop everything.
+              onOpenAutoFocus={(e) => {
+                e.preventDefault();
+                cancel.current?.focus();
+              }}
+            >
               <PopoverHeader>
-                <PopoverTitle>Stop {agents(state.stoppable)}?</PopoverTitle>
-                <PopoverDescription>They keep their work. Nothing starts again until you resume.</PopoverDescription>
+                <PopoverTitle id={titleId}>Stop {agents(state.stoppable)}?</PopoverTitle>
+                <PopoverDescription id={descId}>They keep their work. Nothing starts again until you resume.</PopoverDescription>
               </PopoverHeader>
-              <label htmlFor={switchId} className="text-mu flex items-center justify-between gap-2 text-xs">
-                Stop Kelpie’s own turn too
-                <Switch id={switchId} checked={withKelpie} onCheckedChange={setWithKelpie} />
-              </label>
+              {state.kelpieWorking && (
+                <label htmlFor={switchId} className="text-mu flex items-center justify-between gap-2 text-xs">
+                  Stop Kelpie’s own turn too
+                  <Switch id={switchId} checked={withKelpie} onCheckedChange={setWithKelpie} />
+                </label>
+              )}
               <div className="flex justify-end gap-1.5">
-                <Button variant="ghost" size="xs" onClick={() => setOpen(false)}>
+                <Button ref={cancel} variant="ghost" size="xs" onClick={() => setOpen(false)}>
                   Cancel
                 </Button>
                 <Button
                   variant="destructive"
                   size="xs"
-                  autoFocus
                   disabled={pending}
                   onClick={() => {
                     stopAll(withKelpie);
