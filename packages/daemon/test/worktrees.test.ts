@@ -94,7 +94,7 @@ describe('Worktrees', () => {
     expect(run(a.path, 'log', '-1', '--format=%s')).toBe('kelpie: checkpoint (API)');
     expect(await wt.checkpoint(a, 'API')).toBe(false);
     commit(b.path, 'app.txt', 'one\nTWO by ui\nthree\n');
-    expect(await wt.stats(a, home.branch)).toEqual({ ahead: 1, diffstat: '1 file changed, 1 insertion(+), 1 deletion(-)', dirty: false });
+    expect(await wt.stats(a)).toEqual({ ahead: 1, diffstat: '1 file changed, 1 insertion(+), 1 deletion(-)', dirty: false });
 
     expect(await wt.merge(home, a.branch, 'Muster: API')).toEqual({ ok: true });
     expect(await wt.isMerged(repo, a.branch, home.branch)).toBe(true);

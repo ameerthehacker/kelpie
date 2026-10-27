@@ -21,7 +21,8 @@ export function WrapToggle({ wrap, onToggle, iconOnly, className }: { wrap: bool
       onClick={onToggle}
       {...(iconOnly ? { 'aria-label': 'Wrap lines' } : {})}
       title={wrap ? 'Long lines wrap: scroll them sideways instead' : 'Long lines scroll sideways: wrap them instead'}
-      className={cn(quietButton, 'h-[30px] text-xs', iconOnly && 'w-[30px] justify-center px-0', wrap && 'text-fg shadow-[inset_0_0_0_1.5px_var(--acc)]', className)}
+      // On, it is filled, as the agent pane's filter chips are (a ring read as a stray focus outline).
+      className={cn(quietButton, 'h-[30px] text-xs', iconOnly && 'w-[30px] justify-center px-0', wrap && 'bg-fg text-background hover:bg-fg', className)}
     >
       <WrapTextIcon className="size-3" />
       {!iconOnly && 'Wrap lines'}
@@ -158,7 +159,8 @@ export function FileCard({
   const [ref, seen] = useSeen<HTMLDivElement>();
   const count = threads.filter((t) => t.path === file.path && t.status !== 'resolved').length;
   return (
-    <div ref={ref} className="border-ln2 bg-background overflow-hidden rounded-xl border" data-file={file.path}>
+    // Its own height in a list that scrolls: as a flex item clipping its overflow, it would shrink to its border.
+    <div ref={ref} className="border-ln2 bg-background shrink-0 overflow-hidden rounded-xl border" data-file={file.path}>
       <div className={cn('flex h-11 items-center gap-2.5 pr-2 pl-3', !collapsed && 'border-ln border-b')}>
         <button type="button" aria-expanded={!collapsed} onClick={onToggle} className="flex min-w-0 flex-1 items-center gap-2 text-left">
           <ChevronRightIcon className={cn('text-mu2 size-3.5 shrink-0 transition-transform', !collapsed && 'rotate-90')} strokeWidth={2.2} />

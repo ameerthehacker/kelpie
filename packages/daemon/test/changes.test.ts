@@ -221,4 +221,235 @@ describe('changes', () => {
     expect(alone.patch).toContain('+line 3499');
     expect(await ctx.orch.changes.file(api.id, 'missing.txt')).toBeNull();
   });
+  describe('base: only the work of its own', () => {
+    /** Main moves on in origin: `n` commits, each adding a file, fetched into the repo. */
+    let upstream = 0;
+    const mainMovesOn = (ctx: Ctx, n: number) => {
+      for (let i = 0; i < n; i++, upstream++) commit(ctx.checkout, `upstream-${upstream}.txt`, `upstream ${upstream}\n`);
+      git(ctx.checkout, 'push', '-q', 'origin', 'HEAD:main');
+      git(ctx.checkout, 'fetch', '-q', 'origin');
+      return git(ctx.checkout, 'rev-parse', 'origin/main');
+    };
+
+    it('shows nothing for a fresh agent', async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      const changes = (await ctx.orch.changes.of(api.id))!;
+      expect(changes).toMatchObject({ state: 'ready', baseSha: ctx.store.worktreeOf(api.id)!.forkCommit, stats: { files: 0, additions: 0, deletions: 0 } });
+    });
+
+    it("leaves out a newer main an agent's branch was reset onto, keeping its committed and uncommitted work", async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      const row = ctx.store.worktreeOf(api.id)!;
+      const main = mainMovesOn(ctx, 5);
+      git(api.cwd, 'reset', '-q', '--hard', 'origin/main');
+
+      // Nothing of its own yet: main's five commits are not its changes.
+      const fresh = (await ctx.orch.changes.of(api.id))!;
+      expect(fresh).toMatchObject({ baseSha: main, headSha: main, stats: { files: 0 } });
+      expect(await ctx.worktrees.ownCommits(row)).toBe(0);
+      expect(await ctx.worktrees.stats(row)).toEqual({ ahead: 0, diffstat: '', dirty: false });
+
+      commit(api.cwd, 'api.txt', 'api\n');
+      commit(api.cwd, 'app.txt', lines({ 4: 'L4 api' }));
+      writeFileSync(join(api.cwd, 'base.txt'), 'keep\ndrop\nend\nwip\n');
+      const work = (await ctx.orch.changes.of(api.id))!;
+      expect(work).toMatchObject({ baseSha: main, dirty: true, rounds: [{ index: 1, state: 'active', baseSha: main }] });
+      expect(brief(work.files)).toEqual([
+        ['api.txt', 'added', 1, 0, 'API'],
+        ['app.txt', 'modified', 1, 1, 'API'],
+        ['base.txt', 'modified', 1, 0, 'API'],
+      ]);
+      expect(await ctx.worktrees.ownCommits(row)).toBe(2);
+      // Main moving on again (and fetched) changes nothing.
+      mainMovesOn(ctx, 1);
+      expect((await ctx.orch.changes.of(api.id))!.baseSha).toBe(main);
+
+      // Mustered, its delivery starts there too: the feature's changes put only its files down to it,
+      // and the feature's own diff leaves out the main it brought in.
+      git(api.cwd, 'checkout', '-q', '--', 'base.txt');
+      const { merged } = await ctx.orch.muster(parent, [api.id]);
+      expect(merged).toEqual(['API']);
+      expect(ctx.store.deliveriesOf(parent.id)).toMatchObject([{ forkCommit: main }]);
+      const feature = (await ctx.orch.changes.of(parent.id))!;
+      expect(brief(feature.files)).toEqual([
+        ['api.txt', 'added', 1, 0, 'API'],
+        ['app.txt', 'modified', 1, 1, 'API'],
+      ]);
+      expect(feature.baseSha).toBe(main);
+    });
+
+    it('leaves out the feature branch moving on, merged into an agent or not', async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      const docs = await writer(ctx, parent, 'Docs');
+      commit(api.cwd, 'api.txt', 'api\n');
+      commit(docs.cwd, 'docs.txt', 'docs\n');
+      expect((await ctx.orch.muster(parent, [api.id])).merged).toEqual(['API']);
+      const home = ctx.store.worktreeOf(parent.id)!;
+      expect(brief((await ctx.orch.changes.of(docs.id))!.files)).toEqual([['docs.txt', 'added', 1, 0, 'Docs']]);
+
+      git(docs.cwd, 'merge', '-q', '--no-edit', home.branch);
+      commit(docs.cwd, 'more.txt', 'more\n');
+      const changes = (await ctx.orch.changes.of(docs.id))!;
+      expect(changes.baseSha).toBe(git(home.path, 'rev-parse', 'HEAD'));
+      expect(brief(changes.files)).toEqual([
+        ['docs.txt', 'added', 1, 0, 'Docs'],
+        ['more.txt', 'added', 1, 0, 'Docs'],
+      ]);
+      expect(await ctx.worktrees.stats(ctx.store.worktreeOf(docs.id)!)).toMatchObject({ diffstat: '2 files changed, 2 insertions(+)' });
+    });
+
+    it("leaves out main merged into the feature branch from its diff", async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      commit(api.cwd, 'api.txt', 'api\n');
+      await ctx.orch.muster(parent, [api.id]);
+      const home = ctx.store.worktreeOf(parent.id)!;
+      mainMovesOn(ctx, 3);
+      git(home.path, 'merge', '-q', '--no-edit', 'origin/main');
+      const feature = (await ctx.orch.changes.of(parent.id))!;
+      expect(feature.baseSha).toBe(git(ctx.checkout, 'rev-parse', 'origin/main'));
+      expect(brief(feature.files)).toEqual([['api.txt', 'added', 1, 0, 'API']]);
+    });
+    it('shows only committed work while a merge or rebase is under way, never commits it as a checkpoint, and refuses to muster it (n4)', async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      const row = ctx.store.worktreeOf(api.id)!;
+      commit(api.cwd, 'api.txt', 'api\n');
+      commit(api.cwd, 'base.txt', 'agent\n');
+      git(ctx.checkout, 'pull', '-q');
+      commit(ctx.checkout, 'base.txt', 'main\n');
+      mainMovesOn(ctx, 1);
+      expect(() => git(api.cwd, 'merge', '--no-edit', 'origin/main')).toThrow();
+
+      const merging = (await ctx.orch.changes.of(api.id))!;
+      expect(merging).toMatchObject({ inProgress: 'merge', dirty: false, headSha: git(api.cwd, 'rev-parse', 'HEAD') });
+      expect(merging.files.map((f) => f.path)).toEqual(['api.txt', 'base.txt']);
+      expect(await ctx.worktrees.checkpoint(row, 'test')).toBe(false);
+      expect(git(api.cwd, 'rev-parse', '-q', '--verify', 'MERGE_HEAD')).toBeTruthy();
+      expect(await ctx.worktrees.dirty(row.path)).toBe(true);
+      await expect(ctx.orch.muster(parent, [api.id])).rejects.toThrow(/merge in progress/);
+      git(api.cwd, 'merge', '--abort');
+
+      // A rebase stopped part way: its branch, not the detached HEAD, is its work.
+      const tip = git(api.cwd, 'rev-parse', 'HEAD');
+      expect(() => git(api.cwd, 'rebase', 'origin/main')).toThrow();
+      const rebasing = (await ctx.orch.changes.of(api.id))!;
+      expect(rebasing).toMatchObject({ inProgress: 'rebase', headSha: tip });
+      expect(rebasing.files.map((f) => f.path)).toEqual(['api.txt', 'base.txt']);
+      expect(await ctx.worktrees.checkpoint(row, 'test')).toBe(false);
+      git(api.cwd, 'rebase', '--abort');
+      expect((await ctx.orch.changes.of(api.id))!.inProgress).toBeUndefined();
+    });
+
+    it('keeps an agent its work when its branch is pushed anywhere, and muster takes it', async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      commit(api.cwd, 'api.txt', 'api\n');
+      git(api.cwd, 'push', '-q', 'origin', 'HEAD:my-pr');
+      git(api.cwd, 'fetch', '-q', 'origin');
+      const row = ctx.store.worktreeOf(api.id)!;
+      expect(brief((await ctx.orch.changes.of(api.id))!.files)).toEqual([['api.txt', 'added', 1, 0, 'API']]);
+      expect(await ctx.worktrees.ownCommits(row)).toBe(1);
+      expect(await ctx.worktrees.stats(row)).toMatchObject({ ahead: 1, diffstat: '1 file changed, 1 insertion(+)' });
+      expect((await ctx.orch.muster(parent, [api.id])).merged).toEqual(['API']);
+      expect(brief((await ctx.orch.changes.of(parent.id))!.files)).toEqual([['api.txt', 'added', 1, 0, 'API']]);
+    });
+
+    it("keeps the feature its work when a sibling's branch holding it is pushed", async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      commit(api.cwd, 'api.txt', 'api\n');
+      await ctx.orch.muster(parent, [api.id]);
+      // Cut after the muster, its branch has API's work; pushed, it is on a remote branch.
+      const docs = await writer(ctx, parent, 'Docs', 'standalone');
+      commit(docs.cwd, 'docs.txt', 'docs\n');
+      git(docs.cwd, 'push', '-q', 'origin', 'HEAD:docs-pr');
+      git(docs.cwd, 'fetch', '-q', 'origin');
+      expect(brief((await ctx.orch.changes.of(parent.id))!.files)).toEqual([['api.txt', 'added', 1, 0, 'API']]);
+      expect(brief((await ctx.orch.changes.of(docs.id))!.files)).toEqual([['docs.txt', 'added', 1, 0, 'Docs']]);
+    });
+
+    it('keeps the feature its changes once it has landed on a local base, and once that is pushed', async () => {
+      const ctx = start();
+      const parent = ctx.sessions.create();
+      await parent.send('Ship it');
+      await waitFor(() => parent.lastTurn && !parent.working);
+      await ctx.orch.setBase(parent, 'main');
+      const api = await writer(ctx, parent, 'API');
+      commit(api.cwd, 'api.txt', 'api\n');
+      await ctx.orch.muster(parent, [api.id]);
+      const before = (await ctx.orch.changes.of(parent.id))!;
+      expect(brief(before.files)).toEqual([['api.txt', 'added', 1, 0, 'API']]);
+
+      const home = ctx.store.worktreeOf(parent.id)!;
+      git(ctx.checkout, 'merge', '-q', '--no-ff', '-m', 'land', home.branch);
+      commit(ctx.checkout, 'after.txt', 'after\n');
+      const landed = (await ctx.orch.changes.of(parent.id))!;
+      expect(landed.baseSha).toBe(before.baseSha);
+      expect(brief(landed.files)).toEqual([['api.txt', 'added', 1, 0, 'API']]);
+      git(ctx.checkout, 'push', '-q', 'origin', 'main');
+      git(ctx.checkout, 'fetch', '-q', 'origin');
+      expect(brief((await ctx.orch.changes.of(parent.id))!.files)).toEqual([['api.txt', 'added', 1, 0, 'API']]);
+    });
+
+    it('leaves out a newer main merged into an agent, the same base before and after muster', async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      // The feature has work of its own, so its agents' forks are not on main.
+      const seed = await writer(ctx, parent, 'Seed');
+      commit(seed.cwd, 'seed.txt', 'seed\n');
+      await ctx.orch.muster(parent, [seed.id]);
+      const api = await writer(ctx, parent, 'API');
+      const only = await writer(ctx, parent, 'Catch-up');
+      commit(api.cwd, 'api.txt', 'api\n');
+      commit(api.cwd, 'app.txt', lines({ 4: 'L4 api' }));
+      const main = mainMovesOn(ctx, 3);
+      git(api.cwd, 'merge', '-q', '--no-edit', 'origin/main');
+      const changes = (await ctx.orch.changes.of(api.id))!;
+      expect(brief(changes.files)).toEqual([
+        ['api.txt', 'added', 1, 0, 'API'],
+        ['app.txt', 'modified', 1, 1, 'API'],
+      ]);
+      // Diffed against its fork and main merged, a commit Kelpie made (the same one each time).
+      expect([ctx.store.worktreeOf(api.id)!.forkCommit, main]).not.toContain(changes.baseSha);
+      expect((await ctx.orch.changes.of(api.id))!.baseSha).toBe(changes.baseSha);
+      expect(await ctx.worktrees.ownCommits(ctx.store.worktreeOf(api.id)!)).toBe(2);
+
+      // Merging main and nothing else is nothing to show or muster.
+      git(only.cwd, 'merge', '-q', '--no-edit', 'origin/main');
+      expect((await ctx.orch.changes.of(only.id))!.stats.files).toBe(0);
+      expect(await ctx.worktrees.ownCommits(ctx.store.worktreeOf(only.id)!)).toBe(0);
+      await expect(ctx.orch.muster(parent, [only.id])).rejects.toThrow(/nothing to muster/);
+
+      // Mustered, its delivery is diffed from the same base, so its threads keep their round.
+      await ctx.orch.muster(parent, [api.id]);
+      expect(ctx.store.deliveriesOf(parent.id).find((d) => d.sessionId === api.id)).toMatchObject({ forkCommit: changes.baseSha });
+      expect(brief((await ctx.orch.changes.of(api.id))!.files).map((f) => f[0])).toEqual(['api.txt', 'app.txt']);
+    });
+
+    it("leaves out main and the feature's own work when an agent rebases onto a newer main", async () => {
+      const ctx = start();
+      const parent = await roundUp(ctx);
+      const api = await writer(ctx, parent, 'API');
+      commit(api.cwd, 'api.txt', 'api\n');
+      await ctx.orch.muster(parent, [api.id]);
+      const docs = await writer(ctx, parent, 'Docs');
+      commit(docs.cwd, 'docs.txt', 'docs\n');
+      mainMovesOn(ctx, 2);
+      git(docs.cwd, 'rebase', '-q', 'origin/main');
+      expect(git(docs.cwd, 'log', '--format=%s', '-3')).toBe('edit docs.txt\nedit api.txt\nedit upstream-1.txt'.replace('upstream-1', `upstream-${upstream - 1}`));
+      expect(brief((await ctx.orch.changes.of(docs.id))!.files)).toEqual([['docs.txt', 'added', 1, 0, 'Docs']]);
+      expect(await ctx.worktrees.ownCommits(ctx.store.worktreeOf(docs.id)!)).toBe(1);
+    });
+  });
 });

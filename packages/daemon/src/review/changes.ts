@@ -4,7 +4,7 @@ import { isAbsolute, join } from 'node:path';
 import { parsePatch } from 'diff';
 import { LRUCache } from 'lru-cache';
 import type { DeliveryRow, Store } from '@kelpie/store';
-import { forkOf, runGit } from '../worktrees.js';
+import { baseCommit, operationIn, ownBase, runGit, type Operation } from '../worktrees.js';
 import type { AgentRef, ChangedFile, Changes as ChangesView, Round, Side } from './types.js';
 
 /** A whole feature's patch may be this big before every file is sent as too large. */
@@ -29,11 +29,16 @@ export interface View {
   sessionId: string;
   roundUpId: string;
   repo: string;
+  /** What it is diffed against, as named (see `OwnWork.base`): the identity its threads and rounds keep. */
   baseSha: string;
+  /** That base's commit, for git. */
+  base: string;
   headSha: string;
   /** An agent's work under way: its worktree's files are the new side, uncommitted work included. */
   workdir?: string;
   dirty?: boolean;
+  /** A merge or rebase under way in its worktree: the view is of its branch's commits instead. */
+  inProgress?: Operation;
   branch: string;
   baseRef: string;
   checkoutPath?: string;
@@ -166,8 +171,9 @@ export function findLine(content: string, line: number, text: string): number | 
 const safePath = (path: string) => !!path && !isAbsolute(path) && !path.split(/[\\/]/).includes('..') && !path.includes('\0');
 
 /**
- * What changed in a round-up: the feature branch against its base, or one writer's work against the
- * feature branch, as git sees it. Everything here only reads git, so it takes no locks.
+ * What changed in a round-up: the feature branch's own work, or one writer's (from `ownBase`), as git
+ * sees it. Everything here only reads git, but for the objects of the merge bases it makes (see
+ * `baseCommit`), which change no ref; so it takes no locks.
  */
 export class Changes {
   /** Committed diffs, by repo and commits (which never change). */
@@ -204,12 +210,14 @@ export class Changes {
       if (!home || home.kind !== 'home') return 'none';
       const head = await this.revParse(home.repoRoot, `refs/heads/${home.branch}`);
       if (!head) return 'none';
+      const baseSha = await ownBase(home, head);
       return {
         scope: 'feature',
         sessionId,
         roundUpId: session.id,
         repo: home.repoRoot,
-        baseSha: home.baseCommit,
+        baseSha,
+        base: await baseCommit(home.repoRoot, baseSha),
         headSha: head,
         branch: home.branch,
         baseRef: home.baseBranch,
@@ -222,17 +230,20 @@ export class Changes {
     const delivered = this.store.deliveriesOf(session.parentId).filter((d) => d.sessionId === session.id);
     const rounds: Round[] = delivered.map((d, i) => ({ index: i + 1, state: 'mustered', baseSha: d.forkCommit, headSha: d.tipCommit }));
     let workdir: string | undefined;
+    let inProgress: Operation | undefined;
     const onDisk = (row.state === 'active' || row.state === 'creating') && existsSync(row.path);
     if (onDisk) {
-      const head = await this.revParse(row.path, 'HEAD');
+      // Half a merge or rebase isn't its work (yet): what its branch has committed is.
+      inProgress = await operationIn(row.path);
+      const head = inProgress ? await this.revParse(row.repoRoot, `refs/heads/${row.branch}`) : await this.revParse(row.path, 'HEAD');
       if (head) {
-        rounds.push({ index: rounds.length + 1, state: 'active', baseSha: forkOf(row), headSha: head });
-        workdir = row.path;
+        rounds.push({ index: rounds.length + 1, state: 'active', baseSha: await ownBase(row, head), headSha: head });
+        if (!inProgress) workdir = row.path;
       }
     } else if (row.state === 'removed') {
       // Swept off disk, its work not mustered: its branch is the work.
       const tip = await this.revParse(row.repoRoot, `refs/heads/${row.branch}`);
-      if (tip) rounds.push({ index: rounds.length + 1, state: 'active', baseSha: forkOf(row), headSha: tip });
+      if (tip) rounds.push({ index: rounds.length + 1, state: 'active', baseSha: await ownBase(row, tip), headSha: tip });
     }
     if (!rounds.length) return 'none';
     const active = rounds.find((r) => r.state === 'active');
@@ -252,8 +263,10 @@ export class Changes {
       roundUpId: session.parentId,
       repo: row.repoRoot,
       baseSha: picked.baseSha,
+      base: await baseCommit(row.repoRoot, picked.baseSha),
       headSha: picked.headSha,
       ...(live ? { workdir: workdir!, dirty, checkoutPath: workdir! } : {}),
+      ...(picked.state === 'active' && inProgress ? { inProgress, checkoutPath: row.path } : {}),
       branch: row.branch,
       baseRef: row.parentBranch,
       rounds,
@@ -295,6 +308,7 @@ export class Changes {
       baseSha: view.baseSha,
       headSha: view.headSha,
       ...(view.scope === 'agent' ? { dirty: !!view.dirty } : {}),
+      ...(view.inProgress ? { inProgress: view.inProgress } : {}),
       ...(view.checkoutPath ? { checkoutPath: view.checkoutPath } : {}),
       ...(musteredFrom ? { musteredFrom } : {}),
       ...(view.rounds ? { rounds: view.rounds, round: view.round! } : {}),
@@ -374,11 +388,11 @@ export class Changes {
 
   /** The view's files with their patches (those not too large), or 'overflow' if the whole patch is too big to read. */
   private async diff(view: View): Promise<RawFile[] | 'overflow'> {
-    if (view.workdir && view.dirty) return this.workingDiff(view.workdir, view.baseSha);
-    const key = `${view.repo}\0${view.baseSha}..${view.headSha}`;
+    if (view.workdir && view.dirty) return this.workingDiff(view.workdir, view.base);
+    const key = `${view.repo}\0${view.base}..${view.headSha}`;
     const cached = this.diffs.get(key);
     if (cached) return cached;
-    const range = [view.baseSha, view.headSha];
+    const range = [view.base, view.headSha];
     const [stats, status, patch] = await Promise.all([
       runGit(view.repo, [...DIFF, '-z', '--numstat', ...range]),
       runGit(view.repo, [...DIFF, '-z', '--name-status', ...range]),
@@ -392,7 +406,7 @@ export class Changes {
 
   /** Every file of a view with its counts but no patch: when the whole patch was too big. */
   private async list(view: View): Promise<RawFile[]> {
-    const where = view.workdir && view.dirty ? { cwd: view.workdir, range: [view.baseSha] } : { cwd: view.repo, range: [view.baseSha, view.headSha] };
+    const where = view.workdir && view.dirty ? { cwd: view.workdir, range: [view.base] } : { cwd: view.repo, range: [view.base, view.headSha] };
     const [stats, status] = await Promise.all([
       runGit(where.cwd, [...DIFF, '-z', '--numstat', ...where.range]),
       runGit(where.cwd, [...DIFF, '-z', '--name-status', ...where.range]),
@@ -446,10 +460,10 @@ export class Changes {
     if (view.workdir && view.dirty) {
       const tracked = await runGit(view.workdir, [...RAW_PATHS, 'ls-files', '--error-unmatch', '--', file.path]);
       r = tracked.code === 0 || file.status !== 'added'
-        ? await runGit(view.workdir, [...DIFF, '-U3', view.baseSha, ...paths], { maxBuffer: FILE_LIMIT })
+        ? await runGit(view.workdir, [...DIFF, '-U3', view.base, ...paths], { maxBuffer: FILE_LIMIT })
         : await runGit(view.workdir, [...DIFF, '-U3', '--no-index', '--', '/dev/null', file.path], { maxBuffer: FILE_LIMIT });
     } else {
-      r = await runGit(view.repo, [...DIFF, '-U3', view.baseSha, view.headSha, ...paths], { maxBuffer: FILE_LIMIT });
+      r = await runGit(view.repo, [...DIFF, '-U3', view.base, view.headSha, ...paths], { maxBuffer: FILE_LIMIT });
     }
     if (r.overflow) return undefined;
     return chunks(r.stdout)[0];
@@ -457,7 +471,7 @@ export class Changes {
 
   /** The text of one side of a file: the old side at the base, the new at the head (or in the worktree). */
   private async content(view: View, side: Side, path: string, oldPath?: string): Promise<string | null> {
-    if (side === 'deletions') return this.show(view.repo, view.baseSha, oldPath ?? path);
+    if (side === 'deletions') return this.show(view.repo, view.base, oldPath ?? path);
     if (view.workdir) return this.readWorking(view.workdir, path);
     return this.show(view.repo, view.headSha, path);
   }
@@ -526,7 +540,7 @@ export class Changes {
     const key = `${d.forkCommit}..${d.tipCommit}`;
     const cached = this.touched.get(key);
     if (cached) return cached;
-    const r = await runGit(repo, [...RAW_PATHS, 'diff', '--name-only', '-M', '-z', d.forkCommit, d.tipCommit]);
+    const r = await runGit(repo, [...RAW_PATHS, 'diff', '--name-only', '-M', '-z', await baseCommit(repo, d.forkCommit), d.tipCommit]);
     const set = new Set(r.code === 0 ? r.stdout.split('\0').filter(Boolean) : []);
     if (r.code === 0) this.touched.set(key, set);
     return set;
@@ -536,7 +550,7 @@ export class Changes {
     const key = `${d.forkCommit}..${d.tipCommit}`;
     const cached = this.commits.get(key);
     if (cached) return cached;
-    const r = await runGit(repo, ['rev-list', key]);
+    const r = await runGit(repo, ['rev-list', `${await baseCommit(repo, d.forkCommit)}..${d.tipCommit}`]);
     const set = new Set(r.code === 0 ? r.stdout.split('\n').filter(Boolean) : []);
     if (r.code === 0) this.commits.set(key, set);
     return set;

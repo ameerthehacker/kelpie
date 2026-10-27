@@ -29,6 +29,8 @@ export interface Changes {
   headSha?: string;
   /** The agent's diff includes work not yet committed. */
   dirty?: boolean;
+  /** Agent scope: a merge, rebase, cherry-pick or revert under way in its worktree; the files are its branch's committed work. */
+  inProgress?: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
   /** Where the branch is checked out, if it is (for "Open in VS Code"). */
   checkoutPath?: string;
   musteredFrom?: AgentRef[];
