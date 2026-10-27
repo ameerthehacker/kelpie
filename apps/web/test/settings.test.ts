@@ -62,7 +62,7 @@ describe('saving settings', () => {
 
   const setup = () => {
     const client = new QueryClient();
-    client.setQueryData<Settings>(SETTINGS, { maxAgents: 4, autoResume: true });
+    client.setQueryData<Settings>(SETTINGS, { maxAgents: 4, autoResume: true, useUserMcp: false, mcpAllow: [] });
     const save = (patch: SettingsPatch) => new MutationObserver(client, saveSettingsOptions(client)).mutate(patch).catch(() => undefined);
     return { client, save, shown: () => client.getQueryData<Settings>(SETTINGS)?.maxAgents };
   };
@@ -139,7 +139,7 @@ describe('saving settings', () => {
   it('puts a reset’s default in at once: the daemon’s, from limits', async () => {
     const puts = deferredPuts();
     const { client, save, shown } = setup();
-    client.setQueryData<SettingsWithLimits>(SETTINGS, { maxAgents: 9, autoResume: true, limits: { maxAgents: { min: 1, max: 16, default: 6 } } });
+    client.setQueryData<SettingsWithLimits>(SETTINGS, { maxAgents: 9, autoResume: true, useUserMcp: false, mcpAllow: [], limits: { maxAgents: { min: 1, max: 16, default: 6 } } });
     const done = save({ maxAgents: null });
     await flush();
     expect(shown()).toBe(6);
@@ -154,15 +154,15 @@ describe('saving settings', () => {
     const { client, save, shown } = setup();
     const on = settingsStream(client);
     const event = (s: Settings) => on.settings!({ id: '', event: 'settings', data: JSON.stringify(s), retry: undefined });
-    event({ maxAgents: 8, autoResume: true });
+    event({ maxAgents: 8, autoResume: true, useUserMcp: false, mcpAllow: [] });
     expect(shown()).toBe(8);
     const done = save({ maxAgents: 10 });
     await flush();
-    event({ maxAgents: 2, autoResume: true });
+    event({ maxAgents: 2, autoResume: true, useUserMcp: false, mcpAllow: [] });
     expect(shown()).toBe(10);
     puts[0]!.answer(200, { maxAgents: 10 });
     await done;
-    event({ maxAgents: 3, autoResume: true });
+    event({ maxAgents: 3, autoResume: true, useUserMcp: false, mcpAllow: [] });
     expect(shown()).toBe(3);
   });
 

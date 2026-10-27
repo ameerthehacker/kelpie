@@ -13,6 +13,7 @@ import { GitError, type Branch, type Worktrees } from '../worktrees.js';
 import { Changes } from '../review/changes.js';
 import { Reviews, type ReviewClaim } from '../review/reviews.js';
 import { SavedSettings } from '../settings.js';
+import { mcpToolPrefix, type McpServers } from '../mcp-servers.js';
 import { Workbench } from '../workbench.js';
 import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, limitResumed, musterPrompt, orchestratorPrompt, reviewBrief, type WorkPlace } from './prompt.js';
 import { LIMIT_RESUMED } from '../usage-limits.js';
@@ -88,6 +89,8 @@ export interface OrchestratorOptions {
   worktrees?: Worktrees;
   /** Connected services (GitHub): every harness Kelpie starts gets their env, e.g. GH_TOKEN. */
   connections?: Pick<Connections, 'env'>;
+  /** The person's own MCP servers: those they allow go to agents while the setting is on (never to the orchestrator). */
+  mcpServers?: Pick<McpServers, 'ensure' | 'forAgents'>;
 }
 
 /** The harness mode an agent runs in: plan mode only stops new work that writes, so readers (and work under way) run in auto. */
@@ -195,6 +198,9 @@ export class Orchestrator implements SessionHooks {
   private readonly startingBrowser = new Set<string>();
   private readonly worktrees: Worktrees | undefined;
   private readonly connections: Pick<Connections, 'env'> | undefined;
+  private readonly mcpServers: Pick<McpServers, 'ensure' | 'forAgents'> | undefined;
+  /** The person's servers already warned about for having Kelpie's own server's name. */
+  private readonly warnedMcp = new Set<string>();
   /** Each session's connection env, read by `prepare` (it can wait) for the `specFor` right after it. */
   private readonly envs = new Map<string, Record<string, string>>();
   private warnedUnfenced = false;
@@ -208,6 +214,7 @@ export class Orchestrator implements SessionHooks {
     this.store = opts.store;
     this.worktrees = opts.worktrees;
     this.connections = opts.connections;
+    this.mcpServers = opts.mcpServers;
     // A process left running in a worktree that goes would outlive its directory.
     if (this.worktrees) this.worktrees.beforeRemove = (row) => this.release(row);
     this.mcpUrl = opts.mcpUrl;
@@ -259,13 +266,17 @@ export class Orchestrator implements SessionHooks {
       const place = this.placeOf(session);
       // Every agent may read the scratch folder (its brief's files are there); writers may leave files in it.
       const scratchRules = scratch ? (session.writes ? FILE_TOOLS : ['Read']).map((t) => `${t}(${under(scratch)})`) : [];
+      const own = this.personsServers(session);
       return {
         tools: session.writes ? DEFAULT_TOOLS : READ_ONLY_TOOLS,
         // No blanket Bash: auto mode's checks or accept-edits' approvals decide what runs.
         permissionMode: agentMode(session.mode),
         // Its kelpie tools are its review threads and the Workbench, as itself.
         allowedTools: [...scratchRules, 'mcp__kelpie'],
-        mcpConfig,
+        // The person's own servers, beside Kelpie's (still only these: --strict-mcp-config). None of
+        // their tools is allowed by rule; an ask rule sends every call to the person, auto mode too.
+        mcpConfig: own ? [...mcpConfig, JSON.stringify({ mcpServers: own })] : mcpConfig,
+        ...(own ? { askTools: Object.keys(own).map((name) => `mcp__${mcpToolPrefix(name)}`) } : {}),
         ...(scratch ? { addDirs: [scratch] } : {}),
         ...connected,
         // The person's one browser, shared by every agent given it: only when the orchestrator asked.
@@ -368,6 +379,32 @@ export class Orchestrator implements SessionHooks {
       await this.worktrees.ensure(row);
     }
     if (this.connections) this.envs.set(session.id, await this.connections.env());
+    // A claude.ai connector's entry comes from asking Claude Code, once per repo.
+    const settings = this.settings.get();
+    if (session.role === 'agent' && settings.useUserMcp && settings.mcpAllow.length && this.mcpServers) {
+      await this.mcpServers.ensure(this.roundUpCwd(session), settings.mcpAllow);
+    }
+  }
+
+  /** The repo checkout of an agent's round-up: whose project and local MCP servers it gets (a worktree has none of its own in ~/.claude.json). */
+  private roundUpCwd(agent: Session): string {
+    return (agent.parentId && this.sessions?.get(agent.parentId)?.cwd) || agent.cwd;
+  }
+
+  /**
+   * The person's MCP servers an agent gets, as an `mcpServers` map: those they allow, while the
+   * setting is on. Undefined for none. One named like Kelpie's own server is never given (its tools
+   * would pass for Kelpie's, which agents may use without asking).
+   */
+  private personsServers(agent: Session): Record<string, object> | undefined {
+    const settings = this.settings.get();
+    if (!this.mcpServers || !settings.useUserMcp || !settings.mcpAllow.length) return undefined;
+    const { servers, blocked } = this.mcpServers.forAgents(this.roundUpCwd(agent), settings.mcpAllow);
+    for (const name of blocked.filter((n) => !this.warnedMcp.has(n))) {
+      this.warnedMcp.add(name);
+      console.warn(`kelpie: not giving agents your MCP server "${name}": Kelpie's own server has that name. Rename it in Claude Code to use it.`);
+    }
+    return Object.keys(servers).length ? servers : undefined;
   }
 
   /**

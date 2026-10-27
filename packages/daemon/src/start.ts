@@ -8,6 +8,7 @@ import lockfile from 'proper-lockfile';
 import { Connections } from './connectors/connector.js';
 import { GitHubConnector } from './connectors/github.js';
 import { canStart, checkHarnesses, shared, type HarnessStatus } from './harness-status.js';
+import { McpServers } from './mcp-servers.js';
 import { Orchestrator } from './orchestrator/orchestrator.js';
 import { createApp } from './server.js';
 import { SessionManager } from './sessions.js';
@@ -79,11 +80,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     ...(opts.maxWorktrees ? { max: opts.maxWorktrees } : {}),
   });
   const connections = new Connections([new GitHubConnector({ store })]);
+  const mcpServers = new McpServers();
   const orchestrator = new Orchestrator({
     store,
     mcpUrl: `http://127.0.0.1:${opts.port}/mcp`,
     worktrees,
     connections,
+    mcpServers,
     ...(opts.maxAgents ? { maxAgents: opts.maxAgents } : {}),
   });
   const sessions = new SessionManager({
@@ -111,6 +114,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     orchestrator,
     checkHarnesses: harnessStatus,
     connections,
+    mcpServers,
     ...(opts.staticDir ? { staticDir: opts.staticDir } : {}),
     ...(opts.maxUploadBytes ? { maxUploadBytes: opts.maxUploadBytes } : {}),
   });

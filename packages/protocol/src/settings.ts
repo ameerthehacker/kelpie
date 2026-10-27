@@ -22,16 +22,41 @@ export const MaxAgents = z
 
 export const AutoResume = z.boolean({ error: 'autoResume must be true or false' });
 
+export const UseUserMcp = z.boolean({ error: 'useUserMcp must be true or false' });
+
+/** An MCP server's name as Claude Code has it: `github`, `claude.ai Claude Docs`. */
+export const McpServerName = z
+  .string({ error: 'mcpAllow must be a list of server names' })
+  .trim()
+  .min(1, { error: 'an MCP server name cannot be empty' })
+  .max(200, { error: 'an MCP server name can be at most 200 characters' });
+
+/** The person's MCP servers agents may have; each name once. */
+export const McpAllow = z
+  .array(McpServerName, { error: 'mcpAllow must be a list of server names' })
+  .max(200, { error: 'mcpAllow can name at most 200 servers' })
+  .transform((names) => [...new Set(names)]);
+
 export const Settings = z.object({
   /** Agents one round-up may have working at once. */
   maxAgents: MaxAgents,
   /** Resume work that stopped at the usage limit once the limit resets. */
   autoResume: AutoResume,
+  /**
+   * Give sub-agents the person's own Claude Code MCP servers (those in `mcpAllow`). Never the
+   * orchestrator; each of their tool calls is asked about.
+   */
+  useUserMcp: UseUserMcp,
+  /** The servers (by name) agents get while `useUserMcp` is on. */
+  mcpAllow: McpAllow,
 });
 export type Settings = z.infer<typeof Settings>;
 
 /** What `PUT /api/settings` takes: only the fields given change, and null puts a setting's default back. */
-export const SettingsPatch = z.object({ maxAgents: MaxAgents.nullable(), autoResume: AutoResume.nullable() }).partial().strict();
+export const SettingsPatch = z
+  .object({ maxAgents: MaxAgents.nullable(), autoResume: AutoResume.nullable(), useUserMcp: UseUserMcp.nullable(), mcpAllow: McpAllow.nullable() })
+  .partial()
+  .strict();
 export type SettingsPatch = z.infer<typeof SettingsPatch>;
 
 /**
@@ -43,7 +68,7 @@ export interface SettingsWithLimits extends Settings {
 }
 
 /** Settings' defaults, for a setting never saved. */
-export const DEFAULT_SETTINGS: Settings = { maxAgents: MAX_AGENTS.default, autoResume: true };
+export const DEFAULT_SETTINGS: Settings = { maxAgents: MAX_AGENTS.default, autoResume: true, useUserMcp: false, mcpAllow: [] };
 
 /** A number clamped into the agent limit's range, rounded down; the default for anything else. */
 export const clampMaxAgents = (n: unknown): number =>

@@ -59,6 +59,8 @@ export function claudeArgs(spec: RunSpec): string[] {
   if (spec.resume) args.push('--resume', spec.resume);
   if (spec.allowedTools?.length) args.push('--allowedTools', ...spec.allowedTools);
   if (spec.disallowedTools?.length) args.push('--disallowedTools', ...spec.disallowedTools);
+  // An ask rule beats allow rules and auto mode's own checks: each such call comes to us (can_use_tool).
+  if (spec.askTools?.length) args.push('--settings', JSON.stringify({ permissions: { ask: spec.askTools } }));
   if (spec.addDirs?.length) args.push('--add-dir', ...spec.addDirs);
   if (spec.appendSystemPrompt) args.push('--append-system-prompt', spec.appendSystemPrompt);
   if (spec.mcpConfig?.length) args.push('--mcp-config', ...spec.mcpConfig);

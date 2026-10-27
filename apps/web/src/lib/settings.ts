@@ -1,6 +1,6 @@
 import type { EventSourceMessage } from '@microsoft/fetch-event-source';
 import type { MutationOptions, QueryClient } from '@tanstack/react-query';
-import { MAX_AGENTS, MaxAgents, type Settings, type SettingsPatch, type SettingsWithLimits } from '@kelpie/protocol';
+import { DEFAULT_SETTINGS, MAX_AGENTS, MaxAgents, type Settings, type SettingsPatch, type SettingsWithLimits } from '@kelpie/protocol';
 import { api } from './api.js';
 
 export { MAX_AGENTS, type Settings, type SettingsPatch, type SettingsWithLimits };
@@ -31,6 +31,13 @@ export const workingLabel = (working: number, limit: number | undefined): string
 /** The default a reset puts back: the daemon's (it may be KELPIE_MAX_AGENTS), or Kelpie's own until that is known. */
 export const defaultAgents = (s: Partial<SettingsWithLimits> | undefined): number => s?.limits?.maxAgents.default ?? MAX_AGENTS.default;
 
+/** The settings with a change in, as shown before the daemon answers: null is the setting's default. */
+export function withPatch<S extends Partial<SettingsWithLimits>>(s: S, patch: SettingsPatch): S {
+  const next: Record<string, unknown> = { ...s };
+  for (const [key, v] of Object.entries(patch) as [keyof Settings, unknown][]) next[key] = v ?? (key === 'maxAgents' ? defaultAgents(s) : DEFAULT_SETTINGS[key]);
+  return next as S;
+}
+
 /**
  * Saving settings: shown in the cache at once, put back if the daemon refuses. Saves share a scope,
  * so they go out one at a time, in order; only the last one's answer lands, or an earlier answer
@@ -46,8 +53,7 @@ export function saveSettingsOptions(queryClient: QueryClient): MutationOptions<S
     onMutate: async (patch) => {
       await queryClient.cancelQueries({ queryKey: SETTINGS });
       const before = queryClient.getQueryData<SettingsWithLimits>(SETTINGS);
-      if (before && 'maxAgents' in patch) queryClient.setQueryData<SettingsWithLimits>(SETTINGS, { ...before, maxAgents: patch.maxAgents ?? defaultAgents(before) });
-      if (before && 'autoResume' in patch) queryClient.setQueryData<SettingsWithLimits>(SETTINGS, (s) => s && { ...s, autoResume: patch.autoResume ?? true });
+      if (before) queryClient.setQueryData<SettingsWithLimits>(SETTINGS, withPatch(before, patch));
       return { before };
     },
     onError: (_err, _patch, context) => {

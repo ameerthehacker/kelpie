@@ -19,6 +19,11 @@ export interface RunSpec {
   /** Tools that run without a permission prompt (e.g. 'Bash', 'Bash(git:*)'). */
   allowedTools?: string[];
   disallowedTools?: string[];
+  /**
+   * Tools (rules) asked about every time, whatever the permission mode and any allow rule say: in
+   * auto mode the CLI would otherwise decide MCP tool calls itself, without asking us.
+   */
+  askTools?: string[];
   /** Directories outside `cwd` the harness may work in too (e.g. the round-up's scratch folder). */
   addDirs?: string[];
   appendSystemPrompt?: string;

@@ -1,6 +1,6 @@
 import { ChevronRightIcon, FilePenLineIcon, GlobeIcon, ShieldQuestionIcon, TerminalIcon } from 'lucide-react';
 import { useState, type ComponentType, type FormEvent } from 'react';
-import { broaderRule, type ApprovalGroup } from '@/lib/approvals';
+import { broaderRule, ruleLabel, type ApprovalGroup } from '@/lib/approvals';
 import { cn } from '@/lib/utils';
 
 const TOOL_ICON: Record<string, ComponentType<{ className?: string; strokeWidth?: number }>> = {
@@ -78,7 +78,7 @@ export function ApprovalRow({ group, selected, busy, onAnswer, onSelect, canReme
             {group.tool} · {agents}
             {n > 1 && ` · ${n} requests`}
           </span>
-          {canRemember && broader && <span className="text-mu2 truncate text-[11px]">For the round-up: allows {broader}</span>}
+          {canRemember && broader && <span className="text-mu2 truncate text-[11px]">For the round-up: allows {ruleLabel(broader)}</span>}
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
           <button type="button" disabled={busy} onClick={() => onAnswer({ decision: 'allow' })} className={cn(btn, 'bg-acc text-accfg')}>
@@ -89,7 +89,7 @@ export function ApprovalRow({ group, selected, busy, onAnswer, onSelect, canReme
               type="button"
               disabled={busy}
               onClick={() => onAnswer({ decision: 'allow', remember: true })}
-              title={`Allow ${group.rule} for every agent in this round-up, now and later`}
+              title={`Allow ${ruleLabel(group.rule)} for every agent in this round-up, now and later`}
               className={cn(btn, 'bg-chip text-fg2 hover:bg-raise')}
             >
               Allow for round-up

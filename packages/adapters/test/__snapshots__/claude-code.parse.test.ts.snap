@@ -2469,6 +2469,205 @@ Note: The user's next message may contain a correction or preference. Pay close 
 ]
 `;
 
+exports[`fixture mcp-ask > matches the golden snapshot 1`] = `
+[
+  {
+    "data": {
+      "cwd": "/work/repo",
+      "harnessSessionId": "500f8bf3-6056-4f0b-8acf-1e150cf215ba",
+      "harnessVersion": "2.1.308",
+      "model": "claude-haiku-5-5",
+      "permissionMode": "auto",
+      "tools": [
+        "Read",
+        "mcp__claude_ai_Claude_Docs__batch",
+        "mcp__claude_ai_Claude_Docs__create",
+        "mcp__claude_ai_Claude_Docs__delete",
+        "mcp__claude_ai_Claude_Docs__export",
+        "mcp__claude_ai_Claude_Docs__guide",
+        "mcp__claude_ai_Claude_Docs__query",
+        "mcp__claude_ai_Claude_Docs__read",
+        "mcp__claude_ai_Claude_Docs__update",
+      ],
+    },
+    "harness": "claude-code",
+    "id": "run:0",
+    "kind": "session.started",
+    "rawLine": 1,
+    "runId": "run",
+    "seq": 0,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "redacted": true,
+      "text": "",
+    },
+    "harness": "claude-code",
+    "id": "run:1",
+    "kind": "thinking",
+    "rawLine": 4,
+    "runId": "run",
+    "seq": 1,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": true,
+    },
+    "harness": "claude-code",
+    "id": "run:2",
+    "kind": "activity",
+    "rawLine": 4,
+    "runId": "run",
+    "seq": 2,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "callId": "toolu_01CtzPg7EcWtKYFwdeBAZ84g",
+      "category": "mcp",
+      "input": {},
+      "name": "mcp__claude_ai_Claude_Docs__guide",
+      "title": "claude_ai_Claude_Docs/guide",
+    },
+    "harness": "claude-code",
+    "id": "run:3",
+    "kind": "tool.started",
+    "rawLine": 5,
+    "runId": "run",
+    "seq": 3,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "callId": "toolu_01CtzPg7EcWtKYFwdeBAZ84g",
+      "input": {},
+      "requestId": "0c28082c-5873-4d40-b3ad-a48404a8b539",
+      "rule": "mcp__claude_ai_Claude_Docs__guide",
+      "title": "claude.ai Claude Docs › guide",
+      "tool": "mcp__claude_ai_Claude_Docs__guide",
+    },
+    "harness": "claude-code",
+    "id": "run:4",
+    "kind": "permission.requested",
+    "rawLine": 6,
+    "runId": "run",
+    "seq": 4,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "callId": "toolu_01CtzPg7EcWtKYFwdeBAZ84g",
+      "name": "mcp__claude_ai_Claude_Docs__guide",
+      "ok": true,
+      "output": "docs guides — menu (you sent no \`items\`). Next call, before your first docs call: guide {"items": ["topic.index"]} — \`items\` is a real JSON array of item strings, several at once is normal. Served items:
+- topic.instructions — how to create and edit docs (the server instructions) — read first when no docs instructions or skill text is in context
+- topic.index — the docs skill text: create a doc, edit a doc, read, comments, ids, chips; it names when the other topics matter — START HERE
+- topic.editing — Editing — beyond the basics
+- topic.tabs — Tabs (add, order, nest, rename, link)
+- topic.comments — Comments (list, act on them, comment on words, reply)
+- topic.charts — Simple chart
+- topic.chart-definition — For a chart that already exists as a \`definition\`; new charts are hand-rolled …
+- topic.diagram — Diagram
+- topic.uploads — Uploads: files and images
+- topic.sharing — The app around a doc (share, export, find it)
+- topic.skill — Renamed: this topic is now topic.index. Call guide( items = ["topic.index"] ).
+- refusal.<code> — the fix for a refusal you got (<code> = the reason word the deny named).",
+      "truncated": false,
+    },
+    "harness": "claude-code",
+    "id": "run:5",
+    "kind": "tool.finished",
+    "rawLine": 8,
+    "runId": "run",
+    "seq": 5,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "resetsAt": "2026-10-27T04:20:00.000Z",
+      "status": "allowed",
+      "utilization": 0.37,
+      "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-27T04:20:00.000Z",
+          "utilization": 0.37,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.38,
+        },
+      },
+    },
+    "harness": "claude-code",
+    "id": "run:6",
+    "kind": "rate_limit",
+    "rawLine": 9,
+    "runId": "run",
+    "seq": 6,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "role": "assistant",
+      "text": "done",
+    },
+    "harness": "claude-code",
+    "id": "run:7",
+    "kind": "message",
+    "rawLine": 10,
+    "runId": "run",
+    "seq": 7,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "cacheReadTokens": 14277,
+      "cacheWriteTokens": 2128,
+      "costUsd": 0.00063977,
+      "inputTokens": 4,
+      "outputTokens": 142,
+    },
+    "harness": "claude-code",
+    "id": "run:8",
+    "kind": "usage",
+    "rawLine": 11,
+    "runId": "run",
+    "seq": 8,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "durationMs": 3768,
+      "numTurns": 2,
+      "resultText": "done",
+      "status": "completed",
+    },
+    "harness": "claude-code",
+    "id": "run:9",
+    "kind": "turn.ended",
+    "rawLine": 11,
+    "runId": "run",
+    "seq": 9,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": false,
+    },
+    "harness": "claude-code",
+    "id": "run:10",
+    "kind": "activity",
+    "rawLine": 11,
+    "runId": "run",
+    "seq": 10,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+]
+`;
+
 exports[`fixture multi-turn > matches the golden snapshot 1`] = `
 [
   {

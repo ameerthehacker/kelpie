@@ -1,5 +1,5 @@
 import { questionsOf, type EventData, type EventKind, type KelpieEvent, type TodoItem, type UsageWindow } from '@kelpie/protocol';
-import { applyTodoTool, fileDelta, flattenContent, isChromeTool, toolCategory, toolTitle } from './tools.js';
+import { applyTodoTool, fileDelta, flattenContent, isChromeTool, isMcpTool, mcpTitle, toolCategory, toolTitle } from './tools.js';
 
 type Obj = Record<string, any>;
 
@@ -167,8 +167,10 @@ export class ClaudeCodeParser {
     this.permissions.set(requestId, { input, callId: typeof req.tool_use_id === 'string' ? req.tool_use_id : undefined });
     const questions = tool === 'AskUserQuestion' ? questionsOf(input) : undefined;
     // A question is the person's to answer each time: never a rule to allow by. None for Claude in Chrome
-    // either: allowing one action in the person's browser allows no other.
-    const rule = questions || isChromeTool(tool) ? undefined : suggestedRule(req.permission_suggestions);
+    // either: allowing one action in the person's browser allows no other. An MCP tool's rule is the
+    // one tool, never its whole server (an ask rule leaves the CLI suggesting none).
+    const mcp = isMcpTool(tool);
+    const rule = questions || isChromeTool(tool) ? undefined : mcp ? tool : suggestedRule(req.permission_suggestions);
     // The plan is in the call, or (when the model wrote it out first) its latest message.
     const plan = tool === 'ExitPlanMode' ? (typeof input.plan === 'string' && input.plan.trim() ? input.plan : this.lastText) || undefined : undefined;
     const title =
@@ -178,7 +180,9 @@ export class ClaudeCodeParser {
           ? questions.length === 1
             ? questions[0]!.question
             : `Answer ${questions.length} questions`
-          : toolTitle(tool, input, this.cwd) || String(req.description ?? tool);
+          : mcp
+            ? mcpTitle(tool, input, typeof req.mcp_server?.name === 'string' ? req.mcp_server.name : undefined)
+            : toolTitle(tool, input, this.cwd) || String(req.description ?? tool);
     return [
       this.emit(
         'permission.requested',

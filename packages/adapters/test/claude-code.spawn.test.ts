@@ -135,4 +135,16 @@ describe('claudeArgs', () => {
     // Its tools come with the flag, not from an allow rule.
     expect(on).not.toContain('--allowedTools');
   });
+
+  it('always loads only the MCP servers it is given, and asks about every call to the ones named', () => {
+    const own = JSON.stringify({ mcpServers: { 'claude.ai Claude Docs': { type: 'claudeai-proxy', url: 'https://api.anthropic.com/v1/pages/mcp', id: 'mcpsrv_1' } } });
+    const args = claudeArgs({ ...spec, mcpConfig: ['{"mcpServers":{"kelpie":{}}}', own], askTools: ['mcp__claude_ai_Claude_Docs'] });
+    expect(args).toContain('--strict-mcp-config');
+    expect(args.slice(args.indexOf('--mcp-config') + 1, args.indexOf('--mcp-config') + 3)).toEqual(['{"mcpServers":{"kelpie":{}}}', own]);
+    // An ask rule (flag settings): it beats allow rules and auto mode's own checks.
+    expect(JSON.parse(args[args.indexOf('--settings') + 1]!)).toEqual({ permissions: { ask: ['mcp__claude_ai_Claude_Docs'] } });
+    // Without any, no settings flag at all.
+    expect(claudeArgs(spec)).not.toContain('--settings');
+    expect(claudeArgs(spec)).toContain('--strict-mcp-config');
+  });
 });

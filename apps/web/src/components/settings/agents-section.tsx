@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
 import { useSaveSettings, useSettings } from '@/hooks/use-settings';
+import { UserMcp } from '@/components/settings/user-mcp';
 import { defaultAgents, MAX_AGENTS, PAGE_STEP, parseAgents, stepAgents, type SettingsPatch } from '@/lib/settings';
 
 /** How long "Saved" stays after the last change lands. */
@@ -209,7 +210,7 @@ function AutoResume({ value }: { value: boolean }) {
   );
 }
 
-/** Settings › Agents: how many of a round-up's agents may work at once, and whether work resumes after a usage limit. */
+/** Settings › Agents: how many of a round-up's agents may work at once, whether work resumes after a usage limit, and which of the person's MCP servers they get. */
 export function AgentsSection() {
   const { data, error } = useSettings();
   return (
@@ -224,6 +225,7 @@ export function AgentsSection() {
       {!data && !error && <Skeleton className="h-[104px] w-full rounded-[20px]" />}
       {data && <ParallelAgents value={data.maxAgents} fallback={defaultAgents(data)} />}
       {data && <AutoResume value={data.autoResume ?? true} />}
+      {data && <UserMcp value={data.useUserMcp ?? false} allow={data.mcpAllow ?? []} />}
     </section>
   );
 }

@@ -470,7 +470,7 @@ describe('orchestrator round-ups', () => {
     const updates: unknown[] = [];
     ctx.sessions.watch((u) => u.type === 'settings' && updates.push(u.settings));
     ctx.orch.settings.update({ maxAgents: 3 });
-    expect(updates).toEqual([{ maxAgents: 3, autoResume: true }]);
+    expect(updates).toEqual([{ maxAgents: 3, autoResume: true, useUserMcp: false, mcpAllow: [] }]);
     const notice = await waitFor(() => jsonLines<{ text: string }>(stdin).find((l) => l.text.includes('raised the limit')));
     expect(notice.text).toContain('The person raised the limit to 3 agents working at once. 2 working now, so one more can start');
     expect(ctx.store.undelivered(parent.id).map((r) => r.source)).toEqual(['kelpie']);

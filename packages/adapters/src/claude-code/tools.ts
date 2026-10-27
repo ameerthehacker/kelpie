@@ -82,6 +82,27 @@ export function toolTitle(name: string, input: Obj, cwd: string | undefined): st
   return name;
 }
 
+/** A tool from an MCP server other than Claude in Chrome (the person's own, or Kelpie's). */
+export const isMcpTool = (name: string) => name.startsWith('mcp__') && !isChromeTool(name);
+
+const ARG_CHARS = 40;
+
+/**
+ * An MCP call as the person is asked about it: which server, which tool, and its arguments in
+ * short (`claude.ai Claude Docs › read · id: "abc", depth: 2`). `server` is the server's own name,
+ * as the CLI gives it; without it, the tool name's part.
+ */
+export function mcpTitle(name: string, input: Obj, server?: string): string {
+  const [, prefix = '', ...rest] = name.split('__');
+  const args = Object.entries(input ?? {})
+    .map(([k, v]) => {
+      const text = typeof v === 'string' ? JSON.stringify(v) : (JSON.stringify(v) ?? String(v));
+      return `${k}: ${text.length > ARG_CHARS ? text.slice(0, ARG_CHARS - 1) + '…' : text}`;
+    })
+    .join(', ');
+  return oneLine(`${server || prefix} › ${rest.join('__') || name}${args ? ` · ${args}` : ''}`, 160);
+}
+
 /** What a Claude in Chrome call does in the person's browser: where it goes, what it clicks, types or runs. */
 function chromeTitle(tool: string, input: Obj): string {
   const line = (s: string) => oneLine(`Chrome: ${s}`.replace(/\s+/g, ' '));
