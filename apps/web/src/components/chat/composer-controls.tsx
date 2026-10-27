@@ -1,5 +1,5 @@
 import { CheckIcon, ChevronDownIcon, ChevronsRightIcon, ClipboardListIcon, FilePenLineIcon, GitBranchIcon, LockIcon } from 'lucide-react';
-import { useState, type ComponentType, type KeyboardEvent } from 'react';
+import { useId, useState, type ComponentType, type KeyboardEvent } from 'react';
 import type { Effort, Mode } from '@kelpie/protocol';
 import { DropdownMenu as DropdownMenuPrimitive } from 'radix-ui';
 import { HarnessMark } from '@/components/harness-mark';
@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import type { Branch } from '@/hooks/use-branches';
-import { EFFORT_INFO, EFFORTS, effortSuffix } from '@/lib/effort';
+import { EFFORT_INFO, EFFORTS, effortOf, effortSuffix } from '@/lib/effort';
 import { harnessOf, modelLabel } from '@/lib/harnesses';
 import { MODE_INFO } from '@/lib/modes';
 import { cn } from '@/lib/utils';
@@ -57,13 +57,13 @@ export function HarnessMenu({
 }) {
   const models = model && !MODELS.includes(model) ? [...MODELS, model] : MODELS;
   const name = harnessOf(harness).name;
-  const suffix = effortSuffix(effort);
+  const known = effortOf(effort);
+  const suffix = effortSuffix(known);
+  const modelName = model ? modelLabel(model) : 'Default model';
+  const effortName = known ? `${EFFORT_INFO[known].label} effort` : 'Default effort';
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        className={cn(chip, 'pl-[7px]')}
-        aria-label={`${name}, ${model ? modelLabel(model) : 'default model'}, ${effort ? `${EFFORT_INFO[effort].label.toLowerCase()} effort` : 'default effort'}`}
-      >
+      <DropdownMenuTrigger className={cn(chip, 'pl-[7px]')} aria-label={`${name}, ${modelName.toLowerCase()}, ${effortName.toLowerCase()}`} title={`${modelName} · ${effortName}`}>
         <HarnessMark harness={harness} />
         <span className="truncate">
           <span className="hidden @xl:inline">{name} · </span>
@@ -90,7 +90,7 @@ export function HarnessMenu({
           ))}
         </DropdownMenuRadioGroup>
         <DropdownMenuSeparator />
-        <EffortPicker effort={effort} onEffort={onEffort} note={effortNote} />
+        <EffortPicker effort={known} onEffort={onEffort} note={effortNote} />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -103,7 +103,9 @@ export function HarnessMenu({
  */
 function EffortPicker({ effort, onEffort, note }: { effort: '' | Effort; onEffort: (e: '' | Effort) => void; note: string | undefined }) {
   const [shown, setShown] = useState<'' | Effort | undefined>();
-  const hint = EFFORT_INFO[shown ?? effort].hint;
+  const hint = EFFORT_INFO[shown ?? effortOf(effort)].hint;
+  const labelId = useId();
+  const hintId = useId();
   const step = (e: KeyboardEvent<HTMLDivElement>) => {
     const to = e.key === 'ArrowRight' ? e.currentTarget.nextElementSibling : e.key === 'ArrowLeft' ? e.currentTarget.previousElementSibling : null;
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
@@ -113,9 +115,16 @@ function EffortPicker({ effort, onEffort, note }: { effort: '' | Effort; onEffor
   return (
     <div className="px-1 pb-1">
       <DropdownMenuLabel className={cn(heading, 'flex justify-between px-1')}>
-        Effort {note && <span className="font-normal tracking-normal normal-case">{note}</span>}
+        <span id={labelId}>Effort</span> {note && <span className="font-normal tracking-normal normal-case">{note}</span>}
       </DropdownMenuLabel>
-      <DropdownMenuRadioGroup value={effort} onValueChange={(v) => onEffort(v as '' | Effort)} className="bg-chip flex gap-0.5 rounded-lg p-0.5" onPointerLeave={() => setShown(undefined)}>
+      <DropdownMenuRadioGroup
+        value={effort}
+        onValueChange={(v) => onEffort(v as '' | Effort)}
+        aria-labelledby={labelId}
+        aria-describedby={hintId}
+        className="bg-chip flex gap-0.5 rounded-lg p-0.5"
+        onPointerLeave={() => setShown(undefined)}
+      >
         {EFFORTS.map((e) => (
           <DropdownMenuPrimitive.RadioItem
             key={e}
@@ -133,7 +142,8 @@ function EffortPicker({ effort, onEffort, note }: { effort: '' | Effort; onEffor
           </DropdownMenuPrimitive.RadioItem>
         ))}
       </DropdownMenuRadioGroup>
-      <p aria-live="polite" className="text-mu mt-1.5 min-h-8 px-1 text-xs leading-snug">
+      {/* Read with the row (aria-describedby), not announced on every hover. */}
+      <p id={hintId} className="text-mu mt-1.5 min-h-8 px-1 text-xs leading-snug">
         {hint}
       </p>
     </div>
