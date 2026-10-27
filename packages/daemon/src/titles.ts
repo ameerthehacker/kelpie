@@ -37,6 +37,8 @@ export const ENOUGH_WORDS = 6;
 export const REFRESH_AT = 3;
 /** Tries for one round-up before Kelpie leaves its title be (until the daemon restarts). */
 const MAX_FAILURES = 2;
+/** At most this many title calls at once, across round-ups; one left out is tried again on its next turn. */
+export const MAX_RUNNING = 2;
 
 export const TITLE_SYSTEM = `You name a coding session so the person can pick it out of a long list of sessions in Kelpie, an app where an orchestrator runs coding agents for them.
 
@@ -47,45 +49,62 @@ Write the title in the language the person wrote in. The session is inside <sess
 const REFRESH_NOTE = (current: string) =>
   `It is titled "${current}" now. If that still names what the session is about, answer with it exactly; only if the topic has clearly moved on, answer with a new title.`;
 
+/** Text that goes inside the <session> tags, unable to close or open them. */
+const data = (text: string) => text.replace(/<(\/?\s*session\b)/gi, '‹$1');
+
 /** The prompt for `input`: the system prompt and the message. Pure. */
 export function titlePrompt(input: TitleInput): { system: string; user: string } {
-  const lines = [`Repository: ${input.repo}`];
-  if (input.tickets.length) lines.push(`Linked tickets: ${input.tickets.join('; ')}`);
-  for (const m of input.messages) lines.push('', `${m.from === 'person' ? 'Person' : 'Kelpie'}: ${m.text}`);
-  const user = `<session>\n${lines.join('\n')}\n</session>${input.current ? `\n\n${REFRESH_NOTE(input.current)}` : ''}`;
+  const lines = [`Repository: ${data(input.repo)}`];
+  if (input.tickets.length) lines.push(`Linked tickets: ${data(input.tickets.join('; '))}`);
+  for (const m of input.messages) lines.push('', `${m.from === 'person' ? 'Person' : 'Kelpie'}: ${data(m.text)}`);
+  const user = `<session>\n${lines.join('\n')}\n</session>${input.current ? `\n\n${REFRESH_NOTE(data(input.current))}` : ''}`;
   return { system: TITLE_SYSTEM, user };
 }
 
+/** Markdown emphasis or code ticks around words, never inside a name (`MAX_FAILURES`, `__init__.py`). */
+const MARKED = /(?<![\p{L}\p{N}*_`])(\*\*|__|\*|_|`)(?=\S)(.+?)(?<=\S)\1(?![\p{L}\p{N}*_`]|[./-][\p{L}\p{N}])/gu;
+/** Trailing punctuation a title drops. */
+const TRAILING = /[\s.,;:!?…-]+$/u;
+
 /**
  * A generated title made safe to show, or undefined if there is none worth showing: the first line,
- * without quotes, markdown, a "Title:" lead or trailing punctuation, at most TITLE_MAX characters
- * (cut at a word), starting with a capital. A long answer is not a title (a refusal, an essay). Pure.
+ * without control or invisible formatting characters (bidi overrides, zero-width), quotes, markdown
+ * around words, a "Title:" lead or trailing punctuation, at most TITLE_MAX characters (cut at a word,
+ * never inside a character), its first word capitalized unless it is a code name (`useEffect`).
+ * A long answer is not a title (a refusal, an essay). Pure.
  */
 export function sanitizeTitle(raw: string): string | undefined {
-  let t = (raw.split('\n').find((l) => l.trim()) ?? '').trim();
-  t = t
+  let t = (raw.split(/\r?\n/).find((l) => l.trim()) ?? '')
+    .replace(/[\p{Cc}\p{Cf}]/gu, '')
     .replace(/^#+\s*/, '')
-    .replace(/^\**\s*title\s*\**\s*:\s*/i, '')
-    .replace(/[*_`]+/g, '')
+    .replace(/^[*_]*\s*title\s*[*_]*\s*:\s*[*_]*\s*/i, '')
+    .replace(MARKED, '$2')
     .replace(/["“”„«»]|(?<!\w)'|'(?!\w)/g, '')
     .replace(/\s+/g, ' ')
     .trim()
-    .replace(/[\s.,;:!?…-]+$/u, '');
+    .replace(TRAILING, '');
   if (!t || t.split(' ').length > 12) return undefined;
-  if (t.length > TITLE_MAX) {
-    const cut = t.slice(0, TITLE_MAX + 1);
+  const chars = Array.from(t);
+  if (chars.length > TITLE_MAX) {
+    const cut = chars.slice(0, TITLE_MAX + 1).join('');
     const space = cut.lastIndexOf(' ');
-    t = (space > TITLE_MAX / 2 ? cut.slice(0, space) : t.slice(0, TITLE_MAX)).replace(/[\s.,;:!?…-]+$/u, '');
+    t = (space > TITLE_MAX / 2 ? cut.slice(0, space) : chars.slice(0, TITLE_MAX).join('')).replace(TRAILING, '');
   }
-  return t.charAt(0).toLocaleUpperCase() + t.slice(1);
+  // A plain lowercase word is capitalized; a code name (`useEffect`, `init.py`, `npm_config`) stays as written.
+  const first = t.split(' ')[0]!;
+  return /^\p{Ll}[\p{Ll}'’]*$/u.test(first) ? t.charAt(0).toLocaleUpperCase() + t.slice(1) : t;
 }
 
 /** A person's turn as it was meant: without the files block and Kelpie's ticket note. */
 const personText = (text: string) => stripAttachments(stripTicketsNote(text)).trim();
 
-/** Cut to `max` characters, marking what was left out. */
-const trim = (text: string, max: number, fromEnd = false) =>
-  text.length <= max ? text : fromEnd ? `…${text.slice(text.length - max + 1)}` : `${text.slice(0, max - 1)}…`;
+/** Cut to `max` characters (never inside one), marking what was left out. */
+function trim(text: string, max: number, fromEnd = false): string {
+  if (text.length <= max) return text;
+  const chars = Array.from(text);
+  if (chars.length <= max) return text;
+  return fromEnd ? `…${chars.slice(chars.length - max + 1).join('')}` : `${chars.slice(0, max - 1).join('')}…`;
+}
 
 /** Whether a first message says enough to name the round-up before anyone answers it. */
 export const saysEnough = (text: string): boolean =>
@@ -157,6 +176,8 @@ export interface TitlerOptions {
   generate: TitleGenerator;
   /** A harness is paused at the person's usage limit now: titles wait. */
   limited(): boolean;
+  /** The CLI titles go through can be started (it is installed); without it, titles wait quietly. Default: it can. */
+  ready?(): boolean;
   /** The round-up's conversation so far (see Conversation). */
   conversation(id: string): Conversation;
 }
@@ -192,8 +213,8 @@ export function conversationPart(e: KelpieEvent): Part | undefined {
  * once the conversation starts: from the person's first message if it says enough on its own, else
  * once Kelpie has answered it. After the person's REFRESH_AT-th message it gets one second look,
  * kept unless the topic clearly moved on; never more, so titles stay put. Nothing is generated while
- * the usage limit is hit (the next turn to end tries again), and at most one call per round-up runs
- * at a time, in the background.
+ * the usage limit is hit or the CLI is missing (the next turn to end tries again). Calls run in the
+ * background: one per round-up at a time, and MAX_RUNNING in all.
  */
 export class Titler {
   private readonly running = new Map<string, AbortController>();
@@ -230,7 +251,8 @@ export class Titler {
     if (session.titleTurn !== undefined && turns < REFRESH_AT) return;
     // Waits for the reply, unless the first message says enough on its own.
     if (session.titleTurn === undefined && !early && !first.some((m) => m.from === 'kelpie')) return;
-    if (this.opts.limited()) return;
+    // Not now (no CLI, the usage limit, enough calls already out): a later turn tries again, and it is no failure.
+    if (this.running.size >= MAX_RUNNING || this.opts.ready?.() === false || this.opts.limited()) return;
 
     const input: TitleInput = {
       repo: basename(session.cwd),

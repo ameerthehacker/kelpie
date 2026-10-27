@@ -95,6 +95,52 @@ describe('the round-up title', () => {
     expect(renames).toEqual([['r', '']]);
   });
 
+  it('does not take a title Claude gives while the field is open for the person’s own', () => {
+    render({ id: 'r', title: 'Lets cp this https://github…', titleSource: 'message' });
+    edit();
+    // Claude names it meanwhile; the person leaves the field as it was.
+    render({ id: 'r', title: 'Copy feature-dev plugin', titleSource: 'ai' });
+    key(field()!, 'Enter');
+    expect(renames).toEqual([]);
+    expect(host.querySelector('h1')!.textContent).toBe('Copy feature-dev plugin');
+  });
+
+  it('saves once when the field closes twice (Enter, then a blur as it goes)', () => {
+    render({ id: 'r', title: 'Mine', titleSource: 'person' });
+    edit();
+    const input = field()!;
+    type('');
+    key(input, 'Enter');
+    // A browser may blur the field as it is removed; that is no second save, and no clear.
+    act(() => void input.dispatchEvent(new FocusEvent('blur')));
+    act(() => void input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })));
+    expect(renames).toEqual([['r', '']]);
+  });
+
+  it('does not clear the person’s title when the field goes on Escape', () => {
+    render({ id: 'r', title: 'Mine', titleSource: 'person' });
+    edit();
+    const input = field()!;
+    type('');
+    key(input, 'Escape');
+    act(() => void input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })));
+    expect(renames).toEqual([]);
+  });
+
+  it('opens for editing with Space too', () => {
+    render({ id: 'r', title: 'Sentry client init', titleSource: 'ai' });
+    key(shown()!, ' ');
+    expect(field()).not.toBeNull();
+  });
+
+  it('does not fade when it shows another round-up’s title', () => {
+    render({ id: 'r1', title: 'Sentry client init', titleSource: 'ai' });
+    render({ id: 'r2', title: 'Checkout API', titleSource: 'ai' });
+    expect(shown()!.firstElementChild!.className).not.toContain('fade-in');
+    render({ id: 'r2', title: 'Checkout API retries', titleSource: 'ai' });
+    expect(shown()!.firstElementChild!.className).toContain('fade-in');
+  });
+
   it('saves when the field loses focus', () => {
     render({ id: 'r', title: 'Sentry client init', titleSource: 'ai' });
     edit();

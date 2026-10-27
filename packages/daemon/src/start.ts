@@ -89,6 +89,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     connections,
     ...(opts.maxAgents ? { maxAgents: opts.maxAgents } : {}),
   });
+  // As of the last harness check: `claude` is there to start.
+  let claudeFound = false;
   const sessions = new SessionManager({
     hooks: orchestrator,
     store,
@@ -98,6 +100,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     // What may run without asking is settled per session (the orchestrator's specFor, saved rules); anything else asks.
     defaults: opts.model ? { model: opts.model } : {},
     ...(opts.titles === false ? {} : { titles: opts.titles ?? claudeTitles() }),
+    // Titles through `claude` wait until a harness check has found it (one runs at start), so a machine
+    // without it is not tried, and does not log a failure, for every round-up.
+    ...(opts.titles === undefined ? { titlesReady: () => claudeFound } : {}),
   });
   orchestrator.attach(sessions);
 
@@ -108,6 +113,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   let recovery: Promise<void> | undefined;
   const harnessStatus = shared(async () => {
     const statuses = await checkHarnesses();
+    const claude = statuses.find((s) => s.harness === 'claude-code');
+    claudeFound = !!claude && canStart(claude);
     if (reconciled && !recovery && statuses.every(canStart)) recovery = orchestrator.recover().catch((err) => console.error('kelpie: recovery failed', err));
     return statuses;
   });

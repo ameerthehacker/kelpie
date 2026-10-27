@@ -239,6 +239,8 @@ export interface SessionManagerOptions {
   limitTiming?: Partial<LimitTiming>;
   /** Names top-level round-ups once their conversation starts (see Titler). Without it, they keep their first message. */
   titles?: TitleGenerator;
+  /** Whether the CLI `titles` goes through can be started now (e.g. the last harness check found it). Default: it can. */
+  titlesReady?: () => boolean;
 }
 
 interface SessionContext {
@@ -908,7 +910,8 @@ export class Session {
    * gives it back its first message, and AI titles resume.
    */
   rename(title: string): void {
-    if (this.row.parentId) return this.update({ title });
+    // A sub-agent keeps a name: its orchestrator gave it one, and there is no other to go back to.
+    if (this.row.parentId) return title ? this.update({ title }) : undefined;
     this.ctx.titler?.cancel(this.id);
     if (title) return this.update({ title, titleSource: 'person' });
     const first = this.ctx.store.firstEvents(this.id, ['message'], 50).map(conversationPart).find((m) => m?.from === 'person');
@@ -1176,6 +1179,7 @@ export class SessionManager {
     if (opts.titles) {
       this.ctx.titler = new Titler({
         generate: opts.titles,
+        ...(opts.titlesReady ? { ready: opts.titlesReady } : {}),
         // The person's usage limit is hit (a pause Kelpie will resume, its reset still ahead): a title waits for
         // the next turn to end after it resets. A pause left to the person, or past its reset, says nothing about now.
         limited: () =>
