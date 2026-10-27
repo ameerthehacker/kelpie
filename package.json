@@ -11,6 +11,7 @@
     "build": "turbo run build",
     "typecheck": "turbo run typecheck && tsc -p .",
     "test": "vitest run",
+    "test:zones": "tsx scripts/test-zones.ts",
     "kelpie:run": "tsx --conditions=kelpie-src scripts/run.ts",
     "capture:claude": "tsx --conditions=kelpie-src scripts/capture-claude.ts",
     "kelpie:serve": "tsx --conditions=kelpie-src packages/daemon/src/main.ts",
