@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -15,7 +15,7 @@ const LOCAL = { host: '127.0.0.1:7317' };
 afterEach(() => vi.restoreAllMocks());
 
 /** Where agents' stdio servers start (Kelpie's own empty directory). */
-const NEUTRAL = '/kelpie-home/mcp-cwd';
+const NEUTRAL = join(tmp('kelpie-mcp-home-'), 'mcp-cwd');
 
 const SECRETS = ['ghp_SECRET_TOKEN', 'sk-SECRET', 's3cret-env', 'QUERYSECRET', 'mcpsrv_SECRETID', 'ARGSECRET'];
 
@@ -122,7 +122,10 @@ describe("the person's MCP servers", () => {
     const list = mcp.list(repo);
     // In full, values too (they are the repo's), with what they'd take from the person's environment flagged.
     expect(find(list, 'project', 'web').runs).toEqual(['https://mcp.example/x', 'headersHelper: sh ./token.sh', 'header Authorization: ${TOKEN}', 'oauth: {"clientId":"c"}']);
-    expect(find(list, 'project', 'web').warnings).toEqual(['Fills in ${TOKEN} from your environment: that value goes wherever this server sends it.']);
+    expect(find(list, 'project', 'web').warnings).toEqual([
+      'Fills in ${TOKEN} from your environment: that value goes wherever this server sends it.',
+      "Its headers helper is a command run in the agent's folder; the files it uses aren't pinned.",
+    ]);
     expect(find(list, 'project', 'cli').runs).toEqual([`node 'a b.js' 'it'\\''s'`, 'env NODE_OPTIONS=--require ./x.js']);
     // Nothing is cut short.
     const long = 'x'.repeat(5000);
@@ -139,7 +142,9 @@ describe("the person's MCP servers", () => {
     expect(jsonLines(argsFile)).toHaveLength(0);
     await mcp.refresh(repo);
     const [run] = jsonLines<{ args: string[]; cwd: string }>(argsFile);
-    expect(run!.cwd).toBe(repo);
+    // Started from Kelpie's empty, read-only directory, never the repo.
+    expect(run!.cwd).toBe(NEUTRAL);
+    expect(statSync(NEUTRAL).mode & 0o777).toBe(0o500);
     expect(run!.args).not.toContain('--strict-mcp-config');
     // Only the person's own settings: Claude Code loads no project (or local) MCP servers, nor the repo's hooks.
     expect(run!.args[run!.args.indexOf('--setting-sources') + 1]).toBe('user');
@@ -209,7 +214,7 @@ describe('allowing servers by what they are', () => {
     expect(mcp.forAgents(repo, [github, db, docs]).servers).toEqual({
       github: GITHUB,
       // A stdio server starts in Kelpie's empty directory, its env as written.
-      db: { type: 'stdio', command: '/bin/sh', args: ['-c', 'cd -- "$1" || exit 1; shift; exec "$@"', 'kelpie-mcp', NEUTRAL, 'db-mcp'], env: { PASSWORD: 'ghp_SECRET_TOKEN' } },
+      db: { type: 'stdio', command: '/bin/sh', args: ['-c', 'cd -- "$1" || exit 1; unset OLDPWD; shift; exec "$@"', 'kelpie-mcp', NEUTRAL, 'db-mcp'], env: { PASSWORD: 'ghp_SECRET_TOKEN' } },
       'claude.ai Claude Docs': CONNECTOR,
     });
 
@@ -371,7 +376,7 @@ describe('fingerprints', () => {
 });
 
 describe('how stdio servers start', () => {
-  const IN_DIR = ['-c', 'cd -- "$1" || exit 1; shift; exec "$@"', 'kelpie-mcp', NEUTRAL];
+  const IN_DIR = ['-c', 'cd -- "$1" || exit 1; unset OLDPWD; shift; exec "$@"', 'kelpie-mcp', NEUTRAL];
 
   it("start in Kelpie's empty directory, never the agent's, with the repo's paths made absolute", () => {
     const { repo, mcp, claudeJson } = fixture();
@@ -389,7 +394,7 @@ describe('how stdio servers start', () => {
     expect(servers.pinned).toEqual({ type: 'stdio', command: '/bin/sh', args: [...IN_DIR, 'npx', '-y', '@scope/pkg@1.2.3'] });
     // A pinned package and files the repo pins are said; nothing about the pinned npx.
     expect(find(list, 'user', 'pinned').warnings).toBeUndefined();
-    expect(find(list, 'project', 'repoTool').warnings).toEqual(['Runs tool.js from the repo: if it changes, the server needs allowing again.']);
+    expect(find(list, 'project', 'repoTool').warnings).toEqual(['Runs tool.js from the repo: if it changes, the server needs allowing again. Only that file is pinned, not what it imports (other files, node_modules).']);
   });
 
   it("pins the repo's files a server runs: changing one makes it no longer allowed", () => {
@@ -446,6 +451,143 @@ describe('config files that are not plain files', () => {
       rmSync(path);
     }
     expect(jsonLines(argsFile)).toHaveLength(0);
+  });
+});
+
+describe('the check, and where servers start', () => {
+  it("starts the person's servers from the empty directory: a repo's planted node_modules/.bin never runs", async () => {
+    const { repo, claudeJson, argsFile } = fixture();
+    mkdirSync(join(repo, 'node_modules', '.bin'), { recursive: true });
+    writeFileSync(join(repo, 'package.json'), '{"name":"r","version":"1.0.0"}');
+    const marker = join(repo, 'PWNED');
+    writeFileSync(join(repo, 'node_modules', '.bin', 'fake-mcp-pkg'), `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+    // A user server run through npx, as the reviewer's repro: from the repo, npx finds the repo's bin.
+    writeFileSync(claudeJson, JSON.stringify({ mcpServers: { fake: { command: 'npx', args: ['--no', 'fake-mcp-pkg'] } } }));
+    const control = spawnSync('npx', ['--no', 'fake-mcp-pkg'], { cwd: repo });
+    expect(control.status).toBe(0);
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+
+    const mcp = new McpServers({ claudeJson, bin: FAKE, neutralDir: NEUTRAL, env: { FAKE_MCP_STATUS: '[]', FAKE_MCP_ARGS_FILE: argsFile, FAKE_MCP_START: claudeJson } });
+    await mcp.refresh(repo);
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(jsonLines<{ cwd: string }>(argsFile)[0]!.cwd).toBe(NEUTRAL);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('makes the empty directory again if a server wrote to it or it was made writable', async () => {
+    const { repo, mcp, claudeJson } = fixture();
+    const config = JSON.parse(readFileSync(claudeJson, 'utf8'));
+    const grant = grantFor(find(mcp.list(repo), 'local', 'db'));
+    mcp.forAgents(repo, [grant]);
+    expect(statSync(NEUTRAL).mode & 0o777).toBe(0o500);
+    chmodSync(NEUTRAL, 0o700);
+    writeFileSync(join(NEUTRAL, 'package.json'), '{}');
+    mkdirSync(join(NEUTRAL, 'node_modules'));
+    mcp.forAgents(repo, [grant]);
+    expect(readdirSync(NEUTRAL)).toEqual([]);
+    expect(statSync(NEUTRAL).mode & 0o777).toBe(0o500);
+    expect(config).toBeDefined();
+  });
+
+  it('never starts servers in a directory inside a project (a KELPIE_HOME in the repo): a temp one instead, with a warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { repo, claudeJson } = fixture();
+    const inRepo = join(repo, '.kelpie', 'mcp-cwd');
+    const mcp = new McpServers({ claudeJson, neutralDir: inRepo });
+    const grant = grantFor(find(mcp.list(repo), 'local', 'db'));
+    const args = mcp.forAgents(repo, [grant]).servers.db!.args as string[];
+    const dir = args[3]!;
+    expect(dir).not.toBe(inRepo);
+    expect(dir.startsWith(join(tmpdir(), 'kelpie-mcp-cwd-'))).toBe(true);
+    expect(existsSync(inRepo)).toBe(false);
+    expect(warn.mock.calls.some(([m]) => String(m).includes('inside'))).toBe(true);
+  });
+});
+
+describe('what a repo server runs, and pinning it', () => {
+  const project = (repo: string, servers: object) => writeFileSync(join(repo, '.mcp.json'), JSON.stringify({ mcpServers: servers }));
+
+  it('refuses $ in a repo server’s command line, and says why', () => {
+    const { repo, mcp } = fixture();
+    project(repo, {
+      pwd: { command: 'node', args: ['${PWD}/x.js'] },
+      oldpwd: { command: 'sh', args: ['-c', 'cd "$OLDPWD" && node x.js'] },
+      cmd: { command: '$HOME/bin/srv' },
+      fine: { command: 'node', args: ['x.js'], env: { TOKEN: '${GH_TOKEN}' } },
+    });
+    const list = mcp.list(repo);
+    for (const name of ['pwd', 'oldpwd', 'cmd']) {
+      expect(find(list, 'project', name).blocked).toMatch(/uses \$/);
+      expect(mcp.forAgents(repo, [grantFor(find(list, 'project', name))]).servers).toEqual({});
+    }
+    // `$` in its env is flagged, not refused: it doesn't decide what runs or where.
+    expect(find(list, 'project', 'fine').blocked).toBeUndefined();
+    // The person's own servers may use it: theirs to write.
+    expect(blockedReason('x', 'user')).toBeUndefined();
+  });
+
+  it('hashes a big file in full: rewritten at the same size and mtime, it is told apart', () => {
+    const { repo, mcp } = fixture();
+    const big = join(repo, 'big.js');
+    writeFileSync(big, Buffer.alloc(17 << 20, 'a'));
+    const { mtime } = statSync(big);
+    project(repo, { big: { command: 'node', args: ['big.js'] } });
+    const before = find(mcp.list(repo), 'project', 'big');
+    expect(before.blocked).toBeUndefined();
+    const b = Buffer.alloc(17 << 20, 'a');
+    b[12 << 20] = 0x62;
+    writeFileSync(big, b);
+    utimesSync(big, mtime, mtime);
+    expect(find(mcp.list(repo), 'project', 'big').fingerprint).not.toBe(before.fingerprint);
+  });
+
+  it('hashes each file once per listing, and calls servers too large to pin past the budget', () => {
+    const { repo, mcp } = fixture();
+    writeFileSync(join(repo, 'big.js'), Buffer.alloc(1 << 20, 'a'));
+    // 300 servers all running one 1 MB file: hashed once, so listing is quick.
+    project(repo, Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`s${i}`, { command: 'node', args: ['./big.js'] }])));
+    let started = Date.now();
+    const list = mcp.list(repo).servers.filter((s) => s.scope === 'project');
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(new Set(list.map((s) => s.fingerprint)).size).toBe(1);
+    expect(list.every((s) => !s.blocked)).toBe(true);
+
+    // 80 different 1 MB files are more than 64 MB: those past it are too large to pin, and not given.
+    for (let i = 0; i < 80; i++) writeFileSync(join(repo, `f${i}.js`), Buffer.alloc(1 << 20, i));
+    project(repo, Object.fromEntries(Array.from({ length: 80 }, (_, i) => [`s${i}`, { command: 'node', args: [`f${i}.js`] }])));
+    started = Date.now();
+    const many = mcp.list(repo).servers.filter((s) => s.scope === 'project');
+    expect(Date.now() - started).toBeLessThan(3000);
+    const tooLarge = many.filter((s) => s.blocked?.startsWith('Too large to pin'));
+    expect(tooLarge.length).toBeGreaterThan(0);
+    expect(many.length - tooLarge.length).toBeLessThanOrEqual(64);
+    expect(mcp.forAgents(repo, [grantFor(tooLarge[0]!)]).servers).toEqual({});
+  });
+
+  it('says plainly that only the files named are pinned, not what they import', () => {
+    const { repo, mcp } = fixture();
+    writeFileSync(join(repo, 'server.js'), 'require("./lib")');
+    project(repo, { s: { command: 'node', args: ['server.js'] } });
+    expect(find(mcp.list(repo), 'project', 's').warnings).toEqual(['Runs server.js from the repo: if it changes, the server needs allowing again. Only that file is pinned, not what it imports (other files, node_modules).']);
+  });
+
+  it('skips stdio servers on Windows, with the reason', () => {
+    const { repo, claudeJson } = fixture();
+    const mcp = new McpServers({ claudeJson, platform: 'win32', neutralDir: NEUTRAL });
+    const list = mcp.list(repo);
+    const db = find(list, 'local', 'db');
+    expect(db.blocked).toMatch(/Windows/);
+    const github = find(list, 'user', 'github');
+    expect(Object.keys(mcp.forAgents(repo, [grantFor(db), grantFor(github)]).servers)).toEqual(['github']);
+  });
+
+  it('writes out hidden characters wherever a command is shown, and refuses names with them', () => {
+    const { repo, mcp } = fixture();
+    project(repo, { s: { command: 'node', args: ['x.js\u202e', 'a\u200bb', 'two\nlines'], env: { A: '\u2066x' } }, ['bad\u200bname']: { command: 'node' } });
+    const list = mcp.list(repo);
+    expect(find(list, 'project', 's').runs).toEqual([`node 'x.js\\u{202e}' 'a\\u{200b}b' 'two\\nlines'`, 'env A=\\u{2066}x']);
+    expect(find(list, 'project', 'bad\u200bname').blocked).toMatch(/hidden or control characters \(bad\\u\{200b\}name\)/);
   });
 });
 

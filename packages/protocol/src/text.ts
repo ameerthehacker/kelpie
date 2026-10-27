@@ -32,3 +32,17 @@ export function attachmentsBlock(files: { path: string; mime?: string | undefine
 export function stripAttachments(text: string): string {
   return text.replace(ATTACHMENTS, '');
 }
+
+/** Characters that show as nothing, or as something else: controls, format ones (bidi, zero-width, BOM), line and paragraph separators. */
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+const NAMED: Record<string, string> = { '\n': '\\n', '\r': '\\r', '\t': '\\t' };
+
+/** Whether text has characters that would hide what it says (see `visible`). */
+export const hasHidden = (text: string): boolean => new RegExp(HIDDEN.source, 'u').test(text);
+
+/**
+ * Text as it may be shown where what is shown must be what runs (a command line, a path): each
+ * hidden character written out, `\n` or `\u{202e}`, so a bidi override or a zero-width space can't
+ * make it read as something else.
+ */
+export const visible = (text: string): string => text.replace(HIDDEN, (c) => NAMED[c] ?? `\\u{${c.codePointAt(0)!.toString(16)}}`);

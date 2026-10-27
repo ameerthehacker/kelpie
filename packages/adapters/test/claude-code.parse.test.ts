@@ -308,6 +308,18 @@ describe('claude-code mapping', () => {
     expect(withArgs!.data.title.length).toBeLessThanOrEqual(160);
   });
 
+  it("writes out hidden characters in an MCP call's title: a bidi override can't make it read as another", () => {
+    const [req] = of(
+      newParser().parse({
+        type: 'control_request',
+        request_id: 'z',
+        request: { subtype: 'can_use_tool', tool_name: 'mcp__gh__run', mcp_server: { name: 'gh\u200b', source: 'dynamic' }, input: { path: 'a\u202etxt.exe' } },
+      }),
+      'permission.requested',
+    );
+    expect(req?.data.title).toBe('gh\\u{200b} › run · path: "a\\u{202e}txt.exe"');
+  });
+
   it('asks about a claude.ai-style server with spaces and dashes in auto mode, by the tool name the CLI gives it', () => {
     // Captured from Claude Code 2.1.308 in auto mode with the ask rule mcp__claude_ai_My_Tiny_-_Echo
     // (mcp-ask-dashes.jsonl): the call arrived as can_use_tool, settled by that rule (flagSettings).

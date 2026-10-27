@@ -179,7 +179,8 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   }
 
   // The person's MCP servers (their Claude Code config, and claude.ai connectors) for round-ups in
-  // `repo`: names, types, scopes, fingerprints and states only, never commands, URLs, env or headers.
+  // `repo`: names, types, scopes, fingerprints, states and warnings. Never a person's server's
+  // command, URL, env or headers; a repo's own server's are shown in full (`runs`: they are the repo's).
   // Only Kelpie's own repo or a round-up's may be named. Reading starts nothing; asking Claude Code
   // again (it starts the person's servers: seconds) is a POST, under the same guard as every write.
   const mcpRepos = () => [...new Set([sessions.defaultCwd, ...sessions.list().map((s) => s.cwd)].map((d) => resolve(d)))];

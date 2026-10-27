@@ -1,5 +1,5 @@
 import { isAbsolute, relative } from 'node:path';
-import type { TodoItem, TodoStatus, ToolCategory } from '@kelpie/protocol';
+import { visible, type TodoItem, type TodoStatus, type ToolCategory } from '@kelpie/protocol';
 
 type Obj = Record<string, any>;
 
@@ -100,7 +100,8 @@ export function mcpTitle(name: string, input: Obj, server?: string): string {
       return `${k}: ${text.length > ARG_CHARS ? text.slice(0, ARG_CHARS - 1) + '…' : text}`;
     })
     .join(', ');
-  return oneLine(`${server || prefix} › ${rest.join('__') || name}${args ? ` · ${args}` : ''}`, 160);
+  // Hidden characters written out (a bidi override in an argument must not make it read as another).
+  return oneLine(visible(`${server || prefix} › ${rest.join('__') || name}${args ? ` · ${args}` : ''}`), 160);
 }
 
 /** What a Claude in Chrome call does in the person's browser: where it goes, what it clicks, types or runs. */
