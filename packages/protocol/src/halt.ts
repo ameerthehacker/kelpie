@@ -20,10 +20,18 @@ const HALT_NOTE = new RegExp(`\\n*<${TAG}>\\n${STOP_LEAD}[^]*?\\n</${TAG}>$`);
 /** A turn's text without Kelpie's note that the person stopped all agents. */
 export const stripHaltNote = (text: string): string => text.replace(HALT_NOTE, '');
 
-/** What the orchestrator is sent once the person resumes what they stopped: it wakes it too. */
-export function haltResumed(resumed: { agentId: string; title: string }[], queued: number): string {
+/** Whether a turn carried that note. */
+export const hasHaltNote = (text: string): boolean => text.includes(`<${TAG}>\n${STOP_LEAD}`);
+
+/**
+ * What the orchestrator is sent once the person resumes what they stopped: it wakes it too. `queued`
+ * of them wait for a free slot first, `paused` for the usage limit to reset.
+ */
+export function haltResumed(resumed: { agentId: string; title: string }[], queued: number, paused = 0): string {
+  const some = (n: number) => (n === resumed.length ? 'They' : `${n} of them`);
+  const waits = `${queued ? ` ${some(queued)} wait for a free slot under the agent limit first.` : ''}${paused ? ` ${some(paused)} wait for the usage limit to reset first.` : ''}`;
   const list = resumed.length
-    ? ` They resumed ${agents(resumed.length)}, which continue where they left off: ${resumed.map((a) => `"${a.title}" (${a.agentId})`).join(', ')}.${queued ? ` ${queued === resumed.length ? 'They' : `${queued} of them`} wait for a free slot under the agent limit first.` : ''} You will be notified when they finish, as usual; don't message or respawn them.`
+    ? ` They resumed ${agents(resumed.length)}, which continue where they left off: ${resumed.map((a) => `"${a.title}" (${a.agentId})`).join(', ')}.${waits} You will be notified when they finish, as usual; don't message or respawn them.`
     : '';
   return `<${TAG}>\nThe person resumed this round-up after stopping all agents: you may start and message agents again.${list} If your own turn was stopped, continue where you left off.\n\nThis message is from Kelpie, not the person.\n</${TAG}>`;
 }

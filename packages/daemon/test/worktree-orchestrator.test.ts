@@ -7,7 +7,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { openStore } from '@kelpie/store';
-import { BaseFixedError, createApp, Orchestrator, SessionManager, ToolError, Worktrees, type Session } from '../src/index.js';
+import { BaseFixedError, createApp, HALTED, Orchestrator, SessionManager, ToolError, Worktrees, type Session } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
 const FIXTURE = join(import.meta.dirname, '../../adapters/fixtures/claude-code/plain.jsonl');
@@ -317,6 +317,45 @@ describe('worktrees for writing agents', () => {
     const results = await Promise.all(['A', 'B', 'C'].map((title) => call('spawn_agent', { title, task: 'x', writes: true })));
     expect(results.filter((r) => !r.error)).toHaveLength(2);
     expect(results.filter((r) => r.error).map((r) => r.error)).toEqual([expect.stringMatching(/2 agents are already working/)]);
+  });
+
+  it('never starts a writer the person stopped everything while its worktree was being made', async () => {
+    const ctx = setup({ FAKE_EVERY_TURN: '1' });
+    const { parent, call } = await orchestrator(ctx);
+    await call('set_base_branch', { branch: 'origin/main' });
+    const make = ctx.worktrees.createAgent.bind(ctx.worktrees);
+    vi.spyOn(ctx.worktrees, 'createAgent').mockImplementation(async (...args) => {
+      const row = await make(...args);
+      await ctx.orch.stopAll(parent, { orchestrator: false });
+      return row;
+    });
+    const { error } = await call('spawn_agent', { title: 'API', task: 'x', writes: true });
+    expect(error).toBe(HALTED);
+    // Nothing of it is left: no agent, and its worktree went with it.
+    expect(ctx.sessions.children(parent.id)).toEqual([]);
+    expect(ctx.store.worktreesOf(parent.id).filter((r) => r.kind === 'agent')).toEqual([]);
+    expect(jsonLines<string[]>(ctx.argsFile)).toHaveLength(1); // only the orchestrator's own process ever started
+  });
+
+  it('starts no Muster once the person stopped everything while Kelpie merged, and says what is left', async () => {
+    const ctx = setup({ FAKE_EVERY_TURN: '1' });
+    const { parent, call } = await orchestrator(ctx);
+    await call('set_base_branch', { branch: 'origin/main' });
+    const a = (await call('spawn_agent', { title: 'A', task: 'x', writes: true })).data.agentId;
+    const b = (await call('spawn_agent', { title: 'B', task: 'x', writes: true })).data.agentId;
+    await waitFor(() => [a, b].every((id) => ctx.store.getSession(id)!.notifiedIdx >= 0));
+    commit(ctx.sessions.get(a)!.cwd, 'app.txt', 'A\n');
+    commit(ctx.sessions.get(b)!.cwd, 'app.txt', 'B\n');
+    const merge = ctx.worktrees.merge.bind(ctx.worktrees);
+    vi.spyOn(ctx.worktrees, 'merge').mockImplementation(async (...args) => {
+      const result = await merge(...args);
+      if (!result.ok) await ctx.orch.stopAll(parent, { orchestrator: false });
+      return result;
+    });
+    const { data, error } = await call('muster_agents', { agentIds: [a, b] });
+    expect(error).toBeUndefined();
+    expect(data).toMatchObject({ merged: ['A'], waiting: { branches: [ctx.store.worktreeOf(b)!.branch], conflicts: ['app.txt'], reason: expect.stringContaining('stopped all agents') } });
+    expect(ctx.sessions.children(parent.id).filter((c) => c.kind === 'muster')).toEqual([]);
   });
 
   it('says what it merged when it cannot start Muster for the rest, and refuses while the feature branch is in use', async () => {

@@ -130,7 +130,7 @@ export const NotePost = z.object({
 export type NotePost = z.infer<typeof NotePost>;
 
 /** An agent's status as the UI groups it (the daemon's agent summary). */
-export type WorkbenchAgentStatus = 'working' | 'needs-approval' | 'paused' | 'done' | 'failed' | 'stopped' | 'idle';
+export type WorkbenchAgentStatus = 'working' | 'needs-approval' | 'halted' | 'paused' | 'done' | 'failed' | 'stopped' | 'idle';
 
 /** One deliverable on a card, as the person sees it. */
 export interface WorkbenchItem {

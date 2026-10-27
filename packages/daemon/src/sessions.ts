@@ -188,6 +188,8 @@ export interface SessionHooks {
    * that the person stopped all its agents. Runs in the transaction that queues the turn.
    */
   notice?(session: Session): string | undefined;
+  /** The person sent the session a turn of their own (e.g. picking up an agent they stopped). Must not throw. */
+  personSent?(session: Session): void;
 }
 
 /** A file sent with a turn, and where the harness finds it. */
@@ -705,7 +707,8 @@ export class Session {
    */
   repair(): void {
     const { store } = this.ctx;
-    const last = store.lastEvent(this.id);
+    // Kelpie's own entries (a halt) are not the run's: what the run last logged says whether it ended.
+    const last = store.lastRunEvent(this.id);
     if (!last || last.kind === 'process.exited') return;
     const busy = store.lastEvent(this.id, 'activity')?.data.busy ?? false;
     let seq = last.seq;
@@ -771,8 +774,13 @@ export class Session {
       for (const t of together) this.ctx.store.enqueue(t.session.id, t.text, t.source, Date.now(), t.meta);
     });
     if (!this.row.title && source === 'user') this.update({ title: titleFrom(text) || titleFrom(files.map((f) => f.name).join(', ')) });
-    // The person picking up an agent they stopped: it is theirs to run again, not left for "Resume all".
-    if (source === 'user' && this.row.parentId && this.haltedAt !== undefined) this.setHalted(undefined);
+    if (source === 'user') {
+      try {
+        this.ctx.hooks.personSent?.(this);
+      } catch (err) {
+        console.error(`session ${this.id}: hook failed`, err);
+      }
+    }
     // Tickets the person links to, in their round-up or to one of its agents, are the round-up's.
     if (found.length) {
       try {
@@ -947,6 +955,8 @@ export class Session {
   /** Stops the current turn; one paused at the usage limit is no longer resumed on its own either. */
   async interrupt(): Promise<void> {
     this.ctx.cancelLimits(this);
+    // Still starting: its turn is on its way, so it is stopped once its process is up.
+    if (this.starting) await this.starting.catch(() => {});
     await this.run?.interrupt();
   }
 

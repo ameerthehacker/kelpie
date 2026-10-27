@@ -3,7 +3,7 @@ import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
 import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
-import { AGENT_HALT_RESUMED, Harness, haltNote, haltResumed, parseTicketUrl, type AgentUpdate, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
+import { AGENT_HALT_RESUMED, Harness, haltNote, haltResumed, hasHaltNote, parseTicketUrl, type AgentUpdate, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import type { Connections } from '../connectors/connector.js';
 import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
@@ -189,6 +189,13 @@ export class Orchestrator implements SessionHooks {
   private readonly waiting = new Map<string, 'restart' | 'limit' | 'halt'>();
   /** Round-ups the person stopped whose orchestrator has not been told yet: it is, with its next turn (see `notice`). */
   private readonly untold = new Set<string>();
+  /**
+   * What an orchestrator paused at the usage limit is to hear of the person resuming its round-up: it
+   * goes with the turn that picks it up after the reset, rather than one the limit would refuse.
+   */
+  private readonly resumedNotes = new Map<string, string>();
+  /** Each round-up's Stop all and Resume all, one at a time: the last one still going. */
+  private readonly haltOps = new Map<string, Promise<unknown>>();
   /**
    * Sub-agents a tool call has cleared to start but whose turn is not sent yet (sending can
    * wait for a process that is stopping). They count as working, so no second call slips past
@@ -446,6 +453,11 @@ export class Orchestrator implements SessionHooks {
 
   /** An orchestrator whose agents the person stopped hears it with its next turn, whoever sends it: once. */
   notice(session: Session): string | undefined {
+    const resumed = this.resumedNotes.get(session.id);
+    if (resumed) {
+      this.resumedNotes.delete(session.id);
+      return resumed;
+    }
     if (!this.untold.delete(session.id) || !session.halted) return undefined;
     return haltNote(this.manager.children(session.id).filter((c) => c.halted).map((c) => ({ agentId: c.id, title: c.title })));
   }
@@ -651,6 +663,8 @@ export class Orchestrator implements SessionHooks {
       const rest = rows.slice(i);
       if (merged.length) this.changesIn(parent.id);
       try {
+        // The person may have stopped everything while Kelpie merged.
+        this.checkHalted(parent);
         this.checkCap(parent);
         this.checkWriter(live.path);
       } catch (err) {
@@ -827,8 +841,66 @@ export class Orchestrator implements SessionHooks {
    * message agents, and it hears why once: with its next turn, or now if its turn goes on. Nothing of
    * it resumes on its own, a restart included.
    */
-  async stopAll(parent: Session, opts: { orchestrator?: boolean } = {}): Promise<{ agents: string[]; orchestrator: boolean }> {
-    if (parent.parentId) throw new Error("stop the agent's round-up, not the agent");
+  stopAll(parent: Session, opts: { orchestrator?: boolean } = {}): Promise<{ agents: string[]; orchestrator: boolean }> {
+    if (parent.parentId) return Promise.reject(new Error("stop the agent's round-up, not the agent"));
+    return this.oneAtATime(parent.id, () => this.halt(parent, opts.orchestrator !== false));
+  }
+
+  /**
+   * The person's "Resume all": the agents they stopped continue where they left off, as many as the
+   * agent limit allows now and the rest as slots free up (one paused at the usage limit once it
+   * resets), and the orchestrator is told once (which picks its own turn up again too).
+   */
+  resumeAll(parent: Session): Promise<{ resumed: string[]; queued: string[] }> {
+    if (parent.parentId) return Promise.reject(new Error("resume the agent's round-up, or the agent on its own"));
+    return this.oneAtATime(parent.id, () => this.unhalt(parent));
+  }
+
+  /**
+   * Resumes one agent the person stopped. The last of them resumes the whole round-up (its
+   * orchestrator may work again); before that, the orchestrator stays stopped.
+   */
+  resumeAgent(agent: Session): Promise<{ resumed: string[]; queued: string[] }> {
+    const parent = agent.parentId ? this.manager.get(agent.parentId) : undefined;
+    if (!parent) return Promise.reject(new Error('only an agent of a round-up can be resumed on its own'));
+    return this.oneAtATime(parent.id, async () => {
+      if (!agent.halted) throw new Error('it was not stopped by you');
+      if (parent.halted && this.manager.children(parent.id).every((c) => c === agent || !c.halted)) return this.unhalt(parent);
+      const { queued } = await this.resumeAgents([agent]);
+      parent.note('halt', { action: 'resumed', agents: 1 });
+      return { resumed: [agent.id], queued };
+    });
+  }
+
+  /**
+   * The person sent an agent a turn of their own. One they stopped is picked up by it, as if they had
+   * resumed it (the last of them resumes the round-up); one in line to resume needs Kelpie's turn no more.
+   */
+  personSent(session: Session): void {
+    if (session.role !== 'agent' || !session.parentId) return;
+    if (this.waiting.delete(session.id)) session.clearResumePending();
+    if (session.halted === undefined) return;
+    session.setHalted(undefined);
+    const parent = this.manager.get(session.parentId);
+    if (!parent) return;
+    void this.oneAtATime(parent.id, async () => {
+      if (parent.halted && !this.manager.children(parent.id).some((c) => c.halted)) await this.unhalt(parent, [session]);
+      else parent.note('halt', { action: 'resumed', agents: 1 });
+    }).catch((err) => console.error(`round-up ${parent.id}: could not resume`, err));
+  }
+
+  /** Runs `op` once whatever Stop all or Resume all of the round-up is going has finished. */
+  private oneAtATime<T>(roundUpId: string, op: () => Promise<T>): Promise<T> {
+    const next = (this.haltOps.get(roundUpId) ?? Promise.resolve()).then(op, op);
+    this.haltOps.set(roundUpId, next);
+    const done = () => {
+      if (this.haltOps.get(roundUpId) === next) this.haltOps.delete(roundUpId);
+    };
+    next.then(done, done);
+    return next;
+  }
+
+  private async halt(parent: Session, own: boolean): Promise<{ agents: string[]; orchestrator: boolean }> {
     const now = Date.now();
     parent.setHalted(parent.halted ?? now);
     const limits = this.manager.limits;
@@ -841,65 +913,64 @@ export class Orchestrator implements SessionHooks {
       c.clearResumePending();
       limits.cancel(c.id);
     }
-    const own = opts.orchestrator !== false;
+    // Starting counts: its turn is on its way.
+    const running = parent.working || parent.launching;
     if (own) limits.cancel(parent.id);
-    const stopsOwn = own && parent.working;
+    const stopsOwn = own && running;
     const interrupted = await Promise.allSettled([...stopping.map((c) => c.interrupt()), ...(stopsOwn ? [parent.interrupt()] : [])]);
     interrupted.forEach((r) => r.status === 'rejected' && console.error(`round-up ${parent.id}: could not stop`, r.reason));
     parent.note('halt', { action: 'stopped', agents: stopping.length, ...(stopsOwn ? { orchestrator: true } : {}) });
-    const told = this.manager.children(parent.id).filter((c) => c.halted).map((c) => ({ agentId: c.id, title: c.title }));
-    if (parent.working) {
+    this.resumedNotes.delete(parent.id);
+    if (running && !stopsOwn) {
       // Its turn goes on: it hears now, after that turn, rather than at whatever it does next.
+      const told = this.manager.children(parent.id).filter((c) => c.halted).map((c) => ({ agentId: c.id, title: c.title }));
       this.untold.delete(parent.id);
       this.notifyInTurn(parent.id, () => parent.send(haltNote(told), 'kelpie', { meta: { halt: 'stopped' } }));
-    } else this.untold.add(parent.id);
+    } else {
+      // Stopped too (it may still read as working while its turn winds down), or idle: it hears with its next turn.
+      this.untold.add(parent.id);
+    }
     return { agents: stopping.map((c) => c.id), orchestrator: stopsOwn };
   }
 
   /**
-   * The person's "Resume all": the agents they stopped continue where they left off, as many as the
-   * agent limit allows now and the rest as slots free up, and the orchestrator is told once (which
-   * picks its own turn up again too).
+   * Lifts the round-up's stop: its stopped agents resume, and the orchestrator hears which once.
+   * `picked`: agents the person picked up themselves (by messaging them), resumed already.
    */
-  async resumeAll(parent: Session): Promise<{ resumed: string[]; queued: string[] }> {
-    if (parent.parentId) throw new Error("resume the agent's round-up, or the agent on its own");
+  private async unhalt(parent: Session, picked: Session[] = []): Promise<{ resumed: string[]; queued: string[] }> {
     const halted = this.manager.children(parent.id).filter((c) => c.halted);
     parent.setHalted(undefined);
     this.untold.delete(parent.id);
-    const queued = await this.resumeAgents(halted);
-    parent.note('halt', { action: 'resumed', agents: halted.length });
-    this.notifyInTurn(parent.id, () =>
-      parent.send(haltResumed(halted.map((c) => ({ agentId: c.id, title: c.title })), queued.length), 'kelpie', { meta: { resumed: 'halt' } }),
-    );
+    const { queued, paused } = await this.resumeAgents(halted);
+    const all = [...picked, ...halted];
+    parent.note('halt', { action: 'resumed', agents: all.length });
+    const text = haltResumed(all.map((c) => ({ agentId: c.id, title: c.title })), queued.length, paused.length);
+    // Its own pause at the usage limit, which Stop all kept from resuming on its own: it does again, and hears then.
+    if (parent.limited && this.autoResume() && this.manager.limits.restore(parent.id)) this.resumedNotes.set(parent.id, text);
+    else this.notifyInTurn(parent.id, () => parent.send(text, 'kelpie', { meta: { resumed: 'halt' } }));
     // What agents finished meanwhile, held while it was stopped.
     this.schedule(parent.id);
-    return { resumed: halted.map((c) => c.id), queued };
+    return { resumed: all.map((c) => c.id), queued };
   }
 
   /**
-   * Resumes one agent the person stopped. The last of them resumes the whole round-up (its
-   * orchestrator may work again); before that, the orchestrator stays stopped.
+   * Puts stopped agents back in line to continue, under the agent limit. One paused at the usage limit
+   * resumes on its own again, once that resets. Returns those still waiting for a slot, and for the limit.
    */
-  async resumeAgent(agent: Session): Promise<{ resumed: string[]; queued: string[] }> {
-    const parent = agent.parentId ? this.manager.get(agent.parentId) : undefined;
-    if (!parent) throw new Error('only an agent of a round-up can be resumed on its own');
-    if (!agent.halted) throw new Error('it was not stopped by you');
-    if (parent.halted && this.manager.children(parent.id).every((c) => c === agent || !c.halted)) return this.resumeAll(parent);
-    const queued = await this.resumeAgents([agent]);
-    parent.note('halt', { action: 'resumed', agents: 1 });
-    return { resumed: [agent.id], queued };
-  }
-
-  /** Puts stopped agents back in line to continue, under the agent limit; returns those still waiting for a slot. */
-  private async resumeAgents(agents: Session[]): Promise<string[]> {
+  private async resumeAgents(agents: Session[]): Promise<{ queued: string[]; paused: string[] }> {
+    const paused: string[] = [];
     for (const c of agents) {
       c.setHalted(undefined);
+      if (c.limited && this.autoResume() && this.manager.limits.restore(c.id)) {
+        paused.push(c.id);
+        continue;
+      }
       // A restart before it gets a slot still resumes it.
       c.markResumePending();
       this.waiting.set(c.id, 'halt');
     }
     await this.resumeWaiting();
-    return agents.filter((c) => this.waiting.has(c.id)).map((c) => c.id);
+    return { queued: agents.filter((c) => this.waiting.has(c.id)).map((c) => c.id), paused };
   }
 
   // ── recovery ─────────────────────────────────────────────────────────
@@ -913,6 +984,8 @@ export class Orchestrator implements SessionHooks {
     // Also anything with turns it never took in (e.g. killed in the instant after a send).
     // Never what the person stopped: that waits for them to resume it.
     const pending = this.manager.all().filter((s) => !(s.role === 'agent' && s.halted) && (s.resumePending || this.store.undelivered(s.id).length > 0));
+    // A stopped round-up whose orchestrator never heard of it before Kelpie stopped hears with its next turn.
+    for (const s of this.manager.all()) if (!s.parentId && s.halted !== undefined && !this.toldOfHalt(s)) this.untold.add(s.id);
     for (const agent of pending.filter((s) => s.role === 'agent')) this.waiting.set(agent.id, 'restart');
     await this.resumeWaiting();
     await Promise.all(pending.filter((s) => s.role === 'orchestrator').map((s) => s.resumeAfterRestart(ORCHESTRATOR_RESTARTED)));
@@ -920,6 +993,11 @@ export class Orchestrator implements SessionHooks {
     for (const id of parents) this.schedule(id);
     // Work paused at the usage limit: what is due resumes now, the rest when its limit resets.
     this.manager.startLimits();
+  }
+
+  /** Whether a turn carrying the stop note went to (or waits for) the orchestrator since its round-up was stopped. */
+  private toldOfHalt(parent: Session): boolean {
+    return this.store.sentSince(parent.id, parent.halted ?? 0).some((r) => hasHaltNote(r.text));
   }
 
   /**
@@ -941,11 +1019,12 @@ export class Orchestrator implements SessionHooks {
       const parent = agent?.parentId ? this.manager.get(agent.parentId) : undefined;
       // One paused at the limit may have been picked up meanwhile, or the person said not to resume it.
       // Or the person stopped it (again), or picked it up themselves.
-      if (!agent || !parent || agent.halted || (why === 'limit' && (agent.working || !this.manager.limits.willResume(id))) || (why === 'halt' && agent.working)) {
+      if (!agent || !parent || agent.halted || (why === 'limit' && (agent.working || !this.manager.limits.willResume(id)))) {
         this.waiting.delete(id);
-        if (agent && why === 'halt' && agent.working) agent.clearResumePending();
         continue;
       }
+      // Still winding down the turn it was stopped in: it goes once idle (whoever picks it up first clears it).
+      if (why === 'halt' && agent.working) continue;
       if (this.slotsLeft(parent) <= 0) continue;
       if (agent.writes && this.busyWriter(agent.cwd, agent.id)) continue;
       if (agent.browser && this.browserInUse(parent, agent.id)) continue;

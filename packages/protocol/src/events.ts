@@ -125,6 +125,8 @@ export const Message = ev(
     review: ReviewNotice.optional(),
     /** A turn Kelpie sent to pick the work up again: after the usage limit reset, or once the person resumed what they stopped. */
     resumed: z.enum(['limit', 'halt']).optional(),
+    /** On the note Kelpie sent an orchestrator whose turn went on as the person stopped all agents: the halt line says it. */
+    halt: z.enum(['stopped']).optional(),
   }),
 );
 

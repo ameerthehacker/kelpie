@@ -91,6 +91,8 @@ const clip = (text: string, max: number) => {
 /** An agent's status, as its summary has it (see `Session.summary`). */
 function statusOf(s: Session): WorkbenchAgentStatus {
   if (s.working) return s.approvals().length ? 'needs-approval' : 'working';
+  if (s.halted !== undefined) return 'halted';
+  if (s.limited) return 'paused';
   const t = s.lastTurn;
   return t === 'completed' ? 'done' : t === 'failed' ? 'failed' : t === 'interrupted' ? 'stopped' : 'idle';
 }

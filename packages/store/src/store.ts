@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
-import { and, asc, desc, eq, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { HarnessUsage, KelpieEvent, type EventData, type EventKind, type EventOf, type TicketLink, type TicketTitleSource, titleWins } from '@kelpie/protocol';
@@ -164,6 +164,16 @@ export class Store {
   }
 
   /** The first turn a round-up was sent (a sub-agent's task brief). */
+  /** Every turn queued for a round-up at or after `since` (epoch ms), delivered or not, oldest first. */
+  sentSince(sessionId: string, since: number): OutboxRow[] {
+    return this.db
+      .select()
+      .from(schema.outbox)
+      .where(and(eq(schema.outbox.sessionId, sessionId), gte(schema.outbox.createdAt, since)))
+      .orderBy(asc(schema.outbox.id))
+      .all();
+  }
+
   firstSent(sessionId: string): OutboxRow | undefined {
     return this.db.select().from(schema.outbox).where(eq(schema.outbox.sessionId, sessionId)).orderBy(asc(schema.outbox.id)).limit(1).get();
   }
@@ -186,6 +196,18 @@ export class Store {
       .select({ event: schema.events.event })
       .from(schema.events)
       .where(and(eq(schema.events.sessionId, sessionId), kind ? eq(schema.events.kind, kind) : undefined))
+      .orderBy(desc(schema.events.idx))
+      .limit(1)
+      .get();
+    return row ? KelpieEvent.parse(JSON.parse(row.event)) : undefined;
+  }
+
+  /** The latest event a harness run logged: not one of Kelpie's own entries (`halt`). */
+  lastRunEvent(sessionId: string): KelpieEvent | undefined {
+    const row = this.db
+      .select({ event: schema.events.event })
+      .from(schema.events)
+      .where(and(eq(schema.events.sessionId, sessionId), ne(schema.events.kind, 'halt')))
       .orderBy(desc(schema.events.idx))
       .limit(1)
       .get();

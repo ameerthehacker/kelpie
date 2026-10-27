@@ -2,9 +2,9 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AGENT_HALT_RESUMED, type EventOf } from '@kelpie/protocol';
+import { AGENT_HALT_RESUMED, type EventOf, type KelpieEvent } from '@kelpie/protocol';
 import { openStore, type Store } from '@kelpie/store';
-import { createApp, HALTED, Orchestrator, SessionManager, type Session } from '../src/index.js';
+import { createApp, HALTED, LIMIT_RESUMED, Orchestrator, SessionManager, type Session } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
 const FIXTURE = join(import.meta.dirname, '../../adapters/fixtures/claude-code/plain.jsonl');
@@ -210,5 +210,137 @@ describe('Stop all and Resume all', { timeout: 20_000 }, () => {
     await second.orch.resumeAll(orch2!);
     await waitFor(() => [a2!, b2!].every((s) => turns(s).at(-1)?.data.status === 'completed' && sent(s).some((m) => m.data.resumed === 'halt')));
     expect(store.haltOf('a')).toBeUndefined();
+  });
+
+  it('leaves a pause at the usage limit to resume on its own after Resume all, the orchestrator’s too', async () => {
+    const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
+    const { sessions, orch: o, hit, lift } = start({ stdin, slow: 50 });
+    const orch = sessions.create(tmpdir(), { title: 'Round-up' });
+    const a = agent(sessions, orch, 'A');
+    hit(1500);
+    await a.send('Do A', 'orchestrator');
+    await orch.send('Plan it', 'user');
+    await waitFor(() => a.limited && orch.limited && !a.working && !orch.working);
+    await o.stopAll(orch);
+    expect(sessions.limits.willResume(a.id)).toBe(false);
+    expect(sessions.limits.willResume(orch.id)).toBe(false);
+
+    // Resumed before the reset: both wait for it, on their own again, rather than being refused by the limit now.
+    await o.resumeAll(orch);
+    expect(sessions.limits.willResume(a.id)).toBe(true);
+    expect(sessions.limits.willResume(orch.id)).toBe(true);
+    expect(sent(a).some((m) => m.data.resumed === 'halt')).toBe(false);
+    lift();
+    sessions.startLimits();
+    await waitFor(() => sent(a).some((m) => m.data.resumed === 'limit') && sent(orch).some((m) => m.data.resumed === 'limit'));
+    expect(sent(a).find((m) => m.data.resumed === 'limit')!.data.text).toBe(LIMIT_RESUMED);
+    // The orchestrator hears of the person's resume with the turn that picks it up after the reset.
+    await waitFor(() => received(stdin).some((r) => r.text.includes('The person resumed this round-up')));
+    const told = received(stdin).filter((r) => r.text.includes('The person resumed this round-up'));
+    expect(told).toHaveLength(1);
+    expect(told[0]!.text).toContain('Your usage limit has reset');
+    expect(told[0]!.text).toContain('wait for the usage limit to reset');
+  });
+
+  it('resumes an agent still winding down its stopped turn, and leaves one the person picked up to them', async () => {
+    const { sessions, orch: o } = start({ maxAgents: 1, delay: 300 });
+    const orch = sessions.create(tmpdir(), { title: 'Round-up' });
+    const [a, b] = ['A', 'B'].map((t) => agent(sessions, orch, t));
+    for (const s of [a!, b!]) await s.send(`Do ${s.title}`, 'orchestrator');
+    await waitFor(() => a!.busy && b!.busy);
+    // Straight away: neither may have logged the end of its stopped turn yet.
+    await o.stopAll(orch);
+    const { queued } = await o.resumeAll(orch);
+    await waitFor(() => [a!, b!].some((s) => sent(s).some((m) => m.data.resumed === 'halt')));
+    const waiting = sessions.get(queued.at(-1) ?? (sent(a!).some((m) => m.data.resumed === 'halt') ? b!.id : a!.id))!;
+    // The person picks the one still in line up themselves: Kelpie's resume turn never follows.
+    await waiting.send('Do this instead', 'user');
+    await waitFor(() => [a!, b!].every((s) => !s.working && turns(s).at(-1)?.data.status === 'completed'));
+    await sleep(400);
+    expect(sent(waiting).filter((m) => m.data.resumed === 'halt')).toHaveLength(0);
+    expect(waiting.resumePending).toBe(false);
+    const other = waiting === a ? b! : a!;
+    expect(sent(other).filter((m) => m.data.resumed === 'halt')).toHaveLength(1);
+  });
+
+  it('takes the person messaging a stopped agent as resuming it, the last of them resuming the round-up', async () => {
+    const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
+    const { sessions, orch: o } = start({ stdin, delay: 50 });
+    const orch = sessions.create(tmpdir(), { title: 'Round-up' });
+    const [a, b] = ['A', 'B'].map((t) => agent(sessions, orch, t));
+    for (const s of [a!, b!]) await s.send(`Do ${s.title}`, 'orchestrator');
+    await waitFor(() => a!.busy && b!.busy);
+    await o.stopAll(orch);
+    await waitFor(() => !a!.working && !b!.working);
+
+    await a!.send('Carry on with A', 'user');
+    expect(a!.halted).toBeUndefined();
+    await waitFor(() => halts(orch).length === 2);
+    expect(orch.halted).toBeTypeOf('number');
+    await b!.send('Carry on with B', 'user');
+    await waitFor(() => !orch.halted && halts(orch).length === 3);
+    expect(halts(orch)).toEqual([
+      { action: 'stopped', agents: 2 },
+      { action: 'resumed', agents: 1 },
+      { action: 'resumed', agents: 1 },
+    ]);
+    await waitFor(() => received(stdin).some((r) => r.text.includes('The person resumed this round-up')));
+    await waitFor(() => [a!, b!, orch].every((s) => !s.working));
+    await sleep(200);
+    const told = received(stdin).filter((r) => r.text.includes('The person resumed this round-up'));
+    expect(told).toHaveLength(1);
+    expect(told[0]!.text).toContain(`"B" (${b!.id})`);
+    // They run the person's turns, not Kelpie's resume one.
+    for (const s of [a!, b!]) expect(sent(s).filter((m) => m.data.resumed === 'halt')).toHaveLength(0);
+  });
+
+  it('tells an orchestrator stopped before a restart once, with its first turn after it', async () => {
+    const db = join(tmp('kelpie-home-'), 'kelpie.db');
+    const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
+    let store = openStore(db);
+    const first = start({ store, stdin, slow: 50 });
+    const orch = first.sessions.create(tmpdir(), { title: 'Round-up', id: 'orch' });
+    const a = agent(first.sessions, orch, 'A', 'a');
+    await orch.send('Plan it', 'user');
+    await waitFor(() => !orch.working && turns(orch).length === 1);
+    await a.send('Do A', 'orchestrator');
+    await first.orch.stopAll(orch);
+    first.sessions.prepareShutdown();
+    await first.sessions.stopAll();
+    store.close();
+
+    store = openStore(db);
+    const second = start({ store, stdin, slow: 50 });
+    await second.orch.recover();
+    const orch2 = second.sessions.get('orch')!;
+    await orch2.send('Where are we?', 'user');
+    await waitFor(() => !orch2.working && turns(orch2).length === 2);
+    await orch2.send('And now?', 'user');
+    await waitFor(() => received(stdin).some((r) => r.text.startsWith('And now?')));
+    const asked = received(stdin).filter((r) => /^(Where are we|And now)\?/.test(r.text));
+    expect(asked[0]!.text).toContain('The person stopped all your agents');
+    expect(asked[1]!.text).toBe('And now?');
+    second.sessions.prepareShutdown();
+    await second.sessions.stopAll();
+    store.close();
+
+    // Told already: a further restart doesn't tell it again.
+    store = openStore(db);
+    const third = start({ store, stdin, slow: 50 });
+    await third.orch.recover();
+    const orch3 = third.sessions.get('orch')!;
+    await orch3.send('Still there?', 'user');
+    await waitFor(() => received(stdin).some((r) => r.text.startsWith('Still there?')));
+    expect(received(stdin).find((r) => r.text.startsWith('Still there?'))!.text).toBe('Still there?');
+  });
+
+  it('does not take its own log entry for a run Kelpie never saw finish', () => {
+    const store = openStore(':memory:');
+    store.createSession({ id: 'r', cwd: tmpdir() });
+    const base = { runId: 'run-1', ts: new Date().toISOString(), harness: 'claude-code' };
+    store.appendEvent('r', 0, { ...base, id: 'e0', seq: 0, kind: 'process.exited', data: { code: 0, signal: null, stderrTail: '' } } as KelpieEvent);
+    store.appendEvent('r', 1, { ...base, runId: 'kelpie', id: 'e1', seq: 0, kind: 'halt', data: { action: 'stopped', agents: 2 } } as KelpieEvent);
+    const { sessions } = start({ store });
+    expect(sessions.get('r')!.events().map((e) => e.kind)).toEqual(['process.exited', 'halt']);
   });
 });
