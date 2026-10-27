@@ -116,32 +116,6 @@ describe('MCP config', () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  it('changes a live process’s effort with a control request', async () => {
-    const controls = join(mkdtempSync(join(tmpdir(), 'kelpie-controls-')), 'controls.jsonl');
-    const run = start('plain', { env: { FAKE_FIXTURE: join(FIXTURES, 'plain.jsonl'), FAKE_CONTROL_FILE: controls } });
-    const events = collect(run);
-    expect(await run.setEffort('xhigh')).toBe(true);
-    expect(readFileSync(controls, 'utf8').trim().split('\n').map((l) => JSON.parse(l))).toEqual([
-      { subtype: 'apply_flag_settings', settings: { effortLevel: 'xhigh' } },
-    ]);
-    const stopping = run.stop();
-    expect(await run.setEffort('low')).toBe(false);
-    await stopping;
-    await events;
-    expect(await run.setEffort('low')).toBe(false);
-    expect(readFileSync(controls, 'utf8').trim().split('\n')).toHaveLength(1);
-  });
-
-  it('owns up that a live change cannot get past CLAUDE_CODE_EFFORT_LEVEL', async () => {
-    const controls = join(mkdtempSync(join(tmpdir(), 'kelpie-controls-')), 'controls.jsonl');
-    const run = start('plain', { env: { FAKE_FIXTURE: join(FIXTURES, 'plain.jsonl'), FAKE_CONTROL_FILE: controls, CLAUDE_CODE_EFFORT_LEVEL: 'low' } });
-    const events = collect(run);
-    expect(await run.setEffort('high')).toBe(false);
-    await run.stop();
-    await events;
-    expect(existsSync(controls)).toBe(false);
-  });
-
   it('puts the files under the directory it is given, when given one', () => {
     const base = join(mkdtempSync(join(tmpdir(), 'kelpie-base-')), 'tmp');
     const { paths, dir } = mcpConfigFiles(['{"mcpServers":{}}'], base);
@@ -174,6 +148,32 @@ describe('claudeArgs', () => {
     expect(claudeArgs(spec)).not.toContain('--effort');
     // A resume keeps it: every start passes it again.
     expect(claudeArgs({ ...spec, resume: 'h', effort: 'max' })).toEqual(expect.arrayContaining(['--resume', 'h', '--effort', 'max']));
+  });
+
+  it('changes a live process’s effort with a control request', async () => {
+    const controls = join(mkdtempSync(join(tmpdir(), 'kelpie-controls-')), 'controls.jsonl');
+    const run = start('plain', { env: { FAKE_FIXTURE: join(FIXTURES, 'plain.jsonl'), FAKE_CONTROL_FILE: controls } });
+    const events = collect(run);
+    expect(await run.setEffort('xhigh')).toBe(true);
+    expect(readFileSync(controls, 'utf8').trim().split('\n').map((l) => JSON.parse(l))).toEqual([
+      { subtype: 'apply_flag_settings', settings: { effortLevel: 'xhigh' } },
+    ]);
+    const stopping = run.stop();
+    expect(await run.setEffort('low')).toBe(false);
+    await stopping;
+    await events;
+    expect(await run.setEffort('low')).toBe(false);
+    expect(readFileSync(controls, 'utf8').trim().split('\n')).toHaveLength(1);
+  });
+
+  it('owns up that a live change cannot get past CLAUDE_CODE_EFFORT_LEVEL', async () => {
+    const controls = join(mkdtempSync(join(tmpdir(), 'kelpie-controls-')), 'controls.jsonl');
+    const run = start('plain', { env: { FAKE_FIXTURE: join(FIXTURES, 'plain.jsonl'), FAKE_CONTROL_FILE: controls, CLAUDE_CODE_EFFORT_LEVEL: 'low' } });
+    const events = collect(run);
+    expect(await run.setEffort('high')).toBe(false);
+    await run.stop();
+    await events;
+    expect(existsSync(controls)).toBe(false);
   });
 
   it('turns Claude in Chrome off unless the run asks for the browser', () => {

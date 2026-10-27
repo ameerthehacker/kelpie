@@ -52,7 +52,7 @@ export function claudeArgs(spec: RunSpec): string[] {
     // Anything its rules don't settle is asked of us (a can_use_tool control request), not refused.
     '--permission-prompt-tool', 'stdio',
     '--tools', (spec.tools ?? DEFAULT_TOOLS).join(','),
-    // Only Kelpie-provided MCP servers; keeps the user's global connectors out of agents.
+    // Only the MCP servers in --mcp-config: Kelpie's, plus those the person allowed agents (off by default).
     '--strict-mcp-config',
   ];
   if (spec.model) args.push('--model', spec.model);

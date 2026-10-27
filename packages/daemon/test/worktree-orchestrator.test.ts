@@ -77,8 +77,8 @@ function setup(env: Record<string, string> = {}, maxAgents = 6, scratch = false)
   return { store, orch, sessions, worktrees, app: createApp(sessions, { orchestrator: orch }), argsFile, checkout, release };
 }
 
-async function orchestrator(ctx: ReturnType<typeof setup>) {
-  const parent = ctx.sessions.create();
+async function orchestrator(ctx: ReturnType<typeof setup>, create: Parameters<SessionManager['create']>[1] = {}) {
+  const parent = ctx.sessions.create(undefined, create);
   await parent.send('Ship guest checkout');
   const argv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[0]);
   const { url, headers } = JSON.parse(argv[argv.indexOf('--mcp-config') + 1]!).mcpServers.kelpie;
@@ -159,7 +159,7 @@ describe('worktrees for writing agents', () => {
     const hold = join(tmp('kelpie-hold-'), 'hold');
     onTestFinished(() => rmSync(hold, { force: true })); // a failure must not leave the harnesses held
     const ctx = setup({ FAKE_EVERY_TURN: '1', FAKE_HOLD_FILE: hold });
-    const { parent, call } = await orchestrator(ctx);
+    const { parent, call } = await orchestrator(ctx, { model: 'opus', effort: 'high' });
     await call('set_base_branch', { branch: 'origin/main' });
     const ids: string[] = [];
     for (const title of ['API', 'Docs', 'Copy', 'Solo']) {
@@ -207,6 +207,10 @@ describe('worktrees for writing agents', () => {
     // Even if the person has Claude in Chrome on by default: Muster never drives their browser.
     expect(musterArgv).toContain('--no-chrome');
     expect(musterArgv).not.toContain('--chrome');
+    // On the round-up's model and effort, as spawned agents are.
+    expect(muster).toMatchObject({ model: 'opus', effort: 'high' });
+    expect(flag(musterArgv, '--model')).toEqual(['opus']);
+    expect(flag(musterArgv, '--effort')).toEqual(['high']);
     const brief = ctx.store.firstSent(muster.id)!.text;
     expect(brief).toContain(ctx.store.worktreeOf(copy!.id)!.branch);
     expect(brief).toContain('API wins on line two');

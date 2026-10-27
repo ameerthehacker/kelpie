@@ -118,6 +118,28 @@ describe('Stop all and Resume all', { timeout: 20_000 }, () => {
     expect(toOrch[1]!.text).toBe('And now?');
   });
 
+  it('keeps the note off a slash command the person sends, and gives it to their next message', async () => {
+    const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
+    const { sessions, orch: o } = start({ stdin, delay: 50 });
+    const orch = sessions.create(tmpdir(), { title: 'Round-up' });
+    const a = agent(sessions, orch, 'A');
+    await orch.send('Plan it', 'user');
+    await a.send('Do A', 'orchestrator');
+    await waitFor(() => a.busy && orch.busy);
+    await o.stopAll(orch);
+    await waitFor(() => !a.working && !orch.working);
+
+    // Otherwise the note would be the command's argument, and count as told.
+    await orch.send('/compact', 'user');
+    await waitFor(() => !orch.working && turns(orch).at(-1)?.data.status === 'completed');
+    await orch.send('What happened?', 'user');
+    await waitFor(() => received(stdin).some((r) => r.text.startsWith('What happened?')));
+    const toOrch = received(stdin).filter((r) => r.text.startsWith('/compact') || r.text.startsWith('What happened?'));
+    expect(toOrch.map((r) => r.text.split('\n')[0])).toEqual(['/compact', 'What happened?']);
+    expect(toOrch[0]!.text).toBe('/compact');
+    expect(toOrch[1]!.text).toContain('The person stopped all your agents');
+  });
+
   it('resumes exactly what it stopped, as far as the agent limit allows, and tells the orchestrator once', async () => {
     const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
     const { sessions, orch: o } = start({ maxAgents: 2, delay: 400, stdin });
@@ -150,7 +172,7 @@ describe('Stop all and Resume all', { timeout: 20_000 }, () => {
   });
 
   it('resumes one agent on its own, and the last of them resumes the round-up', async () => {
-    const { sessions, orch: o, app } = start({ delay: 50 });
+    const { sessions, app } = start({ delay: 50 });
     const orch = sessions.create(tmpdir(), { title: 'Round-up' });
     const [a, b] = ['A', 'B'].map((t) => agent(sessions, orch, t));
     for (const s of [a!, b!]) await s.send(`Do ${s.title}`, 'orchestrator');

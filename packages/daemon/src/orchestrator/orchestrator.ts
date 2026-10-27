@@ -746,6 +746,9 @@ export class Orchestrator implements SessionHooks {
         kind: 'muster',
         writes: true,
         title: `Muster: ${rest.map((r) => r.agent.title).join(', ')}`.slice(0, 120),
+        // The person's choices for the round-up, as spawned agents get them.
+        ...(parent.model ? { model: parent.model } : {}),
+        ...(parent.effort ? { effort: parent.effort } : {}),
       });
       await this.reserving(muster, () => muster.send(this.musterBrief(live, rest, result.conflicts, notes), 'orchestrator'));
       return { merged, muster: { agentId: muster.id, branches: rest.map((r) => r.row.branch), conflicts: result.conflicts } };

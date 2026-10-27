@@ -145,7 +145,8 @@ describe('store', () => {
     openStore(path, { migrationsFolder: before }).close();
     oldSession(path, { id: 'r', cwd: '/r', title: 'Old' });
     const store = openStore(path);
-    expect(store.getSession('r')).toMatchObject({ title: 'Old', effort: null });
+    // 0021 runs after it: a titled round-up's title came from its first message.
+    expect(store.getSession('r')).toMatchObject({ title: 'Old', effort: null, titleSource: 'message' });
     expect(store.updateSession('r', { effort: 'xhigh' })).toMatchObject({ effort: 'xhigh' });
     expect(store.updateSession('r', { effort: null })).toMatchObject({ effort: null });
     store.close();

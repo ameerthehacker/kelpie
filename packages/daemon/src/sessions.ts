@@ -810,7 +810,9 @@ export class Session {
     let sent = turn;
     this.ctx.store.atomically(() => {
       opts.alsoInTx?.();
-      const extra = [source === 'user' ? undefined : this.ctx.hooks.inbox?.(this), this.ctx.hooks.notice?.(this)].filter(Boolean);
+      // A slash command stays as typed: a notice would become its argument, and taking it clears it as told.
+      const command = source === 'user' && /^\s*\//.test(text);
+      const extra = [source === 'user' ? undefined : this.ctx.hooks.inbox?.(this), command ? undefined : this.ctx.hooks.notice?.(this)].filter(Boolean);
       if (extra.length) sent = [turn, ...extra].join('\n\n');
       this.ctx.store.enqueue(this.id, sent, source, Date.now(), meta);
       for (const t of together) this.ctx.store.enqueue(t.session.id, t.text, t.source, Date.now(), t.meta);
