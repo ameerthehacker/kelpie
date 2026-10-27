@@ -308,6 +308,15 @@ describe('claude-code mapping', () => {
     expect(withArgs!.data.title.length).toBeLessThanOrEqual(160);
   });
 
+  it('asks about a claude.ai-style server with spaces and dashes in auto mode, by the tool name the CLI gives it', () => {
+    // Captured from Claude Code 2.1.308 in auto mode with the ask rule mcp__claude_ai_My_Tiny_-_Echo
+    // (mcp-ask-dashes.jsonl): the call arrived as can_use_tool, settled by that rule (flagSettings).
+    const [req] = of(replay('mcp-ask-dashes'), 'permission.requested');
+    expect(req?.data).toMatchObject({ tool: 'mcp__claude_ai_My_Tiny_-_Echo__echo', title: 'claude.ai My  Tiny - Echo › echo · text: "hi"', rule: 'mcp__claude_ai_My_Tiny_-_Echo__echo' });
+    const init = lines('mcp-ask-dashes')[0];
+    expect(init.permissionMode).toBe('auto');
+  });
+
   it("falls back on the turn's own last message for a plan, never an earlier turn's", () => {
     const parser = newParser();
     const plan = () => of(parser.parse({ type: 'control_request', request_id: String(Math.random()), request: { subtype: 'can_use_tool', tool_name: 'ExitPlanMode', input: {} } }), 'permission.requested')[0]?.data.plan;

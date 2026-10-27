@@ -75,9 +75,10 @@ export function claudeArgs(spec: RunSpec): string[] {
  * read, in a private directory of its own, so it never shows in argv (`ps`) or in run.json. Paths pass
  * through. Returns the paths and the directory to remove once the process has exited.
  */
-export function mcpConfigFiles(configs: string[] | undefined): { paths: string[]; dir?: string } {
+export function mcpConfigFiles(configs: string[] | undefined, base: string = tmpdir()): { paths: string[]; dir?: string } {
   if (!configs?.some((c) => c.trimStart().startsWith('{'))) return { paths: configs ?? [] };
-  const dir = mkdtempSync(join(tmpdir(), 'kelpie-mcp-'));
+  mkdirSync(base, { recursive: true, mode: 0o700 });
+  const dir = mkdtempSync(join(base, 'kelpie-mcp-'));
   const paths = configs.map((c, i) => {
     if (!c.trimStart().startsWith('{')) return c;
     const path = join(dir, `mcp-${i}.json`);
@@ -124,7 +125,7 @@ class ClaudeCodeRun implements Run {
     if (existsSync(join(this.runDir, 'raw.jsonl'))) {
       throw new Error(`${this.runDir} already holds a run; start a new runId (continue a session with \`resume\`)`);
     }
-    const mcp = mcpConfigFiles(spec.mcpConfig);
+    const mcp = mcpConfigFiles(spec.mcpConfig, spec.tempDir);
     this.mcpDir = mcp.dir;
     const args = claudeArgs({ ...spec, mcpConfig: mcp.paths });
     mkdirSync(this.runDir, { recursive: true });

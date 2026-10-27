@@ -9,6 +9,7 @@ import { createApp, Orchestrator, SavedSettings, SessionManager } from '../src/i
 const tmp = (prefix: string) => mkdtempSync(join(tmpdir(), prefix));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const LOCAL = { host: '127.0.0.1:7317' };
+const FP = '0123456789abcdef';
 
 async function waitFor<T>(fn: () => T | undefined | false, ms = 5000): Promise<T> {
   const end = Date.now() + ms;
@@ -113,10 +114,17 @@ describe('settings', () => {
       [{}, 'nothing to change: send maxAgents, autoResume, useUserMcp or mcpAllow'],
       [{ autoResume: 'yes' }, 'autoResume must be true or false'],
       [{ useUserMcp: 'on' }, 'useUserMcp must be true or false'],
-      [{ mcpAllow: 'github' }, 'mcpAllow must be a list of server names'],
-      [{ mcpAllow: [3] }, 'mcpAllow must be a list of server names'],
-      [{ mcpAllow: ['  '] }, 'an MCP server name cannot be empty'],
-      [{ mcpAllow: ['x'.repeat(201)] }, 'an MCP server name can be at most 200 characters'],
+      [{ mcpAllow: 'github' }, 'mcpAllow must be a list of servers, as the server list gives them'],
+      // A name alone is not enough: which server it is, and what it runs.
+      [{ mcpAllow: ['github'] }, 'Invalid input: expected object, received string'],
+      [{ mcpAllow: [{ scope: 'user', name: 'github' }] }, 'fingerprint must be text'],
+      [{ mcpAllow: [{ scope: 'user', name: 'github', fingerprint: 'nothex' }] }, 'fingerprint must be 16 hex digits, as the server list gives it'],
+      [{ mcpAllow: [{ scope: 'team', name: 'github', fingerprint: FP }] }, 'scope must be user, project, local or claudeai'],
+      [{ mcpAllow: [{ scope: 'project', name: 'tool', fingerprint: FP }] }, 'repo is required for project and local servers, and only for them'],
+      [{ mcpAllow: [{ scope: 'user', name: 'github', repo: '/r', fingerprint: FP }] }, 'repo is required for project and local servers, and only for them'],
+      [{ mcpAllow: [{ scope: 'user', name: '', fingerprint: FP }] }, 'an MCP server name cannot be empty'],
+      [{ mcpAllow: [{ scope: 'user', name: 'x'.repeat(201), fingerprint: FP }] }, 'an MCP server name can be at most 200 characters'],
+      [{ mcpAllow: [{ scope: 'user', name: 'github', fingerprint: FP, extra: 1 }] }, 'unknown setting: extra'],
     ] as const) {
       const res = await put(ctx.app, JSON.stringify(body));
       expect(res.status).toBe(400);
@@ -136,8 +144,17 @@ describe('settings', () => {
     const store = openStore(':memory:');
     const settings = new SavedSettings(store);
     expect(settings.get()).toMatchObject({ useUserMcp: false, mcpAllow: [] });
-    expect(settings.update({ useUserMcp: true, mcpAllow: [' github ', 'claude.ai Claude Docs', 'github'] })).toMatchObject({ useUserMcp: true, mcpAllow: ['github', 'claude.ai Claude Docs'] });
-    expect(new SavedSettings(store).get()).toMatchObject({ useUserMcp: true, mcpAllow: ['github', 'claude.ai Claude Docs'] });
+    const github = { scope: 'user', name: 'github', fingerprint: FP } as const;
+    const docs = { scope: 'claudeai', name: 'claude.ai Claude Docs', fingerprint: FP } as const;
+    const repoTool = { scope: 'project', name: 'tool', repo: '/work/repo', fingerprint: FP } as const;
+    // The same server twice is kept once (the first); one name in two scopes is two servers.
+    const saved = settings.update({ useUserMcp: true, mcpAllow: [github, docs, { ...github, fingerprint: 'ffffffffffffffff' }, repoTool, { ...repoTool, scope: 'local' }] });
+    expect(saved).toMatchObject({ useUserMcp: true, mcpAllow: [github, docs, repoTool, { ...repoTool, scope: 'local' }] });
+    expect(new SavedSettings(store).get().mcpAllow).toEqual([github, docs, repoTool, { ...repoTool, scope: 'local' }]);
+    // An allowlist saved by name only (before servers were allowed by what they are) counts for nothing.
+    store.setSettings({ mcpAllow: ['github'] });
+    expect(new SavedSettings(store).get().mcpAllow).toEqual([]);
+    settings.update({ mcpAllow: [github] });
     expect(settings.update({ useUserMcp: null, mcpAllow: null })).toMatchObject({ useUserMcp: false, mcpAllow: [] });
     expect(store.settings()).toEqual({});
   });

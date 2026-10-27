@@ -43,7 +43,7 @@ export interface AppOptions {
   /** Services Kelpie connects to (GitHub), served at `/api/connections`. */
   connections?: Connections;
   /** The person's own MCP servers, listed at `/api/mcp/servers`. */
-  mcpServers?: Pick<McpServers, 'list'>;
+  mcpServers?: Pick<McpServers, 'list' | 'refresh'>;
 }
 
 /**
@@ -179,13 +179,26 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   }
 
   // The person's MCP servers (their Claude Code config, and claude.ai connectors) for round-ups in
-  // `cwd` (default: Kelpie's): names, types, scopes and states only, never commands, URLs, env or
-  // headers. Kept from the last look; `refresh=1` asks Claude Code again (it starts them: seconds).
-  app.get('/api/mcp/servers', async (c) => {
-    const mcp = opts.mcpServers;
-    const cwd = resolve(sessions.defaultCwd, c.req.query('cwd') ?? '.');
-    if (!mcp) return c.json({ cwd, servers: [] });
-    return c.json(await mcp.list(cwd, c.req.query('refresh') === '1'));
+  // `repo`: names, types, scopes, fingerprints and states only, never commands, URLs, env or headers.
+  // Only Kelpie's own repo or a round-up's may be named. Reading starts nothing; asking Claude Code
+  // again (it starts the person's servers: seconds) is a POST, under the same guard as every write.
+  const mcpRepos = () => [...new Set([sessions.defaultCwd, ...sessions.list().map((s) => s.cwd)].map((d) => resolve(d)))];
+  const mcpRepo = (repo: unknown): string | undefined => {
+    if (repo === undefined || repo === '') return resolve(sessions.defaultCwd);
+    return typeof repo === 'string' && mcpRepos().includes(resolve(repo)) ? resolve(repo) : undefined;
+  };
+  app.get('/api/mcp/servers', (c) => {
+    const repo = mcpRepo(c.req.query('repo'));
+    if (!repo) return c.json({ error: "repo must be Kelpie's repo or a round-up's" }, 400);
+    const list = opts.mcpServers?.list(repo) ?? { repo, servers: [] };
+    return c.json({ ...list, repos: mcpRepos() });
+  });
+  app.post('/api/mcp/servers/refresh', async (c) => {
+    const body = await jsonBody<{ repo?: unknown }>(c);
+    const repo = mcpRepo(body.repo);
+    if (!repo) return c.json({ error: "repo must be Kelpie's repo or a round-up's" }, 400);
+    const list = opts.mcpServers ? await opts.mcpServers.refresh(repo) : { repo, servers: [] };
+    return c.json({ ...list, repos: mcpRepos() });
   });
 
   // ── the Workbench ───────────────────────────────────────────────────

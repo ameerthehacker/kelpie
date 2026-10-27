@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { KelpieEvent } from '@kelpie/protocol';
 import { claudeArgs, claudeCode, type RunSpec } from '../src/index.js';
+import { mcpConfigFiles } from '../src/claude-code/spawn.js';
 
 const FAKE = join(import.meta.dirname, 'fake-claude.mjs');
 const FIXTURES = join(import.meta.dirname, '../fixtures/claude-code');
@@ -113,6 +114,14 @@ describe('MCP config', () => {
     await run.stop();
     await events;
     expect(existsSync(path)).toBe(false);
+  });
+
+  it('puts the files under the directory it is given, when given one', () => {
+    const base = join(mkdtempSync(join(tmpdir(), 'kelpie-base-')), 'tmp');
+    const { paths, dir } = mcpConfigFiles(['{"mcpServers":{}}'], base);
+    expect(dir!.startsWith(join(base, 'kelpie-mcp-'))).toBe(true);
+    expect(paths[0]!.startsWith(dir!)).toBe(true);
+    expect(statSync(base).mode & 0o777).toBe(0o700);
   });
 
   it('passes a config path through as it is', () => {

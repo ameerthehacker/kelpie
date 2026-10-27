@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -72,6 +72,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
       throw new HomeInUseError(`another Kelpie is already using ${home}`);
     });
 
+  // Each harness's MCP configs (secrets among them) are in here while it runs; it removes its own
+  // as it exits, so whatever is here now a crash or a kill left behind. No harness of this home is
+  // running: it is ours (the lock).
+  const tempDir = join(home, 'tmp');
+  rmSync(tempDir, { recursive: true, force: true });
+  mkdirSync(tempDir, { recursive: true, mode: 0o700 });
+
   const store = openStore(join(home, 'kelpie.db'), opts.migrationsFolder ? { migrationsFolder: opts.migrationsFolder } : {});
   const worktrees = new Worktrees({
     store,
@@ -96,7 +103,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     runsDir: join(home, 'runs'),
     scratchDir: join(home, 'scratch'),
     // What may run without asking is settled per session (the orchestrator's specFor, saved rules); anything else asks.
-    defaults: opts.model ? { model: opts.model } : {},
+    defaults: { tempDir, ...(opts.model ? { model: opts.model } : {}) },
   });
   orchestrator.attach(sessions);
 

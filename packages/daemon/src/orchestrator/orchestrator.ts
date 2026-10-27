@@ -13,7 +13,7 @@ import { GitError, type Branch, type Worktrees } from '../worktrees.js';
 import { Changes } from '../review/changes.js';
 import { Reviews, type ReviewClaim } from '../review/reviews.js';
 import { SavedSettings } from '../settings.js';
-import { mcpToolPrefix, type McpServers } from '../mcp-servers.js';
+import { askRule, type McpServers } from '../mcp-servers.js';
 import { Workbench } from '../workbench.js';
 import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, limitResumed, musterPrompt, orchestratorPrompt, reviewBrief, type WorkPlace } from './prompt.js';
 import { LIMIT_RESUMED } from '../usage-limits.js';
@@ -90,7 +90,7 @@ export interface OrchestratorOptions {
   /** Connected services (GitHub): every harness Kelpie starts gets their env, e.g. GH_TOKEN. */
   connections?: Pick<Connections, 'env'>;
   /** The person's own MCP servers: those they allow go to agents while the setting is on (never to the orchestrator). */
-  mcpServers?: Pick<McpServers, 'ensure' | 'forAgents'>;
+  mcpServers?: Pick<McpServers, 'ensure' | 'forAgents' | 'warnOnce'>;
 }
 
 /** The harness mode an agent runs in: plan mode only stops new work that writes, so readers (and work under way) run in auto. */
@@ -198,9 +198,7 @@ export class Orchestrator implements SessionHooks {
   private readonly startingBrowser = new Set<string>();
   private readonly worktrees: Worktrees | undefined;
   private readonly connections: Pick<Connections, 'env'> | undefined;
-  private readonly mcpServers: Pick<McpServers, 'ensure' | 'forAgents'> | undefined;
-  /** The person's servers already warned about for having Kelpie's own server's name. */
-  private readonly warnedMcp = new Set<string>();
+  private readonly mcpServers: Pick<McpServers, 'ensure' | 'forAgents' | 'warnOnce'> | undefined;
   /** Each session's connection env, read by `prepare` (it can wait) for the `specFor` right after it. */
   private readonly envs = new Map<string, Record<string, string>>();
   private warnedUnfenced = false;
@@ -276,7 +274,7 @@ export class Orchestrator implements SessionHooks {
         // The person's own servers, beside Kelpie's (still only these: --strict-mcp-config). None of
         // their tools is allowed by rule; an ask rule sends every call to the person, auto mode too.
         mcpConfig: own ? [...mcpConfig, JSON.stringify({ mcpServers: own })] : mcpConfig,
-        ...(own ? { askTools: Object.keys(own).map((name) => `mcp__${mcpToolPrefix(name)}`) } : {}),
+        ...(own ? { askTools: Object.keys(own).map(askRule) } : {}),
         ...(scratch ? { addDirs: [scratch] } : {}),
         ...connected,
         // The person's one browser, shared by every agent given it: only when the orchestrator asked.
@@ -392,18 +390,14 @@ export class Orchestrator implements SessionHooks {
   }
 
   /**
-   * The person's MCP servers an agent gets, as an `mcpServers` map: those they allow, while the
-   * setting is on. Undefined for none. One named like Kelpie's own server is never given (its tools
-   * would pass for Kelpie's, which agents may use without asking).
+   * The person's MCP servers an agent gets, as an `mcpServers` map: those they allowed, exactly as
+   * allowed (where configured, and what they run), while the setting is on. Undefined for none.
    */
   private personsServers(agent: Session): Record<string, object> | undefined {
     const settings = this.settings.get();
     if (!this.mcpServers || !settings.useUserMcp || !settings.mcpAllow.length) return undefined;
-    const { servers, blocked } = this.mcpServers.forAgents(this.roundUpCwd(agent), settings.mcpAllow);
-    for (const name of blocked.filter((n) => !this.warnedMcp.has(n))) {
-      this.warnedMcp.add(name);
-      console.warn(`kelpie: not giving agents your MCP server "${name}": Kelpie's own server has that name. Rename it in Claude Code to use it.`);
-    }
+    const { servers, skipped } = this.mcpServers.forAgents(this.roundUpCwd(agent), settings.mcpAllow);
+    for (const { name, reason } of skipped) this.mcpServers.warnOnce(`kelpie: not giving agents your MCP server "${name}": ${reason}`);
     return Object.keys(servers).length ? servers : undefined;
   }
 

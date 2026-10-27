@@ -34,6 +34,12 @@ export interface RunSpec {
    * even if the person has it on by default for their own sessions.
    */
   browser?: boolean;
+  /**
+   * Where the private files a run needs while it lives go (its MCP configs, which can hold
+   * secrets); default the OS temp directory. A spawner that owns this directory can sweep what a
+   * crash left there.
+   */
+  tempDir?: string;
   /** Where raw.jsonl and run.json go. Defaults to ~/.kelpie/runs/<runId>. */
   runDir?: string;
   /** Harness binary; defaults to the CLI on PATH. */

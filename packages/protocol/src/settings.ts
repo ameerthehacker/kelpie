@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { grantKey, McpGrant } from './mcp-servers.js';
 
 /**
  * The person's settings, as `GET /api/settings` returns them and `/api/events` streams them
@@ -24,18 +25,11 @@ export const AutoResume = z.boolean({ error: 'autoResume must be true or false' 
 
 export const UseUserMcp = z.boolean({ error: 'useUserMcp must be true or false' });
 
-/** An MCP server's name as Claude Code has it: `github`, `claude.ai Claude Docs`. */
-export const McpServerName = z
-  .string({ error: 'mcpAllow must be a list of server names' })
-  .trim()
-  .min(1, { error: 'an MCP server name cannot be empty' })
-  .max(200, { error: 'an MCP server name can be at most 200 characters' });
-
-/** The person's MCP servers agents may have; each name once. */
+/** The person's MCP servers agents may have (see `McpGrant`); each server once. */
 export const McpAllow = z
-  .array(McpServerName, { error: 'mcpAllow must be a list of server names' })
+  .array(McpGrant, { error: 'mcpAllow must be a list of servers, as the server list gives them' })
   .max(200, { error: 'mcpAllow can name at most 200 servers' })
-  .transform((names) => [...new Set(names)]);
+  .transform((grants) => grants.filter((g, i) => grants.findIndex((o) => grantKey(o) === grantKey(g)) === i));
 
 export const Settings = z.object({
   /** Agents one round-up may have working at once. */
@@ -47,7 +41,7 @@ export const Settings = z.object({
    * orchestrator; each of their tool calls is asked about.
    */
   useUserMcp: UseUserMcp,
-  /** The servers (by name) agents get while `useUserMcp` is on. */
+  /** The servers agents get while `useUserMcp` is on: each by where it is configured and what it runs. */
   mcpAllow: McpAllow,
 });
 export type Settings = z.infer<typeof Settings>;

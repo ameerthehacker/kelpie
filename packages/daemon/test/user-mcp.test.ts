@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openStore } from '@kelpie/store';
+import type { McpGrant } from '@kelpie/protocol';
 import { Orchestrator, SessionManager, type McpServers } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
@@ -42,6 +43,7 @@ const SERVERS: Record<string, object> = {
   github: { type: 'http', url: 'https://api.github.example/mcp', headers: { Authorization: 'Bearer sk-SECRET' } },
   'claude.ai Claude Docs': { type: 'claudeai-proxy', url: 'https://api.anthropic.com/v1/pages/mcp', id: 'mcpsrv_1' },
   notes: { command: 'notes-mcp' },
+  'claude.ai My  Tiny - Echo': { type: 'claudeai-proxy', url: 'https://api.anthropic.com/v1/pages/mcp', id: 'mcpsrv_2' },
   kelpie: { command: 'evil' },
 };
 
@@ -49,16 +51,18 @@ function setup(env: Record<string, string> = {}) {
   const store = openStore(':memory:');
   const argsFile = join(tmp('kelpie-args-'), 'args.jsonl');
   const answers = join(tmp('kelpie-answers-'), 'answers.jsonl');
-  const asked: { cwd: string; allow: readonly string[] }[] = [];
-  const mcpServers: Pick<McpServers, 'ensure' | 'forAgents'> = {
+  const asked: { cwd: string; allow: readonly McpGrant[] }[] = [];
+  const warned: string[] = [];
+  const mcpServers: Pick<McpServers, 'ensure' | 'forAgents' | 'warnOnce'> = {
     ensure: async (cwd, allow) => void asked.push({ cwd, allow }),
     forAgents: (_cwd, allow) => {
       const servers: Record<string, object> = {};
-      const blocked: string[] = [];
-      for (const name of allow) if (name === 'kelpie') blocked.push(name);
+      const skipped: { name: string; reason: string }[] = [];
+      for (const { name } of allow) if (name === 'kelpie') skipped.push({ name, reason: 'reserved' });
       else if (SERVERS[name]) servers[name] = SERVERS[name];
-      return { servers, blocked };
+      return { servers, skipped };
     },
+    warnOnce: (m) => void (warned.includes(m) || warned.push(m)),
   };
   const orch = new Orchestrator({ store, mcpUrl: 'http://127.0.0.1:7317/mcp', notifyDelayMs: 60_000, mcpServers });
   const sessions = new SessionManager({
@@ -70,7 +74,7 @@ function setup(env: Record<string, string> = {}) {
   });
   orch.attach(sessions);
   managers.push(sessions);
-  return { store, orch, sessions, argsFile, answers, asked };
+  return { store, orch, sessions, argsFile, answers, asked, warned };
 }
 
 /** An orchestrator round-up, and the argv of an agent it started. */
@@ -84,12 +88,15 @@ async function agentArgs(ctx: ReturnType<typeof setup>) {
   return { parent, agent: ctx.sessions.get(agentId)!, argv, orchestrator };
 }
 
+/** Grants as the Settings page sends them (the stub matches by name). */
+const grants = (...names: string[]): McpGrant[] => names.map((name) => ({ scope: 'user', name, fingerprint: '0123456789abcdef' }));
+
 const configs = (argv: string[]) => flag(argv, '--mcp-config').map((c) => Object.keys(JSON.parse(c).mcpServers));
 
 describe("the person's MCP servers for agents", () => {
   it('gives agents none while the setting is off, however many are allowed', async () => {
     const ctx = setup();
-    ctx.orch.settings.update({ mcpAllow: ['github'] });
+    ctx.orch.settings.update({ mcpAllow: grants('github') });
     const { argv } = await agentArgs(ctx);
     expect(argv).toContain('--strict-mcp-config');
     expect(configs(argv)).toEqual([['kelpie']]);
@@ -99,7 +106,7 @@ describe("the person's MCP servers for agents", () => {
 
   it('gives agents only the allowed servers, beside Kelpie’s, strict, with an ask rule for each and no allow rule', async () => {
     const ctx = setup();
-    ctx.orch.settings.update({ useUserMcp: true, mcpAllow: ['github', 'claude.ai Claude Docs'] });
+    ctx.orch.settings.update({ useUserMcp: true, mcpAllow: grants('github', 'claude.ai Claude Docs') });
     const { argv, orchestrator } = await agentArgs(ctx);
     expect(argv).toContain('--strict-mcp-config');
     const [kelpie, own] = flag(argv, '--mcp-config').map((c) => JSON.parse(c).mcpServers);
@@ -108,7 +115,7 @@ describe("the person's MCP servers for agents", () => {
     expect(JSON.parse(flag(argv, '--settings')[0]!)).toEqual({ permissions: { ask: ['mcp__github', 'mcp__claude_ai_Claude_Docs'] } });
     expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie']);
     // The connector's entry was made sure of first, for the round-up's repo.
-    expect(ctx.asked).toEqual([{ cwd: tmpdir(), allow: ['github', 'claude.ai Claude Docs'] }]);
+    expect(ctx.asked).toEqual([{ cwd: tmpdir(), allow: grants('github', 'claude.ai Claude Docs') }]);
 
     // The orchestrator never gets them.
     expect(orchestrator).toContain('--strict-mcp-config');
@@ -116,10 +123,17 @@ describe("the person's MCP servers for agents", () => {
     expect(orchestrator).not.toContain('--settings');
   });
 
-  it('keeps a server named like Kelpie’s own out, and warns once', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('writes the ask rule as Claude Code names the server: a claude.ai name with spaces and dashes', async () => {
     const ctx = setup();
-    ctx.orch.settings.update({ useUserMcp: true, mcpAllow: ['kelpie', 'notes'] });
+    ctx.orch.settings.update({ useUserMcp: true, mcpAllow: grants('claude.ai My  Tiny - Echo') });
+    const { argv } = await agentArgs(ctx);
+    // The CLI collapses a claude.ai name's runs of _ (mcp-ask-dashes.jsonl: mcp__claude_ai_My_Tiny_-_Echo__echo).
+    expect(JSON.parse(flag(argv, '--settings')[0]!).permissions.ask).toEqual(['mcp__claude_ai_My_Tiny_-_Echo']);
+  });
+
+  it('keeps a server named like Kelpie’s own out, and warns once', async () => {
+    const ctx = setup();
+    ctx.orch.settings.update({ useUserMcp: true, mcpAllow: grants('kelpie', 'notes') });
     const { argv, parent } = await agentArgs(ctx);
     expect(configs(argv)).toEqual([['kelpie'], ['notes']]);
     // Kelpie's own server is the one with the bearer token, not the person's `evil` command.
@@ -128,12 +142,12 @@ describe("the person's MCP servers for agents", () => {
     expect(JSON.parse(flag(argv, '--settings')[0]!).permissions.ask).toEqual(['mcp__notes']);
     await ctx.orch.spawn(parent, { title: 'Another', task: 'look', writes: false });
     await waitFor(() => jsonLines(ctx.argsFile).length === 3);
-    expect(warn.mock.calls.filter(([m]) => String(m).includes('"kelpie"'))).toHaveLength(1);
+    expect(ctx.warned.filter((m) => m.includes('"kelpie"'))).toHaveLength(1);
   });
 
   it("routes every call to a person's MCP tool to the person, and remembers it per tool for the round-up", async () => {
     const ctx = setup({ FAKE_ASK: 'is:open', FAKE_ASK_TOOL: 'mcp__github__search_issues', FAKE_ASK_SERVER: 'github' });
-    ctx.orch.settings.update({ useUserMcp: true, mcpAllow: ['github'] });
+    ctx.orch.settings.update({ useUserMcp: true, mcpAllow: grants('github') });
     const parent = ctx.sessions.create();
     await parent.send('Go');
     // The orchestrator's own ask (it never has the server) is refused by Kelpie's policy, never shown.
@@ -161,7 +175,7 @@ describe("the person's MCP servers for agents", () => {
 
   it('asks again for another tool of a server one tool of which is remembered', async () => {
     const ctx = setup({ FAKE_ASK: 'x', FAKE_ASK_TOOL: 'mcp__github__create_issue', FAKE_ASK_SERVER: 'github' });
-    ctx.orch.settings.update({ useUserMcp: true, mcpAllow: ['github'] });
+    ctx.orch.settings.update({ useUserMcp: true, mcpAllow: grants('github') });
     const parent = ctx.sessions.create();
     await parent.send('Go');
     await waitFor(() => jsonLines(ctx.answers).length === 1);

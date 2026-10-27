@@ -1,14 +1,16 @@
 import { formatDistanceToNow } from 'date-fns';
-import { CheckIcon, PlugIcon, RefreshCwIcon, TriangleAlertIcon } from 'lucide-react';
+import { CheckIcon, PlugIcon, RefreshCwIcon, TerminalIcon, TriangleAlertIcon } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
 import { useMcpServers, useRefreshMcpServers } from '@/hooks/use-mcp-servers';
+import { useNow } from '@/hooks/use-now';
 import { useSaveSettings } from '@/hooks/use-settings';
-import { allowedSummary, mcpRows, SCOPE_LABEL, STATUS_LABEL, toggleAllow, type McpRow, type McpStatus } from '@/lib/mcp-servers';
+import { allowedSummary, dropGrant, mcpRows, repoLabel, SCOPE_LABEL, setGrant, STATUS_LABEL, type McpGrant, type McpRow, type McpStatus } from '@/lib/mcp-servers';
 import type { SettingsPatch } from '@/lib/settings';
 import { cn } from '@/lib/utils';
 
@@ -25,31 +27,53 @@ const STATUS_TONE: Record<McpStatus, string> = {
 
 const chip = 'rounded-full px-2 py-px text-[11px] font-medium';
 
+/** Why a row isn't simply on or off, in words a screen reader hears with its checkbox. */
+function rowNote(row: McpRow): string | undefined {
+  if (row.state === 'blocked') return row.server?.blocked;
+  if (row.state === 'changed') return 'Its command or URL changed since you allowed it, so agents don’t get it. Tick it to allow it as it is now.';
+  if (row.state === 'missing') return 'Claude Code no longer has it here. Untick it to forget it.';
+  return undefined;
+}
+
 function ServerRow({ row, onToggle }: { row: McpRow; onToggle: (on: boolean) => void }) {
   const id = useId();
   const s = row.server;
+  const note = rowNote(row);
   return (
     <li className="flex items-start gap-3 py-2.5">
-      <Checkbox id={id} checked={row.allowed} disabled={!row.selectable} onCheckedChange={(v) => onToggle(v === true)} className="mt-0.5" aria-describedby={`${id}-meta`} />
+      <Checkbox
+        id={id}
+        checked={row.state === 'allowed' || row.state === 'missing'}
+        disabled={row.state === 'blocked'}
+        onCheckedChange={(v) => onToggle(v === true)}
+        className="mt-0.5"
+        aria-describedby={`${id}-meta${note ? ` ${id}-note` : ''}`}
+      />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <label htmlFor={id} className={cn('text-fg truncate text-[13px] font-medium', row.selectable ? 'cursor-pointer' : 'text-mu')}>
+        <label htmlFor={id} className={cn('truncate text-[13px] font-medium', row.state === 'blocked' ? 'text-mu' : 'text-fg cursor-pointer')}>
           {row.name}
         </label>
         <span id={`${id}-meta`} className="flex flex-wrap items-center gap-1.5">
           {s ? (
             <>
               <span className={cn(chip, 'bg-chip text-fg2 font-mono')}>{s.type}</span>
-              <span className={cn(chip, 'bg-chip text-fg2')}>{SCOPE_LABEL[s.scope]}</span>
+              <span className={cn(chip, 'bg-chip text-fg2')} title={s.repo}>
+                {SCOPE_LABEL[s.scope]}
+                {s.repo && <span className="sr-only"> server of {s.repo}</span>}
+              </span>
               <span className={cn(chip, STATUS_TONE[s.status])}>{STATUS_LABEL[s.status]}</span>
+              {row.state === 'changed' && <span className={cn(chip, 'text-wait bg-wait/12')}>Changed since allowed</span>}
             </>
           ) : (
-            <span className={cn(chip, 'text-mu bg-chip')}>Not found: Claude Code no longer has it</span>
+            <span className={cn(chip, 'text-mu bg-chip')}>
+              {SCOPE_LABEL[row.grant!.scope]} · not found
+            </span>
           )}
         </span>
-        {s?.blocked && (
-          <p className="text-fail flex items-start gap-1.5 text-xs">
-            <TriangleAlertIcon className="mt-px size-3.5 shrink-0" strokeWidth={2} />
-            {s.blocked}
+        {note && (
+          <p id={`${id}-note`} className={cn('flex items-start gap-1.5 text-xs', row.state === 'blocked' ? 'text-fail' : 'text-wait')}>
+            <TriangleAlertIcon aria-hidden="true" className="mt-px size-3.5 shrink-0" strokeWidth={2} />
+            {note}
           </p>
         )}
       </div>
@@ -59,17 +83,24 @@ function ServerRow({ row, onToggle }: { row: McpRow; onToggle: (on: boolean) => 
 
 /**
  * Use my Claude Code MCP servers: off, agents get only Kelpie's own server. On, they also get the
- * servers ticked below (each tool call still asks the person); the orchestrator never does.
+ * servers ticked below, each exactly as it was when ticked (each tool call still asks the person,
+ * unless they allow it for a round-up); the orchestrator never does. The list is per repo: a
+ * repo's own servers, and the person's local ones for it, are allowed for that repo only.
  */
-export function UserMcp({ value, allow }: { value: boolean; allow: string[] }) {
+export function UserMcp({ value, allow }: { value: boolean; allow: McpGrant[] }) {
   const save = useSaveSettings();
-  const list = useMcpServers(value);
+  const [picked, setPicked] = useState<string | undefined>();
+  const list = useMcpServers(value, picked);
   const refresh = useRefreshMcpServers();
+  const now = useNow();
   const labelId = useId();
   const hintId = useId();
   const statusId = useId();
+  const listId = useId();
+  const repoId = useId();
   const [saved, setSaved] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const checkedOnce = useRef(new Set<string>());
   useEffect(() => () => clearTimeout(timer.current), []);
   const send = (patch: SettingsPatch) => {
     setSaved(false);
@@ -82,12 +113,20 @@ export function UserMcp({ value, allow }: { value: boolean; allow: string[] }) {
     });
   };
 
-  const servers = list.data?.servers ?? [];
-  const rows = mcpRows(servers, allow);
-  const loading = list.isPending || refresh.isPending;
+  const data = list.data;
+  const repo = data?.repo;
+  // Never checked with Claude Code for this repo (connectors come from it): check once, on the person's behalf.
+  const { mutate: check } = refresh;
+  useEffect(() => {
+    if (!value || !repo || data?.checkedAt || checkedOnce.current.has(repo)) return;
+    checkedOnce.current.add(repo);
+    check({ repo, shown: picked });
+  }, [value, repo, picked, data?.checkedAt, check]);
+
+  const rows = data ? mcpRows(data.servers, allow, data.repo) : [];
+  const checking = refresh.isPending;
   const error = refresh.error ?? list.error;
-  const checkError = list.data?.error;
-  const checkedAt = list.data?.checkedAt;
+  const checkedAt = data?.checkedAt;
   const status = save.isPending ? (
     <span className="text-mu2 flex items-center gap-1.5">
       <Spinner className="size-3" /> Saving…
@@ -109,9 +148,9 @@ export function UserMcp({ value, allow }: { value: boolean; allow: string[] }) {
             Use my Claude Code MCP servers
           </span>
           <p id={hintId} className="text-mu text-[13px] leading-relaxed">
-            Agents can use these servers; each tool call asks you first. The orchestrator never uses them.
+            Agents can use these servers; each tool call asks you first, unless you choose Allow for round-up. The orchestrator never uses them.
           </p>
-          {value && list.data && <p className="text-mu2 text-xs">{allowedSummary(rows)} · changes apply as agents next start</p>}
+          {value && data && <p className="text-mu2 text-xs">{allowedSummary(rows)} · changes apply as agents next start</p>}
         </div>
         <div className="flex flex-col items-end gap-1.5 max-sm:items-start">
           <Switch checked={value} onCheckedChange={(on) => send({ useUserMcp: on })} aria-labelledby={labelId} aria-describedby={`${hintId} ${statusId}`} className="mt-1" />
@@ -122,56 +161,82 @@ export function UserMcp({ value, allow }: { value: boolean; allow: string[] }) {
       </div>
 
       {value && (
-        <div className="border-ln flex flex-col gap-1 border-t pt-3">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-fg2 text-[13px] font-medium">Servers agents may use</span>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={loading}
-              onClick={() => refresh.mutate()}
-              title={checkedAt ? `Checked ${formatDistanceToNow(new Date(checkedAt), { addSuffix: true })}` : undefined}
-            >
-              {refresh.isPending ? <Spinner className="size-3.5" /> : <RefreshCwIcon />}
-              Refresh
-            </Button>
+        <div className="border-ln flex flex-col gap-2 border-t pt-3">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            <span id={listId} className="text-fg2 text-[13px] font-medium">
+              Servers agents may use
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="text-mu2 text-xs" aria-live="polite">
+                {checking ? 'Checking with Claude Code…' : checkedAt ? `Checked ${formatDistanceToNow(Math.min(new Date(checkedAt).getTime(), now), { addSuffix: true })}` : 'Not checked yet'}
+              </span>
+              <Button variant="ghost" size="sm" disabled={checking || !repo} onClick={() => repo && check({ repo, shown: picked })}>
+                {checking ? <Spinner className="size-3.5" /> : <RefreshCwIcon />}
+                Refresh
+              </Button>
+            </span>
           </div>
+          {data && data.repos.length > 1 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <label htmlFor={repoId} className="text-mu text-xs">
+                For round-ups in
+              </label>
+              <Select value={data.repo} onValueChange={setPicked}>
+                <SelectTrigger id={repoId} size="sm" className="h-7 max-w-full text-xs" title={data.repo}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {data.repos.map((r) => (
+                    <SelectItem key={r} value={r} title={r}>
+                      {repoLabel(r)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          {data && data.repos.length <= 1 && (
+            <p className="text-mu text-xs">
+              For round-ups in <span className="font-mono">{data.repo}</span>
+            </p>
+          )}
           {error && <p className="text-fail text-[13px]">Couldn’t list your servers: {error.message}</p>}
-          {checkError && (
+          {data?.error && (
             <p className="text-wait flex items-start gap-1.5 text-xs">
-              <TriangleAlertIcon className="mt-px size-3.5 shrink-0" strokeWidth={2} />
-              Couldn’t check them with Claude Code ({checkError}): claude.ai connectors may be missing.
+              <TriangleAlertIcon aria-hidden="true" className="mt-px size-3.5 shrink-0" strokeWidth={2} />
+              Couldn’t check them with Claude Code ({data.error}): claude.ai connectors may be missing.
             </p>
           )}
           {list.isPending ? (
-            <div className="flex flex-col gap-2 py-2" aria-label="Looking for your servers">
+            <div role="status" className="flex flex-col gap-2 py-2">
+              <span className="sr-only">Looking for your servers…</span>
               <Skeleton className="h-10 w-full rounded-xl" />
               <Skeleton className="h-10 w-full rounded-xl" />
             </div>
           ) : rows.length ? (
-            <ul className="divide-ln flex flex-col divide-y">
+            <ul aria-labelledby={listId} className="divide-ln flex flex-col divide-y">
               {rows.map((row) => (
                 <ServerRow
-                  key={row.name}
+                  key={row.key}
                   row={row}
-                  onToggle={(on) =>
-                    send({
-                      mcpAllow: toggleAllow(
-                        allow,
-                        row.name,
-                        on,
-                        rows.map((r) => r.name),
-                      ),
-                    })
-                  }
+                  onToggle={(on) => send({ mcpAllow: row.server ? setGrant(allow, row.server, on) : dropGrant(allow, row.key) })}
                 />
               ))}
             </ul>
           ) : (
-            list.data && <p className="text-mu py-2 text-[13px]">Claude Code has no MCP servers set up. Add some with <code className="font-mono text-xs">claude mcp add</code>, then Refresh.</p>
+            data && (
+              <p className="text-mu py-2 text-[13px]">
+                Claude Code has no MCP servers set up here. Add some with <code className="font-mono text-xs">claude mcp add</code>, then Refresh.
+              </p>
+            )
           )}
+          <p className="text-wait flex items-start gap-1.5 text-xs leading-relaxed">
+            <TerminalIcon aria-hidden="true" className="mt-px size-3.5 shrink-0" strokeWidth={2} />
+            A stdio server runs a command on this Mac, as you, each time an agent starts. Allow only ones you trust.
+          </p>
           <p className="text-mu2 text-xs leading-relaxed">
-            Each one is picked on its own, claude.ai connectors included. Project servers come from this repo’s .mcp.json; Kelpie doesn’t start them just to check them.
+            Each one is allowed on its own, claude.ai connectors included, and only as it is now: if its command or URL changes, it needs allowing again. A repo’s own
+            servers (Project) are allowed for that repo only, and Kelpie doesn’t start them just to check them.
           </p>
         </div>
       )}
