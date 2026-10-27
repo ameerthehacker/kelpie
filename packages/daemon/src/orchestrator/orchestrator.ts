@@ -3,7 +3,7 @@ import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
 import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
-import { Harness, parseTicketUrl, type AgentUpdate, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
+import { Harness, parseTicketUrl, type Settings, type AgentUpdate, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import type { Connections } from '../connectors/connector.js';
 import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
@@ -13,7 +13,7 @@ import { GitError, type Branch, type Worktrees } from '../worktrees.js';
 import { Changes } from '../review/changes.js';
 import { Reviews, type ReviewClaim } from '../review/reviews.js';
 import { SavedSettings } from '../settings.js';
-import { askRule, type McpServers } from '../mcp-servers.js';
+import { askRule, mcpToolPrefix, type McpServers } from '../mcp-servers.js';
 import { Workbench } from '../workbench.js';
 import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, limitResumed, musterPrompt, orchestratorPrompt, reviewBrief, type WorkPlace } from './prompt.js';
 import { LIMIT_RESUMED } from '../usage-limits.js';
@@ -221,6 +221,7 @@ export class Orchestrator implements SessionHooks {
       this.sessions?.publish({ type: 'settings', settings: next });
       if (next.maxAgents > prev.maxAgents) this.limitRaised();
       if (next.autoResume !== prev.autoResume) this.sessions?.limits.settingChanged();
+      this.mcpGrantsChanged(next, prev);
     });
     this.notifyDelayMs = opts.notifyDelayMs ?? 1500;
     this.changes = new Changes(this.store);
@@ -382,6 +383,27 @@ export class Orchestrator implements SessionHooks {
     if (session.role === 'agent' && settings.useUserMcp && settings.mcpAllow.length && this.mcpServers) {
       await this.mcpServers.ensure(this.roundUpCwd(session), settings.mcpAllow);
     }
+  }
+
+  /**
+   * "Allow for round-up" rules for a person's MCP tool hold only while the server they were saved
+   * for is allowed as it was: revoked, allowed anew (a changed entry, or another server of the name),
+   * or the switch off, and every round-up's rules for that server's tools go. Agents running now ask
+   * Kelpie about each call (the ask rule), which no longer finds them.
+   */
+  private mcpGrantsChanged(next: Settings, prev: Settings): void {
+    const grants = (s: typeof next) => (s.useUserMcp ? s.mcpAllow : []);
+    const byName = (list: typeof next.mcpAllow) => {
+      const m = new Map<string, string[]>();
+      for (const g of list) m.set(g.name, [...(m.get(g.name) ?? []), JSON.stringify([g.scope, g.repo ?? '', g.fingerprint])].sort());
+      return m;
+    };
+    const before = byName(grants(prev));
+    const after = byName(grants(next));
+    const changed = [...before.keys()].filter((name) => JSON.stringify(before.get(name)) !== JSON.stringify(after.get(name)));
+    // Another server taking a name, with tools of the same names: any rules for that name were someone else's.
+    for (const name of after.keys()) if (!before.has(name)) changed.push(name);
+    this.store.deleteRulesStartingWith(changed.map((name) => `mcp__${mcpToolPrefix(name)}__`));
   }
 
   /** The repo checkout of an agent's round-up: whose project and local MCP servers it gets (a worktree has none of its own in ~/.claude.json). */

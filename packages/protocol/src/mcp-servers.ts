@@ -61,11 +61,17 @@ export interface McpServerInfo {
   /** A hash of what it runs or reaches (see `McpGrant`): changes when its command, URL, env, headers helper or the like do. */
   fingerprint: string;
   /**
-   * For a repo's own server (project): what allowing it would run or reach, a line each (its
-   * command line or URL, its headers helper, the names of its env and headers). Never shown for the
-   * person's own servers, whose entries can hold their secrets.
+   * For a repo's own server (project): what allowing it would run or reach, in full, a line each
+   * (its command line or URL, its headers helper, each env value and header, its OAuth settings).
+   * Never shown for the person's own servers, whose entries can hold their secrets.
    */
   runs?: string[];
+  /**
+   * What the person should know before allowing it: a relative path it uses (servers start in an
+   * empty folder), a package fetched unpinned, the repo's files it runs, the person's env a repo's
+   * server fills in (`${GH_TOKEN}`).
+   */
+  warnings?: string[];
   status: McpStatus;
   /** Why agents can't have it, if they can't (its name could pass for another server's tools). */
   blocked?: string;

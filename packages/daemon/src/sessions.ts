@@ -196,6 +196,18 @@ export interface SendOptions {
   together?: TogetherTurn[];
 }
 
+const FROM: Record<Exclude<OutboxSource, 'user'>, string> = { orchestrator: 'From the orchestrator:', kelpie: 'From Kelpie:' };
+
+/**
+ * A turn as it may go to a harness: one Kelpie or an orchestrator sends never starts with `/`, which
+ * the harness would run as a slash command, before any permission check: a built-in one, or an MCP
+ * server's prompt (`/mcp__github__pr` calls its prompts/get unasked). It gets a line saying who it
+ * is from first. Only the person's own turns may be commands.
+ */
+export function notCommand(text: string, source: OutboxSource): string {
+  return source !== 'user' && /^\s*\//.test(text) ? `${FROM[source]}\n${text}` : text;
+}
+
 /** A turn for another session that goes with a `send`: both survive a crash, or neither was queued. */
 export interface TogetherTurn {
   session: Session;
@@ -709,8 +721,9 @@ export class Session {
    * Sends a turn. It is written to the outbox first, so a turn the harness has not taken in
    * yet survives a crash and is sent again.
    */
-  async send(text: string, source: OutboxSource = 'user', opts: SendOptions = {}): Promise<void> {
-    const together = opts.together ?? [];
+  async send(rawText: string, source: OutboxSource = 'user', opts: SendOptions = {}): Promise<void> {
+    const text = notCommand(rawText, source);
+    const together = (opts.together ?? []).map((t) => ({ ...t, text: notCommand(t.text, t.source) }));
     const all: Session[] = [this, ...together.map((t) => t.session)];
     // A process can exit before its last events are logged; logging its exit clears the outbox, so a turn waits.
     // For several sessions, until none of them is in that state at once.

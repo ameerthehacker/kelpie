@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { closeSync, constants, fstatSync, mkdtempSync, openSync, readSync, statSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { grantKey, type McpGrant, type McpScope, type McpServerInfo, type McpServerList, type McpStatus } from '@kelpie/protocol';
 
@@ -34,6 +34,12 @@ export interface McpServersOptions {
   retryMs?: number;
   /** Env for the check (tests). */
   env?: Record<string, string>;
+  /**
+   * An empty directory only Kelpie writes to, which agents' stdio servers start in (never the
+   * agent's own directory, whose `node_modules/.bin`, `.npmrc` or Python modules would decide what
+   * `npx` or `python -m` runs). Default: a fresh one in the OS temp directory.
+   */
+  neutralDir?: string;
 }
 
 /**
@@ -95,9 +101,11 @@ const keysOnly = (v: unknown) => (isObj(v) ? Object.fromEntries(Object.keys(v).m
  * too; a secret there is usually a `${VAR}`). A user one: the whole entry but the values of its env
  * and headers (their names count), so a rotated token keeps it allowed. A connector: its URL and id.
  */
-export function fingerprint(scope: McpScope, config: Obj): string {
+export function fingerprint(scope: McpScope, config: Obj, files: Record<string, string> = {}): string {
   const what = scope === 'claudeai' ? { type: config.type, url: config.url, id: config.id } : scope === 'user' ? { ...config, env: keysOnly(config.env), headers: keysOnly(config.headers) } : config;
-  return createHash('sha256').update(stable(what)).digest('hex').slice(0, 16);
+  // The repo's files it runs (see `pinnedFiles`), by content: a script changed in the repo is not the one allowed.
+  const pinned = Object.keys(files).length ? { entry: what, files } : what;
+  return createHash('sha256').update(stable(pinned)).digest('hex').slice(0, 16);
 }
 
 /** An empty list this long after start is taken as none (before then the CLI may still be reading its config). */
@@ -110,16 +118,79 @@ const PRECEDENCE: McpScope[] = ['claudeai', 'user', 'project', 'local'];
 /** A config file that is there but can't be read as JSON: Claude Code may read it all the same. */
 class Unreadable extends Error {}
 
+/** The most a `.mcp.json` may be; ~/.claude.json (it keeps every project's history) may be more. */
+const MAX_MCP_JSON = 1 << 20;
+const MAX_CLAUDE_JSON = 64 << 20;
+
+/**
+ * A file's text, if it is a regular file of at most `max` bytes; undefined if there is none. Anything
+ * else (a FIFO or device, `/dev/stdin` or `/dev/zero` through a link, one too big) is `Unreadable`,
+ * without blocking: it is opened non-blocking and checked before a byte is read.
+ */
+function readBounded(path: string, max: number): string | Unreadable | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? undefined : new Unreadable(path);
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.size > max) {
+      console.warn(`kelpie: not reading ${path}: ${st.isFile() ? `over ${max >> 20} MB` : 'not a regular file'}`);
+      return new Unreadable(path);
+    }
+    const buf = Buffer.alloc(st.size);
+    let at = 0;
+    while (at < st.size) {
+      const n = readSync(fd, buf, at, st.size - at, at);
+      if (n === 0) break;
+      at += n;
+    }
+    return buf.subarray(0, at).toString('utf8');
+  } catch {
+    return new Unreadable(path);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** A file's sha256, if it is a regular file Kelpie may read (scripts a server runs: up to 16 MB). */
+function fileHash(path: string): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  } catch {
+    return undefined;
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return undefined;
+    if (st.size > 16 << 20) return `size:${st.size}:${st.mtimeMs}`;
+    const buf = Buffer.alloc(st.size);
+    let at = 0;
+    while (at < st.size) {
+      const n = readSync(fd, buf, at, st.size - at, at);
+      if (n === 0) break;
+      at += n;
+    }
+    return createHash('sha256').update(buf.subarray(0, at)).digest('hex');
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /**
  * A JSON file's contents, as Claude Code reads it (a UTF-8 BOM first is skipped); undefined if it is
  * missing. One that is there but won't parse is `Unreadable` (Claude Code may be mid-write, or read
  * it some other way); it is logged by its path only, as the parser's message quotes the file around
  * the error, which may be a token.
  */
-function readConfig(path: string): Obj | Unreadable | undefined {
-  if (!existsSync(path)) return undefined;
+function readConfig(path: string, max = MAX_MCP_JSON): Obj | Unreadable | undefined {
+  const text = readBounded(path, max);
+  if (text === undefined || text instanceof Unreadable) return text;
   try {
-    const json: unknown = JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
+    const json: unknown = JSON.parse(text.replace(/^\uFEFF/, ''));
     return isObj(json) ? json : new Unreadable(path);
   } catch {
     console.warn(`kelpie: could not read MCP servers from ${path}: not valid JSON`);
@@ -128,17 +199,26 @@ function readConfig(path: string): Obj | Unreadable | undefined {
 }
 
 /** A config file's contents, or nothing if it is missing or unreadable. */
-const readJson = (path: string): Obj | undefined => {
-  const c = readConfig(path);
+const readJson = (path: string, max = MAX_MCP_JSON): Obj | undefined => {
+  const c = readConfig(path, max);
   return c instanceof Unreadable ? undefined : c;
 };
 
 const entries = (servers: unknown): [string, Obj][] => (isObj(servers) ? Object.entries(servers).filter((e): e is [string, Obj] => isObj(e[1])) : []);
 
 /** The git repository `dir` is in, if any: a local server may be configured for it. */
+const exists = (path: string) => {
+  try {
+    statSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 function repoRoot(dir: string): string | undefined {
   for (let d = dir; ; d = dirname(d)) {
-    if (existsSync(join(d, '.git'))) return d;
+    if (exists(join(d, '.git'))) return d;
     if (dirname(d) === d) return undefined;
   }
 }
@@ -155,8 +235,6 @@ function upToRoot(dir: string): string[] {
   }
 }
 
-const LINE = 300;
-const clip = (line: string) => (line.length > LINE ? `${line.slice(0, LINE - 1)}…` : line);
 /** A word of a command line, quoted if it needs to be to read as one. */
 const word = (w: unknown) => {
   const t = String(w);
@@ -164,19 +242,113 @@ const word = (w: unknown) => {
 };
 
 /**
- * What a repo's own server would run or reach, a line each: its command line or URL, its headers
- * helper (a command too), and the names of the env and headers it sets.
+ * What a repo's own server would run or reach, in full, a line each: its command line or URL, its
+ * headers helper (a command too), each env value and header, and its OAuth settings. They are the
+ * repo's, not the person's secrets; a `${VAR}` in them is the person's, and `expansions` flags it.
  */
 function runsOf(config: Obj): string[] {
   const lines: string[] = [];
   if (typeof config.command === 'string') lines.push([config.command, ...(Array.isArray(config.args) ? config.args : [])].map(word).join(' '));
   if (typeof config.url === 'string') lines.push(config.url);
   if (typeof config.headersHelper === 'string') lines.push(`headersHelper: ${config.headersHelper}`);
-  if (isObj(config.env) && Object.keys(config.env).length) lines.push(`env: ${Object.keys(config.env).join(', ')}`);
-  if (isObj(config.headers) && Object.keys(config.headers).length) lines.push(`headers: ${Object.keys(config.headers).join(', ')}`);
-  if (isObj(config.oauth)) lines.push('oauth: configured');
-  return lines.length ? lines.map(clip) : ['(no command or URL)'];
+  if (isObj(config.env)) for (const [k, v] of Object.entries(config.env)) lines.push(`env ${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
+  if (isObj(config.headers)) for (const [k, v] of Object.entries(config.headers)) lines.push(`header ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
+  if (config.oauth !== undefined) lines.push(`oauth: ${JSON.stringify(config.oauth)}`);
+  return lines.length ? lines : ['(no command or URL)'];
 }
+
+/** The `${VAR}`s (and `${VAR:-default}`s) an entry would fill in from the person's environment, each once. */
+function expansions(config: Obj): string[] {
+  const found = new Set<string>();
+  const walk = (v: unknown): void => {
+    if (typeof v === 'string') for (const m of v.matchAll(/\$\{([^}:]+)(?::-[^}]*)?\}/g)) found.add(m[1]!);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (isObj(v)) Object.values(v).forEach(walk);
+  };
+  walk(config);
+  return [...found];
+}
+
+const isStdio = (config: Obj) => typeof config.command === 'string' && (config.type === undefined || config.type === 'stdio');
+
+/** Looks like a path (not a flag, a package name, a version or a URL): `./x`, `../x`, `dir/x`, `x.js`. */
+const pathLike = (a: string) => !a.startsWith('-') && !a.startsWith('@') && !a.includes('://') && (a.includes('/') || /^[^=@]+\.[a-zA-Z][a-zA-Z0-9]{0,4}$/.test(a));
+
+/** Runners that fetch a package to run: unpinned, each start may run different code. */
+const RUNNERS = new Set(['npx', 'pnpx', 'bunx', 'uvx']);
+const PINNED = /(@|==)v?\d+\.\d+\.\d+([-+][\w.]+)?$/;
+
+/** The package a runner (`npx -y pkg`, `pnpm dlx pkg`, `uvx --from pkg x`) would fetch, if one. */
+function runnerPackage(command: string, args: string[]): { runner: string; pkg: string } | undefined {
+  const cmd = basename(command);
+  let rest = args;
+  let runner = cmd;
+  if ((cmd === 'pnpm' || cmd === 'yarn') && args[0] === 'dlx') [runner, rest] = [`${cmd} dlx`, args.slice(1)];
+  else if (cmd === 'pipx' && args[0] === 'run') [runner, rest] = ['pipx run', args.slice(1)];
+  else if (!RUNNERS.has(cmd)) return undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]!;
+    if (a === '-p' || a === '--package' || a === '--from' || a === '--spec') return rest[i + 1] ? { runner, pkg: rest[i + 1]! } : undefined;
+    if (a.startsWith('--package=') || a.startsWith('--from=') || a.startsWith('--spec=')) return { runner, pkg: a.slice(a.indexOf('=') + 1) };
+    if (!a.startsWith('-')) return { runner, pkg: a };
+  }
+  return undefined;
+}
+
+const within = (path: string, dir: string) => path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep);
+
+/**
+ * A stdio server's command and arguments as Kelpie starts it: paths relative to the repo it is
+ * configured in made absolute (it starts elsewhere), and which of them are the repo's files, with
+ * their hashes (a script changed in the repo is not the one allowed).
+ */
+function pinnedFiles(s: Pick<Found, 'scope' | 'repo' | 'config'>, repo: string): { command: string; args: unknown[]; files: Record<string, string>; unresolved: string[] } {
+  const c = s.config;
+  const base = s.scope === 'project' || s.scope === 'local' ? s.repo : undefined;
+  const files: Record<string, string> = {};
+  const unresolved: string[] = [];
+  const pin = (a: string, isCommand: boolean): string => {
+    // A bare command (`npx`) is found on PATH, not in the repo.
+    if (isCommand ? !a.includes('/') : !pathLike(a)) return a;
+    const abs = isAbsolute(a) ? a : base ? resolve(base, a) : undefined;
+    const hash = abs ? fileHash(abs) : undefined;
+    if (!abs || hash === undefined) {
+      if (!isAbsolute(a)) unresolved.push(a);
+      return a;
+    }
+    // The person's own files elsewhere are theirs to change; a repo's are pinned.
+    if (within(abs, repo) || (base && within(abs, base))) files[abs] = hash;
+    return abs;
+  };
+  const command = pin(String(c.command), true);
+  const args = (Array.isArray(c.args) ? c.args : []).map((a: unknown) => (typeof a === 'string' ? pin(a, false) : a));
+  return { command, args, files, unresolved };
+}
+
+/** What to tell the person about how a stdio server starts: paths Kelpie can't pin, and packages fetched unpinned. */
+function stdioWarnings(s: Found, repo: string): string[] {
+  if (!isStdio(s.config)) return [];
+  const { unresolved, files } = pinnedFiles(s, repo);
+  const warnings: string[] = [];
+  for (const p of unresolved) warnings.push(`Uses the relative path ${p}: Kelpie starts servers from an empty folder, not the agent's, so it may not be found.`);
+  const inRepo = Object.keys(files).map((f) => relative(repo, f) || f);
+  if (inRepo.length) warnings.push(`Runs ${inRepo.join(', ')} from the repo: if ${inRepo.length === 1 ? 'it changes' : 'they change'}, the server needs allowing again.`);
+  const run = runnerPackage(String(s.config.command), (Array.isArray(s.config.args) ? s.config.args : []).map(String));
+  if (run && !PINNED.test(run.pkg)) warnings.push(`Runs ${run.pkg} with ${run.runner}, not pinned to an exact version: each start may run different code.`);
+  return warnings;
+}
+
+/** Everything Settings warns about for a server: how it starts, and (for a repo's own) the person's env it reads. */
+function warningsOf(s: Found, repo: string): string[] {
+  const warnings = stdioWarnings(s, repo);
+  if (s.scope === 'project') {
+    for (const v of expansions(s.config)) warnings.push(`Fills in \${${v}} from your environment: that value goes wherever this server sends it.`);
+  }
+  return warnings;
+}
+
+/** The argv that starts a command in `dir`, whatever directory it is started from. */
+const IN_DIR = ['-c', 'cd -- "$1" || exit 1; shift; exec "$@"', 'kelpie-mcp'];
 
 /** A server's transport, as the UI shows it. */
 function typeOf(config: Obj, scope: McpScope): string {
@@ -230,8 +402,10 @@ export class McpServers {
   private active = 0;
   private readonly queue: (() => void)[] = [];
   private readonly warned = new Set<string>();
+  private neutral: string | undefined;
 
   constructor(opts: McpServersOptions = {}) {
+    this.neutral = opts.neutralDir;
     this.claudeJson = opts.claudeJson ?? join(process.env.CLAUDE_CONFIG_DIR ?? homedir(), '.claude.json');
     this.bin = opts.bin ?? 'claude';
     this.timeoutMs = opts.timeoutMs ?? 15_000;
@@ -253,9 +427,10 @@ export class McpServers {
         type: typeOf(s.config, s.scope),
         scope: s.scope,
         ...(s.repo ? { repo: s.repo } : {}),
-        fingerprint: fingerprint(s.scope, s.config),
+        fingerprint: this.fingerprintOf(s, dir),
         // A repo's own server is the repo's, not the person's secret: show what allowing it would run.
         ...(s.scope === 'project' ? { runs: runsOf(s.config) } : {}),
+        ...(warningsOf(s, dir).length ? { warnings: warningsOf(s, dir) } : {}),
         // Kelpie doesn't start a repo's own servers to check them.
         status: s.scope === 'project' ? 'unchecked' : (probed.get(`${s.scope}\0${s.name}`) ?? 'unchecked'),
         ...(blocked ? { blocked } : {}),
@@ -292,23 +467,39 @@ export class McpServers {
     const prefixes = new Map<string, string>();
     const skipped: { name: string; reason: string }[] = [];
     // Strongest first, so of two allowed servers with one name the one Claude Code would load wins.
-    const found = this.found(resolve(repo)).sort((a, b) => PRECEDENCE.indexOf(b.scope) - PRECEDENCE.indexOf(a.scope));
+    const dir = resolve(repo);
+    const found = this.found(dir).sort((a, b) => PRECEDENCE.indexOf(b.scope) - PRECEDENCE.indexOf(a.scope));
     for (const s of found) {
       const fp = granted.get(keyOf(s));
       if (fp === undefined) continue;
       const blocked = blockedReason(s.name, s.scope);
       // Compared as Claude Code would mix them up: `foo_` and `foo` give the tool `mcp__foo___bar` (tools `bar` and `_bar`).
       const prefix = canonical(s.name);
-      if (fp !== fingerprint(s.scope, s.config)) skipped.push({ name: s.name, reason: 'it changed since it was allowed' });
+      if (fp !== this.fingerprintOf(s, dir)) skipped.push({ name: s.name, reason: 'it changed since it was allowed' });
       else if (blocked) skipped.push({ name: s.name, reason: blocked });
       else if (s.name in servers) skipped.push({ name: s.name, reason: `a ${s.scope} server of that name is allowed too, and the other one wins` });
       else if (prefixes.has(prefix)) skipped.push({ name: s.name, reason: `its tools would have the same names as ${prefixes.get(prefix)}'s` });
       else {
-        servers[s.name] = s.config;
+        servers[s.name] = isStdio(s.config) ? this.fromNeutral(s, dir) : s.config;
         prefixes.set(prefix, s.name);
       }
     }
     return { servers, skipped };
+  }
+
+  /** A server's fingerprint, the repo's files it runs included. */
+  private fingerprintOf(s: Found, repo: string): string {
+    return fingerprint(s.scope, s.config, isStdio(s.config) ? pinnedFiles(s, repo).files : {});
+  }
+
+  /**
+   * A stdio server's entry as an agent gets it: started in Kelpie's empty directory (through
+   * `sh -c 'cd …; exec …'`), with the repo's paths made absolute; its env and everything else as written.
+   */
+  private fromNeutral(s: Found, repo: string): Obj {
+    const { command, args } = pinnedFiles(s, repo);
+    this.neutral ??= mkdtempSync(join(tmpdir(), 'kelpie-mcp-cwd-'));
+    return { ...s.config, type: 'stdio', command: '/bin/sh', args: [...IN_DIR, this.neutral, command, ...args] };
   }
 
   /** Logs once per server and reason. */
@@ -325,7 +516,7 @@ export class McpServers {
    * repo (`dir`'s winning). A name in two scopes is listed for each: never one for the other.
    */
   private found(dir: string): Found[] {
-    const claude = readJson(this.claudeJson);
+    const claude = readJson(this.claudeJson, MAX_CLAUDE_JSON);
     const found: Found[] = [];
     for (const p of this.checks.get(dir)?.probed ?? []) if (p.scope === 'claudeai') found.push({ name: p.name, scope: 'claudeai', config: p.config });
     for (const [name, config] of entries(claude?.mcpServers)) found.push({ name, scope: 'user', config });

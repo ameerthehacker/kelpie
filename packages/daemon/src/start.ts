@@ -78,6 +78,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   const tempDir = join(home, 'tmp');
   rmSync(tempDir, { recursive: true, force: true });
   mkdirSync(tempDir, { recursive: true, mode: 0o700 });
+  // Where agents' stdio MCP servers start: empty, and only Kelpie writes here (see McpServers).
+  const mcpCwd = join(home, 'mcp-cwd');
+  rmSync(mcpCwd, { recursive: true, force: true });
+  mkdirSync(mcpCwd, { recursive: true, mode: 0o700 });
 
   const store = openStore(join(home, 'kelpie.db'), opts.migrationsFolder ? { migrationsFolder: opts.migrationsFolder } : {});
   const worktrees = new Worktrees({
@@ -87,7 +91,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     ...(opts.maxWorktrees ? { max: opts.maxWorktrees } : {}),
   });
   const connections = new Connections([new GitHubConnector({ store })]);
-  const mcpServers = new McpServers();
+  const mcpServers = new McpServers({ neutralDir: mcpCwd });
   const orchestrator = new Orchestrator({
     store,
     mcpUrl: `http://127.0.0.1:${opts.port}/mcp`,

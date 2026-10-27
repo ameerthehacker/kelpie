@@ -18,6 +18,7 @@ export {
   type SessionManagerOptions,
   type SessionUpdate,
   type TurnStatus,
+  notCommand,
 } from './sessions.js';
 export { createApp, localOnly, type AppOptions } from './server.js';
 export { canStart, checkHarnesses, claudeCodeStatus, installDirs, parseVersion, type CheckOptions, type HarnessStatus } from './harness-status.js';

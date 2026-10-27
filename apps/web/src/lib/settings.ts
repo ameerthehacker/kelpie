@@ -62,7 +62,9 @@ export function saveSettingsOptions(queryClient: QueryClient): MutationOptions<S
     onSuccess: (saved) => {
       if (queryClient.isMutating({ mutationKey: SETTINGS }) <= 1) queryClient.setQueryData(SETTINGS, saved);
     },
-    onSettled: () => {
+    onSettled: (_saved, _err, patch) => {
+      // Revoking or re-allowing an MCP server drops the rules saved for its tools, in every round-up.
+      if ('mcpAllow' in patch || 'useUserMcp' in patch) void queryClient.invalidateQueries({ queryKey: ['rules'] });
       if (queryClient.isMutating({ mutationKey: SETTINGS }) <= 1) void queryClient.invalidateQueries({ queryKey: SETTINGS });
     },
   };

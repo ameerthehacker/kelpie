@@ -166,6 +166,25 @@ describe('saving settings', () => {
     expect(shown()).toBe(3);
   });
 
+  it('asks for the saved rules again after a change to the MCP servers (the daemon drops those of a revoked one)', async () => {
+    const puts = deferredPuts();
+    const { client, save } = setup();
+    const invalidated: unknown[] = [];
+    const spy = vi.spyOn(client, 'invalidateQueries').mockImplementation(async (f) => void invalidated.push(f?.queryKey));
+    const done = save({ mcpAllow: [] });
+    await flush();
+    puts[0]!.answer(200, { maxAgents: 4, autoResume: true, useUserMcp: false, mcpAllow: [] });
+    await done;
+    expect(invalidated).toContainEqual(['rules']);
+    invalidated.length = 0;
+    const other = save({ maxAgents: 5 });
+    await flush();
+    puts[1]!.answer(200, { maxAgents: 5 });
+    await other;
+    expect(invalidated).not.toContainEqual(['rules']);
+    spy.mockRestore();
+  });
+
   it('shows auto-resume flipped at once, and puts it back if the daemon refuses', async () => {
     const puts = deferredPuts();
     const { client, save } = setup();

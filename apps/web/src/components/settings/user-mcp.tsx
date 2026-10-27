@@ -47,7 +47,7 @@ function ServerRow({ row, onToggle }: { row: McpRow; onToggle: (on: boolean) => 
         disabled={row.state === 'blocked'}
         onCheckedChange={(v) => onToggle(v === true)}
         className="mt-0.5"
-        aria-describedby={`${id}-meta${s?.runs ? ` ${id}-runs` : ''}${note ? ` ${id}-note` : ''}`}
+        aria-describedby={`${id}-meta${s?.runs ? ` ${id}-runs` : ''}${s?.warnings ? ` ${id}-warnings` : ''}${note ? ` ${id}-note` : ''}`}
       />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <label htmlFor={id} className={cn('truncate text-[13px] font-medium', row.state === 'blocked' ? 'text-mu' : 'text-fg cursor-pointer')}>
@@ -74,11 +74,21 @@ function ServerRow({ row, onToggle }: { row: McpRow; onToggle: (on: boolean) => 
           <div id={`${id}-runs`} className="flex flex-col gap-0.5">
             <span className="text-mu text-xs">This repo’s server runs:</span>
             {s.runs.map((line, i) => (
-              <code key={i} className="bg-chip text-fg2 rounded-md px-2 py-1 font-mono text-[11px] break-all">
+              <code key={i} className={cn('bg-chip rounded-md px-2 py-1 font-mono text-[11px] break-all whitespace-pre-wrap', line.includes('${') ? 'text-wait' : 'text-fg2')}>
                 {line}
               </code>
             ))}
           </div>
+        )}
+        {s?.warnings && (
+          <ul id={`${id}-warnings`} className="text-wait flex flex-col gap-0.5 text-xs">
+            {s.warnings.map((w, i) => (
+              <li key={i} className="flex items-start gap-1.5">
+                <TriangleAlertIcon aria-hidden="true" className="mt-px size-3.5 shrink-0" strokeWidth={2} />
+                {w}
+              </li>
+            ))}
+          </ul>
         )}
         {note && (
           <p id={`${id}-note`} className={cn('flex items-start gap-1.5 text-xs', row.state === 'blocked' ? 'text-fail' : 'text-wait')}>
@@ -242,7 +252,7 @@ export function UserMcp({ value, allow }: { value: boolean; allow: McpGrant[] })
           )}
           <p className="text-wait flex items-start gap-1.5 text-xs leading-relaxed">
             <TerminalIcon aria-hidden="true" className="mt-px size-3.5 shrink-0" strokeWidth={2} />
-            A stdio server runs a command on this Mac, as you, each time an agent starts. Allow only ones you trust.
+            A stdio server runs a command on this Mac, as you, each time an agent starts (from an empty folder, not the agent’s). Allow only ones you trust, and prefer packages pinned to a version.
           </p>
           <p className="text-mu2 text-xs leading-relaxed">
             Each one is allowed on its own, claude.ai connectors included, and only as it is now: if what it runs or its settings change, it needs allowing again. A repo’s own

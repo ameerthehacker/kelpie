@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openStore } from '@kelpie/store';
 import type { McpGrant } from '@kelpie/protocol';
-import { Orchestrator, SessionManager, type McpServers } from '../src/index.js';
+import { notCommand, Orchestrator, SessionManager, type McpServers } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
 const FIXTURE = join(import.meta.dirname, '../../adapters/fixtures/claude-code/plain.jsonl');
@@ -183,5 +183,77 @@ describe("the person's MCP servers for agents", () => {
     await ctx.orch.spawn(parent, { title: 'Writer-ish', task: 'file it', writes: false });
     const [pending] = await waitFor(() => ctx.sessions.approvals(parent.id).length === 1 && ctx.sessions.approvals(parent.id));
     expect(pending).toMatchObject({ tool: 'mcp__github__create_issue', rule: 'mcp__github__create_issue' });
+  });
+
+  it('never sends an agent (or the orchestrator) a turn from Kelpie or the orchestrator that starts with /', async () => {
+    const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
+    const ctx = setup({ FAKE_STDIN_FILE: stdin, FAKE_EVERY_TURN: '1' });
+    const parent = ctx.sessions.create();
+    // The person's own turns may be commands.
+    await parent.send('/compact');
+    await waitFor(() => jsonLines<{ text: string }>(stdin).some((l) => l.text === '/compact'));
+    // A brief that would run the person's server's prompt (/mcp__gh__pr calls its prompts/get unasked).
+    const { agentId } = await ctx.orch.spawn(parent, { title: 'Reader', task: '/mcp__gh__pr 12', writes: false });
+    const brief = await waitFor(() => jsonLines<{ text: string }>(stdin).find((l) => l.text.includes('/mcp__gh__pr 12')));
+    expect(brief.text.startsWith('From the orchestrator:\n/mcp__gh__pr 12')).toBe(true);
+    const agent = ctx.sessions.get(agentId)!;
+    await waitFor(() => !agent.working);
+    await agent.send('  /clear', 'orchestrator');
+    await agent.send('/resume', 'kelpie');
+    await waitFor(() => jsonLines<{ text: string }>(stdin).some((l) => l.text.includes('/resume')));
+    const texts = jsonLines<{ text: string }>(stdin).map((l) => l.text);
+    expect(texts).toContain('From the orchestrator:\n  /clear');
+    expect(texts.some((t) => t.startsWith('From Kelpie:\n/resume'))).toBe(true);
+    expect(texts.filter((t) => /^\s*\//.test(t))).toEqual(['/compact']);
+  });
+
+  it('says who a turn is from only when it would read as a command', () => {
+    expect(notCommand('/x', 'orchestrator')).toBe('From the orchestrator:\n/x');
+    expect(notCommand('\n\t/x', 'kelpie')).toBe('From Kelpie:\n\n\t/x');
+    expect(notCommand('do /x', 'orchestrator')).toBe('do /x');
+    expect(notCommand('/x', 'user')).toBe('/x');
+  });
+
+  it("drops the rules saved for a server's tools when it is revoked, allowed anew, or the switch goes off", () => {
+    const ctx = setup();
+    const github: McpGrant = { scope: 'user', name: 'github', fingerprint: '0123456789abcdef' };
+    const notes: McpGrant = { scope: 'user', name: 'notes', fingerprint: '0123456789abcdef' };
+    const parent = ctx.sessions.create();
+    const other = ctx.sessions.create();
+    const rules = (id: string) => ctx.store.rulesOf(id).map((r) => r.rule).sort();
+    // Rules saved before a server was allowed were for another server of that name.
+    ctx.store.addRule(parent.id, 'mcp__github__search_issues');
+    ctx.orch.settings.update({ useUserMcp: true, mcpAllow: [github, notes] });
+    expect(rules(parent.id)).toEqual([]);
+
+    const remember = () => {
+      ctx.store.addRule(parent.id, 'mcp__github__search_issues');
+      ctx.store.addRule(other.id, 'mcp__github__create_issue');
+      ctx.store.addRule(parent.id, 'mcp__notes__read');
+      ctx.store.addRule(parent.id, 'mcp__github_enterprise__x');
+      ctx.store.addRule(parent.id, 'Bash(pnpm install)');
+    };
+    remember();
+    // Revoked: its rules go, in every round-up; another server's, and other tools', stay.
+    ctx.orch.settings.update({ mcpAllow: [notes] });
+    expect(rules(parent.id)).toEqual(['Bash(pnpm install)', 'mcp__github_enterprise__x', 'mcp__notes__read']);
+    expect(rules(other.id)).toEqual([]);
+
+    // Allowed anew as it is now (its entry changed): the old rules were for what it was.
+    ctx.orch.settings.update({ mcpAllow: [notes, github] });
+    remember();
+    ctx.orch.settings.update({ mcpAllow: [notes, { ...github, fingerprint: 'fedcba9876543210' }] });
+    expect(rules(parent.id)).toEqual(['Bash(pnpm install)', 'mcp__github_enterprise__x', 'mcp__notes__read']);
+    // A project server taking the name is a different grant too.
+    remember();
+    ctx.orch.settings.update({ mcpAllow: [notes, { scope: 'project', name: 'github', repo: '/r', fingerprint: 'fedcba9876543210' }] });
+    expect(rules(other.id)).toEqual([]);
+    // An unrelated change keeps them.
+    remember();
+    ctx.orch.settings.update({ maxAgents: 3 });
+    expect(rules(other.id)).toEqual(['mcp__github__create_issue']);
+    // Off: every allowed server's go.
+    ctx.orch.settings.update({ useUserMcp: false });
+    expect(rules(parent.id)).toEqual(['Bash(pnpm install)', 'mcp__github_enterprise__x']);
   });
 });
