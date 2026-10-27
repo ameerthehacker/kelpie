@@ -3,6 +3,10 @@ import { defineConfig } from 'vitest/config';
 // Resolve workspace packages to their TypeScript sources (see the `kelpie-src` export condition).
 const conditions = ['kelpie-src', 'module', 'node'];
 
+// One time zone for every run, so local times format the same on any machine. The tests build their
+// times in local time and hold in any zone: `TZ=Asia/Calcutta pnpm test` checks another.
+process.env.TZ ||= 'UTC';
+
 export default defineConfig({
   resolve: { conditions },
   ssr: { resolve: { conditions } },

@@ -8,7 +8,8 @@ import { planBar, planLabel } from '../src/lib/plan.js';
 import { roundUpSummary, statusLine, type RoundUp } from '../src/lib/round-ups.js';
 import { planGroup, roundUpStatus, sessionStatus } from '../src/lib/status.js';
 
-// Local times, so the expectations hold in any time zone: the person sees their own.
+// Local times, so the expectations hold in any time zone: the person sees their own. Mon 26 Oct 2026;
+// what reads the clock itself (a notification's time) runs with the clock pinned here.
 const NOW = new Date(2026, 9, 26, 15, 46).getTime();
 const SIX_PM = new Date(2026, 9, 26, 18, 0).getTime();
 const TOMORROW_9AM = new Date(2026, 9, 27, 9, 0).getTime();
@@ -23,6 +24,25 @@ describe('limit times', () => {
     expect(until(NOW + 45 * 60_000, NOW)).toBe('45m');
     expect(until(NOW + 20_000, NOW)).toBe('under a minute');
     expect(until(NOW + (26 * 60 + 5) * 60_000, NOW)).toBe('1d 2h');
+  });
+
+  it('names the day only when the reset is on another day, across midnight and DST changes', () => {
+    const local = (d: number, h: number, m = 0) => new Date(2026, 9, d, h, m).getTime();
+    // Later today: the time alone, up to the last minute of the day.
+    expect(clock(local(26, 23, 59), NOW)).toBe('11:59 PM');
+    // Tomorrow, or later in the week: the day too.
+    expect(clock(local(27, 0, 0), NOW)).toBe('Tue 12:00 AM');
+    expect(clock(local(29, 9, 0), NOW)).toBe('Thu 9:00 AM');
+    // Across midnight: ten to twelve, and a reset half an hour later is tomorrow's...
+    expect(clock(local(27, 0, 20), local(26, 23, 50))).toBe('Tue 12:20 AM');
+    expect(until(local(27, 0, 20), local(26, 23, 50))).toBe('30m');
+    // ...but once past midnight, that same day's reset is today's again, and yesterday's names its day.
+    expect(clock(local(27, 18, 0), local(27, 0, 10))).toBe('6:00 PM');
+    expect(clock(local(26, 18, 0), local(27, 0, 10))).toBe('Mon 6:00 PM');
+    // The day the clocks change (Europe on Oct 25, the US on Nov 1): still the same day, or not, by the calendar.
+    expect(clock(new Date(2026, 10, 1, 23, 0).getTime(), new Date(2026, 10, 1, 0, 30).getTime())).toBe('11:00 PM');
+    expect(clock(new Date(2026, 10, 1, 3, 0).getTime(), new Date(2026, 9, 31, 23, 30).getTime())).toBe('Sun 3:00 AM');
+    expect(clock(local(25, 22, 0), local(25, 0, 30))).toBe('10:00 PM');
   });
 
   it('describes a pause, and one Kelpie will not resume on its own', () => {
@@ -114,6 +134,12 @@ describe('the chat', () => {
 describe('notifications', () => {
   type S = Pick<RoundUp, 'id' | 'title' | 'busy' | 'lastTurn' | 'parentId' | 'limited'>;
   const agent = (over: Partial<S> = {}): S => ({ id: 'a1', title: 'Checkout API', busy: false, parentId: 'r1', ...over });
+  // A notification says its time against the clock: pin it to NOW, whatever the real time of day.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => vi.useRealTimers());
 
   it('takes a turn that stopped at the limit for a pause, not a failure; and a paused session picking up for a resume', () => {
     const p = pause();
@@ -148,7 +174,14 @@ describe('notifications', () => {
     ).toMatchObject({ title: '2 round-ups', body: 'Paused until 6:00 PM · Kelpie will resume automatically' });
     expect(summarize([{ ...base, sessionId: 'a1', kind: 'resumed', key: 'r' }, { ...base, sessionId: 'a2', kind: 'resumed', key: 'r2' }], titleOf)?.body).toBe('2 agents resumed after the usage limit');
     // Another day's time says the day.
-    expect(summarize([{ ...base, sessionId: 'a1', kind: 'paused', key: 'p1', until: new Date(2099, 0, 1, 9, 0).getTime() }], titleOf)?.body).toMatch(/^Checkout API paused until \w{3} 9:00 AM/);
+    const pausedUntil = (at: number) => summarize([{ ...base, sessionId: 'a1', kind: 'paused', key: 'p1', until: at }], titleOf)?.body;
+    expect(pausedUntil(TOMORROW_9AM)).toBe('Checkout API paused until Tue 9:00 AM · Kelpie will resume automatically');
+    // Just before midnight, a reset just after it is tomorrow's; just after midnight, the evening's is today's.
+    vi.setSystemTime(new Date(2026, 9, 26, 23, 55));
+    expect(pausedUntil(new Date(2026, 9, 27, 0, 5).getTime())).toMatch(/^Checkout API paused until Tue 12:05 AM ·/);
+    vi.setSystemTime(new Date(2026, 9, 27, 0, 5));
+    expect(pausedUntil(new Date(2026, 9, 27, 18, 0).getTime())).toMatch(/^Checkout API paused until 6:00 PM ·/);
+    expect(pausedUntil(SIX_PM)).toMatch(/^Checkout API paused until Mon 6:00 PM ·/);
     expect(summarize([{ ...base, sessionId: 'a1', kind: 'gave-up', key: 'g' }], titleOf)).toMatchObject({ body: 'Checkout API is still at the usage limit: resume it when you can' });
     expect(summarize([{ ...base, sessionId: 'a1', kind: 'gave-up', key: 'g' }, { roundUpId: 'r2', sessionId: 'a2', who: 'B', kind: 'gave-up', key: 'g2' }], titleOf)?.title).toBe('2 round-ups need you');
   });
@@ -157,10 +190,8 @@ describe('notifications', () => {
     let delivered: Delivery[];
     const settings: AttentionSettings = { enabled: true, sound: true, level: 'needed' };
     beforeEach(() => {
-      vi.useFakeTimers();
       delivered = [];
     });
-    afterEach(() => vi.useRealTimers());
 
     it('tells of a pause once and quietly, however often it is tried again; a resume only updates; giving up chimes', () => {
       let showing = false;
