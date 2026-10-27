@@ -7,6 +7,7 @@ import { RouterProvider } from 'react-router/dom';
 import './index.css';
 import { App } from './App';
 import { Toaster } from './components/ui/sonner';
+import { APP_PATHS } from './lib/routes';
 import { initTheme } from './lib/theme';
 
 initTheme();
@@ -17,14 +18,7 @@ const router = createBrowserRouter([
   {
     path: '/',
     element: <App />,
-    children: [
-      { index: true, element: null },
-      { path: 'r/:roundUpId', element: null },
-      { path: 'approvals', element: null },
-      { path: 'workbench', element: null },
-      { path: 'workbench/:cardId', element: null },
-      { path: 'settings', element: null },
-    ],
+    children: APP_PATHS.map((path) => (path === '/' ? { index: true, element: null } : { path, element: null })),
   },
   { path: '*', element: <Navigate to="/" replace /> },
 ]);
