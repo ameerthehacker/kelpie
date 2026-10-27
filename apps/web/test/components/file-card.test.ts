@@ -1,4 +1,3 @@
-/// <reference lib="dom" />
 // @vitest-environment happy-dom
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -61,16 +60,16 @@ describe('FileCard', () => {
 });
 
 describe('WrapToggle', () => {
-  it('says whether it is on by being pressed and raised, not with a ring', () => {
+  it('says whether it is on by being pressed and filled, unlike its hover, not with a ring', () => {
     const render = (wrap: boolean) => act(() => root.render(createElement(WrapToggle, { wrap, onToggle: () => {}, iconOnly: true })));
     render(true);
     const button = host.querySelector('button')!;
     expect(button.getAttribute('aria-pressed')).toBe('true');
     expect(button.getAttribute('aria-label')).toBe('Wrap lines');
-    expect(button.classList.contains('bg-raise')).toBe(true);
+    expect([...button.classList].filter((c) => /^(hover:)?bg-/.test(c))).toEqual(['bg-fg', 'hover:bg-fg']);
     expect(button.className).not.toMatch(/shadow-\[inset|ring-/);
     render(false);
     expect(host.querySelector('button')!.getAttribute('aria-pressed')).toBe('false');
-    expect(host.querySelector('button')!.classList.contains('bg-raise')).toBe(false);
+    expect([...host.querySelector('button')!.classList].filter((c) => /^(hover:)?bg-/.test(c))).toEqual(['bg-chip', 'hover:bg-raise']);
   });
 });

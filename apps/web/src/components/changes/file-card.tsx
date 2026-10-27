@@ -21,8 +21,8 @@ export function WrapToggle({ wrap, onToggle, iconOnly, className }: { wrap: bool
       onClick={onToggle}
       {...(iconOnly ? { 'aria-label': 'Wrap lines' } : {})}
       title={wrap ? 'Long lines wrap: scroll them sideways instead' : 'Long lines scroll sideways: wrap them instead'}
-      // On, it is raised, as the pane's other switches are; a ring read as a stray focus outline.
-      className={cn(quietButton, 'h-[30px] text-xs', iconOnly && 'w-[30px] justify-center px-0', wrap && 'bg-raise text-fg', className)}
+      // On, it is filled, as the agent pane's filter chips are (a ring read as a stray focus outline).
+      className={cn(quietButton, 'h-[30px] text-xs', iconOnly && 'w-[30px] justify-center px-0', wrap && 'bg-fg text-background hover:bg-fg', className)}
     >
       <WrapTextIcon className="size-3" />
       {!iconOnly && 'Wrap lines'}
