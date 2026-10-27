@@ -97,6 +97,21 @@ export function ChatLog({ id, content, className, children }: { id: string | und
     if (belowView(el) <= NEAR_BOTTOM_PX) void scrollToBottom('instant');
   }, [loaded, scrollRef, state, scrollToBottom]);
 
+  // The library follows the content growing, not the view shrinking: the Plan or the approvals
+  // docked below the chat mount and grow, and would cover its end. Pinned before paint.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    let height = el.clientHeight;
+    const observer = new ResizeObserver(() => {
+      if (el.clientHeight === height) return;
+      height = el.clientHeight;
+      if (state.isAtBottom) state.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [scrollRef, state]);
+
   // Remember the spot once loaded (until then the one from last time still holds).
   useEffect(() => {
     const el = scrollRef.current;
