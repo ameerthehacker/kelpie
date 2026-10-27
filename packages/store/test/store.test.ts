@@ -31,6 +31,19 @@ describe('store', () => {
     b.close();
   });
 
+  it('keeps the migrations in one strict order: the migrator skips any older than the last one applied', () => {
+    const drizzle = join(import.meta.dirname, '../drizzle');
+    const { entries } = JSON.parse(readFileSync(join(drizzle, 'meta/_journal.json'), 'utf8')) as { entries: { idx: number; when: number; tag: string }[] };
+    entries.forEach((e, i) => {
+      expect(e.idx).toBe(i);
+      expect(e.tag.startsWith(String(i).padStart(4, '0') + '_')).toBe(true);
+      if (i) expect(e.when).toBeGreaterThan(entries[i - 1]!.when);
+      // Each snapshot follows the one before it, so drizzle-kit diffs against the right schema.
+      const snap = (n: number) => JSON.parse(readFileSync(join(drizzle, `meta/${String(n).padStart(4, '0')}_snapshot.json`), 'utf8')) as { id: string; prevId: string };
+      if (i) expect(snap(i).prevId).toBe(snap(i - 1).id);
+    });
+  });
+
   it('lists the most recently active round-up first', () => {
     const store = openStore(':memory:');
     store.createSession({ id: 'old', cwd: '/r' }, 1000);

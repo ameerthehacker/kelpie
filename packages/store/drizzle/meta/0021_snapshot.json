@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "f4160fd7-e2fb-494e-83ac-d5255e3b1d45",
-  "prevId": "862d1c34-5bf8-4596-aa45-705fe3be7f6b",
+  "id": "c2b1dc33-dc46-44e4-852e-1ec956c3bba8",
+  "prevId": "1ff4b653-57d9-4035-a206-350f08619ab2",
   "tables": {
     "attachments": {
       "name": "attachments",
@@ -327,6 +327,44 @@
           "name": "events_session_id_idx_pk"
         }
       },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "halts": {
+      "name": "halts",
+      "columns": {
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "halts_session_id_sessions_id_fk": {
+          "name": "halts_session_id_sessions_id_fk",
+          "tableFrom": "halts",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
@@ -1045,6 +1083,13 @@
         },
         "model": {
           "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "effort": {
+          "name": "effort",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
