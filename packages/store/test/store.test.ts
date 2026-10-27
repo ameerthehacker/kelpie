@@ -163,6 +163,43 @@ describe('store', () => {
     store.close();
   });
 
+  it("marks round-up titles a store had before title sources as their first message's, and keeps where later ones came from", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
+    const before = join(dir, 'drizzle');
+    cpSync(join(import.meta.dirname, '../drizzle'), before, { recursive: true });
+    const journal = join(before, 'meta/_journal.json');
+    const j = JSON.parse(readFileSync(journal, 'utf8')) as { entries: { tag: string }[] };
+    j.entries = j.entries.filter((e) => e.tag < '0021');
+    writeFileSync(journal, JSON.stringify(j));
+    const path = join(dir, 'kelpie.db');
+    openStore(path, { migrationsFolder: before }).close();
+    oldSession(path, { id: 'r', cwd: '/r', title: 'There’s an existing sentry cl…' });
+    oldSession(path, { id: 'a', cwd: '/r', parentId: 'r', role: 'agent', title: 'API' });
+    oldSession(path, { id: 'new', cwd: '/r' });
+    const store = openStore(path);
+    expect(['r', 'a', 'new'].map((id) => [store.getSession(id)!.titleSource, store.getSession(id)!.titleTurn])).toEqual([
+      ['message', null],
+      [null, null],
+      [null, null],
+    ]);
+    store.updateSession('r', { title: 'Sentry client init', titleSource: 'ai', titleTurn: 1 });
+    store.close();
+    expect(openStore(path).getSession('r')).toMatchObject({ title: 'Sentry client init', titleSource: 'ai', titleTurn: 1 });
+  });
+
+  it('counts the turns the person sent, and reads a log from its start', () => {
+    const store = openStore(':memory:');
+    store.createSession({ id: 'r', cwd: '/r' });
+    const msg = (seq: number, data: Record<string, unknown>) =>
+      ({ id: `e${seq}`, runId: 'x', seq, ts: '2026-10-26T00:00:00.000Z', harness: 'claude-code', kind: 'message', data }) as KelpieEvent;
+    store.appendEvent('r', 0, msg(0, { role: 'user', text: 'hi', sent: true, source: 'user' }), 1);
+    store.appendEvent('r', 1, msg(1, { role: 'assistant', text: 'hello' }), 2);
+    store.appendEvent('r', 2, msg(2, { role: 'user', text: 'note', sent: true, source: 'kelpie' }), 3);
+    store.appendEvent('r', 3, msg(3, { role: 'user', text: 'again', sent: true, source: 'user' }), 4);
+    expect(store.personTurns('r')).toBe(2);
+    expect(store.firstEvents('r', ['message'], 2).map((e) => e.kind === 'message' && e.data.text)).toEqual(['hi', 'hello']);
+  });
+
   it('adds the usage_limits table to a store made before it, and keeps pauses until cleared', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
     const before = join(dir, 'drizzle');
@@ -203,7 +240,7 @@ describe('store', () => {
     writeFileSync(journal, JSON.stringify(j));
     const path = join(dir, 'kelpie.db');
     const old = openStore(path, { migrationsFolder: before });
-    old.createSession({ id: 'r', cwd: '/r' });
+    oldSession(path, { id: 'r', cwd: '/r' });
     expect(() => old.haltOf('r')).toThrow(/no such table/);
     old.close();
     const store = openStore(path);

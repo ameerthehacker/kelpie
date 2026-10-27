@@ -5,3 +5,4 @@ export * from './workbench.js';
 export * from './settings.js';
 export * from './limits.js';
 export * from './halt.js';
+export * from './titles.js';

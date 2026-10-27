@@ -10,7 +10,7 @@ import * as schema from './schema.js';
 
 export type SessionRow = typeof schema.sessions.$inferSelect;
 export type NewSession = Omit<typeof schema.sessions.$inferInsert, 'createdAt' | 'updatedAt'>;
-export type SessionPatch = Partial<Pick<SessionRow, 'title' | 'model' | 'effort' | 'harnessSessionId' | 'resumePending' | 'notifiedIdx' | 'baseBranch' | 'baseCommit' | 'mode'>>;
+export type SessionPatch = Partial<Pick<SessionRow, 'title' | 'titleSource' | 'titleTurn' | 'model' | 'effort' | 'harnessSessionId' | 'resumePending' | 'notifiedIdx' | 'baseBranch' | 'baseCommit' | 'mode'>>;
 export type WorktreeRow = typeof schema.worktrees.$inferSelect;
 export type NewWorktree = Omit<typeof schema.worktrees.$inferInsert, 'id' | 'createdAt' | 'lastUsedAt' | 'state'>;
 export type WorktreePatch = Partial<Pick<WorktreeRow, 'state' | 'lastUsedAt' | 'removedAt' | 'forkCommit'>>;
@@ -236,6 +236,29 @@ export class Store {
       .limit(limit)
       .all()
       .map((r) => KelpieEvent.parse(JSON.parse(r.event)));
+  }
+
+  /** The first `limit` events of the given kinds, oldest first. */
+  firstEvents(sessionId: string, kinds: EventKind[], limit: number): KelpieEvent[] {
+    return this.db
+      .select({ event: schema.events.event })
+      .from(schema.events)
+      .where(and(eq(schema.events.sessionId, sessionId), inArray(schema.events.kind, kinds)))
+      .orderBy(schema.events.idx)
+      .limit(limit)
+      .all()
+      .map((r) => KelpieEvent.parse(JSON.parse(r.event)));
+  }
+
+  /** How many turns the person has sent the session (the harness's echoes of them). */
+  personTurns(sessionId: string): number {
+    return (
+      this.db
+        .select({ n: sql<number>`count(*)` })
+        .from(schema.events)
+        .where(and(eq(schema.events.sessionId, sessionId), eq(schema.events.kind, 'message'), sql`json_extract(${schema.events.event}, '$.data.source') = 'user'`))
+        .get()?.n ?? 0
+    );
   }
 
   /** Runs `fn` in one transaction: every write in it lands, or none does. */

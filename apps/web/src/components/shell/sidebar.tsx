@@ -1,5 +1,5 @@
 import { MoreHorizontalIcon, PanelLeftIcon, PencilIcon, PlusIcon, SettingsIcon, ShieldAlertIcon, SquareKanbanIcon, Trash2Icon } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useMatch } from 'react-router';
 import { StatusDot } from '@/components/agents/agent-bits';
 import { HarnessMark } from '@/components/harness-mark';
@@ -14,6 +14,7 @@ import { useUsage } from '@/hooks/use-usage';
 import { useWorkbench } from '@/hooks/use-workbench';
 import { harnessOf } from '@/lib/harnesses';
 import { relativeTime, roundUpPath, statusLine, titleOf, type RoundUp } from '@/lib/round-ups';
+import { FadeText, useTitleEdit } from '@/components/shell/round-up-title';
 import { GROUP_LABEL, type PlanGroup } from '@/lib/status';
 import { metersOf } from '@/lib/usage';
 import { pausedStatus } from '@/lib/limits';
@@ -43,8 +44,7 @@ interface RowProps {
  * merged, a grey one if stopped, green once done. Rename and delete on its menu.
  */
 function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, waiting, status }: RowProps) {
-  const [editing, setEditing] = useState(false);
-  const input = useRef<HTMLInputElement>(null);
+  const { editing, start: rename, field } = useTitleEdit(roundUp, onRename);
   // Read out with the link, and its tooltip: the dot is hidden under the menu button on hover.
   const label =
     status === 'needs-you'
@@ -57,34 +57,8 @@ function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, wait
           ? `${GROUP_LABEL[status]} · ${relativeTime(roundUp.updatedAt, now)}`
           : statusLine(roundUp, now).text;
 
-  useEffect(() => {
-    if (editing) input.current?.select();
-  }, [editing]);
-
-  const save = () => {
-    const title = input.current?.value.trim();
-    setEditing(false);
-    if (title && title !== roundUp.title) void onRename(roundUp.id, title);
-  };
-
   if (editing) {
-    return (
-      <input
-        ref={input}
-        aria-label="Round-up title"
-        defaultValue={titleOf(roundUp)}
-        maxLength={200}
-        onBlur={save}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') save();
-          if (e.key === 'Escape') {
-            e.preventDefault();
-            setEditing(false);
-          }
-        }}
-        className="bg-surf border-ln2 h-[38px] w-full rounded-[10px] border px-3 text-sm outline-none"
-      />
-    );
+    return <input {...field} className="bg-surf border-ln2 h-[38px] w-full rounded-[10px] border px-3 text-sm outline-none" />;
   }
 
   return (
@@ -97,7 +71,7 @@ function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, wait
         className={cn('hover:bg-hov flex h-[38px] items-center gap-2.5 rounded-[10px] pr-9 pl-3 text-sm', active && 'bg-sel font-medium')}
       >
         <span className={cn('min-w-0 flex-1 truncate', active || status === 'working' || status === 'needs-you' ? 'text-fg' : 'text-mu', status === 'failed' && 'text-fail')}>
-          {titleOf(roundUp)}
+          <FadeText text={titleOf(roundUp)} />
         </span>
         <span className="sr-only">{label}</span>
       </Link>
@@ -119,7 +93,7 @@ function RoundUpRow({ roundUp, active, now, onNavigate, onRename, onDelete, wait
           <MoreHorizontalIcon className="size-4" />
         </DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="start">
-          <DropdownMenuItem onSelect={() => setEditing(true)}>
+          <DropdownMenuItem onSelect={rename}>
             <PencilIcon /> Rename
           </DropdownMenuItem>
           <DropdownMenuItem variant="destructive" onSelect={() => onDelete(roundUp)}>

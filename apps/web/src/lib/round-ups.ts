@@ -1,4 +1,4 @@
-import type { Effort, LinkedTicket, Mode, UsageLimitPause } from '@kelpie/protocol';
+import type { Effort, LinkedTicket, Mode, SessionTitleSource, UsageLimitPause } from '@kelpie/protocol';
 import { formatDistanceStrict } from 'date-fns';
 import { generatePath } from 'react-router';
 import type { AgentSummary } from './agents.js';
@@ -29,6 +29,8 @@ export function wayBack(to: string, location: { state: unknown; key: string }): 
 export interface RoundUp {
   id: string;
   title: string;
+  /** Where the title came from: the first message, Claude (once the conversation started), or the person. */
+  titleSource?: SessionTitleSource;
   cwd: string;
   createdAt: number;
   updatedAt: number;
@@ -67,6 +69,16 @@ export interface RoundUp {
 export const NEW_TITLE = 'New round-up';
 
 export const titleOf = (r: Pick<RoundUp, 'title'> | undefined) => r?.title || NEW_TITLE;
+
+/**
+ * What renaming a round-up to `typed` sends, or undefined if nothing changes: the name, tidied; or,
+ * once the person clears a name of their own, an empty title, which hands naming back to Claude.
+ */
+export function renameTo(r: Pick<RoundUp, 'title' | 'titleSource'>, typed: string): string | undefined {
+  const title = typed.trim().replace(/\s+/g, ' ');
+  if (!title) return r.titleSource === 'person' ? '' : undefined;
+  return title === r.title ? undefined : title;
+}
 
 /** Home directories are noise in a path: `/Users/me/code/x` → `~/code/x`. */
 export const shortPath = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, '~');

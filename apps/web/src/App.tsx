@@ -45,6 +45,7 @@ import type { AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
 import { isRequestKind } from '@/lib/attention';
 import { effortPatch } from '@/lib/effort';
+import { RoundUpTitle } from '@/components/shell/round-up-title';
 import { ROUND_UP_ROUTE, roundUpPath, roundUpSummary, shortPath, titleOf, type RoundUp } from '@/lib/round-ups';
 import { WORKBENCH_ROUTE } from '@/lib/workbench';
 
@@ -70,11 +71,26 @@ function useNavOpen(): [boolean, (open: boolean) => void] {
 }
 
 /** The round-up's name in the display face, with its repo, what it is up to, and its tickets. */
-function TitleBlock({ roundUp, agents, titleRef }: { roundUp: RoundUp; agents: AgentSummary[]; titleRef?: Ref<HTMLHeadingElement> }) {
+function TitleBlock({
+  roundUp,
+  agents,
+  titleRef,
+  onRename,
+}: {
+  roundUp: RoundUp;
+  agents: AgentSummary[];
+  titleRef?: Ref<HTMLHeadingElement>;
+  onRename: (id: string, title: string) => unknown;
+}) {
   const now = useNow();
   return (
     <div data-chat-head className="flex flex-col gap-2.5 pb-2">
-      <h1 ref={titleRef} className="font-heading text-[42px] leading-[1.05] font-semibold tracking-[-0.035em] text-balance max-sm:text-[32px]">{titleOf(roundUp)}</h1>
+      <RoundUpTitle
+        roundUp={roundUp}
+        onRename={onRename}
+        titleRef={titleRef}
+        className="font-heading text-[42px] leading-[1.05] font-semibold tracking-[-0.035em] text-balance max-sm:text-[32px]"
+      />
       <div className="text-mu flex flex-wrap items-center gap-2.5 text-[13px]">
         <span className="font-mono text-xs">{shortPath(roundUp.cwd)}</span>
         {roundUp.baseBranch && (
@@ -167,6 +183,8 @@ export function App() {
   const [draftMode, setDraftMode] = useState<Mode>('auto');
   const [modelError, setModelError] = useState<string | undefined>();
   const { roundUps, error: listError, defaultCwd, rename, remove, actionError, clearActionError } = useRoundUps();
+  // A failed rename shows as the list's action error.
+  const renameQuietly = useCallback((id: string, title: string) => rename(id, title).catch(() => {}), [rename]);
   const onCreated = useCallback((id: string) => navigate(roundUpPath(id), { replace: true }), [navigate]);
   const { events, items, todos, status, busy, error, send, interrupt } = useSession(roundUpId, onCreated, {
     model: draftModel || undefined,
@@ -275,7 +293,7 @@ export function App() {
       }}
       onHide={() => (isMobile ? setMobileNav(false) : setNavOpen(false))}
       // Failures show through actionError; the sidebar has already put things back as they were.
-      onRename={(id, title) => rename(id, title).catch(() => {})}
+      onRename={renameQuietly}
       onDelete={(id) =>
         remove(id).then(
           () => id === roundUpId && navigate('/', { replace: true }),
@@ -328,7 +346,7 @@ export function App() {
                   <div className="min-h-0 flex-1 scroll-pt-12 overflow-y-auto">
                     {/* The title stays where the conversation has it; the tabs and diffs take the whole column. */}
                     <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 px-7 pt-1 max-sm:px-4">
-                      {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} />}
+                      {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} onRename={renameQuietly} />}
                     </div>
                     {/* One column for the tabs and the diffs, so the tabs stay stuck all the way down. */}
                     <div className="flex w-full flex-col gap-7 px-7 pt-7 pb-8 max-sm:px-4">
@@ -352,7 +370,7 @@ export function App() {
                       scrollClassName={tabs ? 'scroll-pt-12' : undefined}
                       className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4"
                     >
-                      {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} />}
+                      {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} onRename={renameQuietly} />}
                       {tabs && <RoundUpTabs {...tabs} />}
                       {!roundUpId && items.length === 0 && <EmptyState cwd={cwd} />}
                       {items.map((item) =>

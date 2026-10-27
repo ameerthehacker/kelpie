@@ -103,8 +103,12 @@ describe('round-up API', () => {
     const { app } = setup();
     const id = await create(app);
     const renamed = await app.request(`/api/sessions/${id}`, { method: 'PATCH', ...json({ title: '  Fix   the build ' }) });
-    expect(await renamed.json()).toMatchObject({ id, title: 'Fix the build' });
-    expect((await app.request(`/api/sessions/${id}`, { method: 'PATCH', ...json({ title: ' ' }) })).status).toBe(400);
+    expect(await renamed.json()).toMatchObject({ id, title: 'Fix the build', titleSource: 'person' });
+    // Clearing the person's title gives the round-up back its first message (none yet here), and AI titles resume.
+    const cleared = await app.request(`/api/sessions/${id}`, { method: 'PATCH', ...json({ title: ' ' }) });
+    expect(await cleared.json()).toMatchObject({ id, title: '' });
+    expect((await app.request(`/api/sessions/${id}`, { method: 'PATCH', ...json({ title: 42 }) })).status).toBe(400);
+    expect((await app.request(`/api/sessions/${id}`, { method: 'PATCH', ...json({ title: 'x'.repeat(201) }) })).status).toBe(400);
     expect((await app.request(`/api/sessions/${id}`, { method: 'DELETE', headers: local })).status).toBe(204);
     expect((await app.request(`/api/sessions/${id}`, { headers: local })).status).toBe(404);
     expect((await app.request(`/api/sessions/${id}`, { method: 'DELETE', headers: local })).status).toBe(404);

@@ -348,7 +348,10 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     const effort = body.effort === undefined || body.effort === null ? undefined : Effort.safeParse(body.effort);
     if (effort && !effort.success) return c.json({ error: EFFORT_ERROR }, 400);
     const title = typeof body.title === 'string' ? body.title.trim().replace(/\s+/g, ' ') : '';
-    if (body.title !== undefined && (!title || title.length > 200)) return c.json({ error: 'title must be 1-200 characters' }, 400);
+    // An empty title clears the person's own: the round-up goes back to its first message, and AI titles resume.
+    if (body.title !== undefined && (typeof body.title !== 'string' || title.length > 200)) return c.json({ error: 'title must be at most 200 characters' }, 400);
+    // A sub-agent is named by its orchestrator: there is no title of its own to go back to.
+    if (body.title !== undefined && !title && s.parentId) return c.json({ error: "a sub-agent's title can't be empty" }, 400);
     if (body.baseBranch !== undefined && (typeof body.baseBranch !== 'string' || !orch)) return c.json({ error: 'baseBranch must be a branch name' }, 400);
     if (typeof body.baseBranch === 'string' && orch) {
       try {

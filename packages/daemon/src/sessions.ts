@@ -2,18 +2,21 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import { attachmentsBlock, findTickets, mergeUsage, ticketsNote, type LinkedTicket, type TicketLink, type TicketTitleSource, type Answers, type Attachment, type EventOf, type Question, type Mode, type Effort, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings, type WorkbenchCard, type UsageLimitPause } from '@kelpie/protocol';
+import { attachmentsBlock, findTickets, mergeUsage, ticketsNote, type SessionTitleSource, type LinkedTicket, type TicketLink, type TicketTitleSource, type Answers, type Attachment, type EventOf, type Question, type Mode, type Effort, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings, type WorkbenchCard, type UsageLimitPause } from '@kelpie/protocol';
 import { claudeCode, isChromeTool, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store, TicketRow, TicketSource } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary, type Now } from './agent-summary.js';
 import type { ReviewState } from './review/types.js';
 import { LIMIT_RESUMED, UsageLimits, type LimitTiming } from './usage-limits.js';
+import { conversationPart, Titler, type Part, type TitleGenerator } from './titles.js';
 
 export type TurnStatus = EventData<'turn.ended'>['status'];
 
 export interface SessionInfo {
   id: string;
   title: string;
+  /** Where a top-level round-up's title came from; undefined while it has none, and on sub-agents. */
+  titleSource?: SessionTitleSource;
   cwd: string;
   /** Epoch ms. */
   createdAt: number;
@@ -249,6 +252,10 @@ export interface SessionManagerOptions {
   scratchDir?: string;
   /** How long resuming after the usage limit waits past a reset, between resumes, and for a probe (shorter in tests). */
   limitTiming?: Partial<LimitTiming>;
+  /** Names top-level round-ups once their conversation starts (see Titler). Without it, they keep their first message. */
+  titles?: TitleGenerator;
+  /** Whether the CLI `titles` goes through can be started now (e.g. the last harness check found it). Default: it can. */
+  titlesReady?: () => boolean;
 }
 
 interface SessionContext {
@@ -273,6 +280,8 @@ interface SessionContext {
   limits: UsageLimits;
   /** Stops a session's pause resuming on its own; a round-up's agents' too (see SessionManager.cancelLimits). */
   cancelLimits: (s: Session) => boolean;
+  /** Titles round-ups by AI, if Kelpie does. */
+  titler: Titler | undefined;
 }
 
 const ticketOf = (r: TicketRow): LinkedTicket => ({
@@ -403,6 +412,20 @@ export class Session {
     return this.row.title;
   }
 
+  get titleSource(): SessionTitleSource | undefined {
+    return this.row.titleSource ?? undefined;
+  }
+
+  /** How many of the person's messages it had when it was last titled by AI; undefined if never. */
+  get titleTurn(): number | undefined {
+    return this.row.titleTurn ?? undefined;
+  }
+
+  /** It has been deleted. */
+  get removed(): boolean {
+    return this.deleted;
+  }
+
   get harness(): string {
     return this.row.harness;
   }
@@ -528,6 +551,7 @@ export class Session {
     return {
       id,
       title,
+      ...(this.row.titleSource ? { titleSource: this.row.titleSource } : {}),
       cwd,
       createdAt,
       updatedAt,
@@ -778,7 +802,10 @@ export class Session {
       this.ctx.store.enqueue(this.id, sent, source, Date.now(), meta);
       for (const t of together) this.ctx.store.enqueue(t.session.id, t.text, t.source, Date.now(), t.meta);
     });
-    if (!this.row.title && source === 'user') this.update({ title: titleFrom(text) || titleFrom(files.map((f) => f.name).join(', ')) });
+    if (!this.row.title && source === 'user') {
+      const title = titleFrom(text) || titleFrom(files.map((f) => f.name).join(', '));
+      this.update({ title, ...(this.row.parentId ? {} : { titleSource: 'message' as const }) });
+    }
     if (source === 'user') {
       try {
         this.ctx.hooks.personSent?.(this);
@@ -966,8 +993,25 @@ export class Session {
     await this.run?.interrupt();
   }
 
+  /**
+   * The person names the round-up: that title stays, never replaced by an AI one. An empty title
+   * gives it back its first message, and AI titles resume.
+   */
   rename(title: string): void {
-    this.update({ title });
+    // A sub-agent keeps a name: its orchestrator gave it one, and there is no other to go back to.
+    if (this.row.parentId) return title ? this.update({ title }) : undefined;
+    this.ctx.titler?.cancel(this.id);
+    if (title) return this.update({ title, titleSource: 'person' });
+    const first = this.ctx.store.firstEvents(this.id, ['message'], 50).map(conversationPart).find((m) => m?.from === 'person');
+    const fallback = first ? titleFrom(first.text) : '';
+    this.update({ title: fallback, titleSource: fallback ? 'message' : null, titleTurn: null });
+    this.ctx.titler?.consider(this, true);
+  }
+
+  /** A title Claude generated after `turn` of the person's messages; none keeps the one it has. Never over the person's. */
+  setAiTitle(title: string | undefined, turn: number): void {
+    if (this.deleted || this.row.parentId || this.row.titleSource === 'person') return;
+    this.update({ ...(title ? { title, titleSource: 'ai' as const } : {}), titleTurn: turn });
   }
 
   /**
@@ -1148,6 +1192,7 @@ export class Session {
         } catch (err) {
           console.error(`session ${this.id}: observer failed`, err);
         }
+        this.ctx.titler?.observe(this, event);
       }
     } catch (err) {
       console.error(`session ${this.id}: event stream failed`, err);
@@ -1215,6 +1260,7 @@ export class SessionManager {
       },
       limits: undefined as unknown as UsageLimits,
       cancelLimits: (s) => this.cancelLimits(s.id),
+      titler: undefined,
     };
     const hooks = this.ctx.hooks;
     this.limits = this.ctx.limits = new UsageLimits({
@@ -1239,6 +1285,27 @@ export class SessionManager {
         }
       },
     });
+    if (opts.titles) {
+      this.ctx.titler = new Titler({
+        generate: opts.titles,
+        ...(opts.titlesReady ? { ready: opts.titlesReady } : {}),
+        // The person's usage limit is hit (a pause Kelpie will resume, its reset still ahead): a title waits for
+        // the next turn to end after it resets. A pause left to the person, or past its reset, says nothing about now.
+        limited: () =>
+          this.limits.paused().some((id) => {
+            const p = this.limits.pause(id);
+            return p?.retryAt !== undefined && (p.resetsAt ?? p.retryAt) > Date.now();
+          }),
+        conversation: (id) => {
+          const parts = (events: KelpieEvent[]) => events.map(conversationPart).filter((p): p is Part => !!p);
+          return {
+            turns: this.store.personTurns(id),
+            first: parts(this.store.firstEvents(id, ['message'], 40)),
+            recent: parts(this.store.recentEvents(id, ['message'], 40).reverse()),
+          };
+        },
+      });
+    }
     for (const u of this.store.listUsage()) this.usageByHarness.set(u.harness, u);
     for (const row of this.store.listSessions()) {
       const session = new Session(row, this.ctx);
@@ -1306,6 +1373,7 @@ export class SessionManager {
     }
     this.sessions.delete(id);
     this.limits.forget(id);
+    this.ctx.titler?.cancel(id);
     await Promise.all(this.children(id).map((c) => this.delete(c.id, true)));
     await session.delete();
     // A round-up's scratch folder goes with it; a sub-agent's files stay for the rest of the round-up.
@@ -1489,6 +1557,7 @@ export class SessionManager {
   prepareShutdown(): void {
     this.ctx.closing = true;
     this.limits.stop();
+    this.ctx.titler?.close();
     for (const s of this.sessions.values()) if (s.working) s.markResumePending();
   }
 
