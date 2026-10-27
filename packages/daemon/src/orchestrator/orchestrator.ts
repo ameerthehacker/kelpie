@@ -925,7 +925,10 @@ export class Orchestrator implements SessionHooks {
       });
     }
     // Muster's outcome is what git says is in the feature branch, not what its report claims.
-    const mustered = owed.some(({ agent }) => agent.kind === 'muster') ? await this.settleMuster(parentId) : undefined;
+    // If git fails, the agents' news still goes; their branches settle on the next pass.
+    const mustered = owed.some(({ agent }) => agent.kind === 'muster')
+      ? await this.settleMuster(parentId).catch((err) => void console.error(`round-up ${parentId}: could not settle its mustered branches`, err))
+      : undefined;
     // Sent and marked in one transaction: after a crash it is neither lost nor sent twice.
     // It can try again on this one: no separate word when the limit is raised.
     this.capped.delete(parentId);
