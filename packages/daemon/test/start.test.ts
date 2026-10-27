@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,5 +42,19 @@ describe('startDaemon', () => {
     // Closed: the port and the data directory are free for the next start.
     const again = await startDaemon({ cwd, port, home, titles: false });
     await again.close();
+  });
+
+  it('sweeps the MCP config files a crashed run left in its data directory', async () => {
+    const home = tmp('kelpie-home-');
+    const left = join(home, 'tmp', 'kelpie-mcp-crashed');
+    mkdirSync(left, { recursive: true });
+    writeFileSync(join(left, 'mcp-1.json'), '{"mcpServers":{"github":{"headers":{"Authorization":"Bearer sk-SECRET"}}}}');
+    const daemon = await startDaemon({ cwd: tmp('kelpie-cwd-'), port: await freePort(), home });
+    try {
+      expect(existsSync(left)).toBe(false);
+      expect(statSync(join(home, 'tmp')).mode & 0o777).toBe(0o700);
+    } finally {
+      await daemon.close();
+    }
   });
 });

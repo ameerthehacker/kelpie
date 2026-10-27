@@ -94,6 +94,15 @@ export function broaderRule(g: Pick<ApprovalGroup, 'tool' | 'label' | 'rule'>): 
   return g.rule && g.rule !== `${g.tool}(${g.label})` ? g.rule : undefined;
 }
 
+/**
+ * What "Allow for round-up" allows, in words: an MCP tool's rule is that one tool of its server
+ * (`every guide call to claude_ai_Claude_Docs`), anything else its rule as written.
+ */
+export function ruleLabel(rule: string): string {
+  const [mcp, server, ...tool] = rule.split('__');
+  return mcp === 'mcp' && server && tool.length ? `every ${tool.join('__')} call to ${server}` : rule;
+}
+
 /** "3 approvals from 2 agents", "1 question" (one agent goes without saying), "2 approvals and 1 question from 3 agents". */
 export function approvalsSummary(items: readonly PendingApproval[]): string {
   const asks = items.filter(isAsk);

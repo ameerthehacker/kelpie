@@ -12,7 +12,8 @@
 // gets a line of JSON per answer. FAKE_ASK_TOOL=ExitPlanMode asks to put FAKE_ASK as a plan instead;
 // FAKE_ASK_TOOL=AskUserQuestion asks FAKE_ASK as a question (options "Red" and "Blue"), or FAKE_ASK_INPUT's
 // questions (the tool's input, as JSON) if set; any other FAKE_ASK_TOOL (e.g. mcp__claude-in-chrome__navigate)
-// asks to use that tool on the url FAKE_ASK. Interrupted while asking, it ends the turn the way the real
+// asks to use that tool on the url FAKE_ASK; with FAKE_ASK_SERVER (a person's MCP server's name) it asks the way the
+// CLI does under an ask rule, with FAKE_ASK_INPUT (or { query: FAKE_ASK }) as the input. Interrupted while asking, it ends the turn the way the real
 // CLI does (ask-interrupt.jsonl): it cancels the request, unless FAKE_NO_CANCEL=1, then reports the turn aborted.
 // FAKE_ENV_FILE gets a line of JSON per start with the GitHub env it was given (GH_TOKEN, GITHUB_TOKEN).
 // FAKE_HOLD_FILE takes each user turn in (FAKE_STDIN_FILE gets it) but holds its answer for as long as that
@@ -36,7 +37,11 @@ const hang = process.env.FAKE_HANG === '1';
 let printed = false;
 const out = (o) => process.stdout.write((typeof o === 'string' ? o : JSON.stringify(o)) + '\n');
 const args = process.argv.slice(2);
-const logged = args.map((a, i) => (args[i - 1] === '--mcp-config' && existsSync(a) ? readFileSync(a, 'utf8') : a));
+// Every --mcp-config value up to the next flag (there can be several).
+const mcpAt = args.indexOf('--mcp-config');
+const mcpEnd = mcpAt < 0 ? -1 : args.findIndex((a, i) => i > mcpAt && a.startsWith('--'));
+const isMcpValue = (i) => mcpAt >= 0 && i > mcpAt && (mcpEnd < 0 || i < mcpEnd);
+const logged = args.map((a, i) => (isMcpValue(i) && existsSync(a) ? readFileSync(a, 'utf8') : a));
 if (process.env.FAKE_ARGS_FILE) appendFileSync(process.env.FAKE_ARGS_FILE, JSON.stringify(logged) + '\n');
 if (process.env.FAKE_RAW_ARGS_FILE) appendFileSync(process.env.FAKE_RAW_ARGS_FILE, JSON.stringify(args) + '\n');
 if (process.env.FAKE_ENV_FILE) {
@@ -142,7 +147,10 @@ for await (const line of createInterface({ input: process.stdin })) {
           ? { subtype: 'can_use_tool', tool_name: 'ExitPlanMode', input: { plan: command } }
           : tool === 'AskUserQuestion'
             ? { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', input: process.env.FAKE_ASK_INPUT ? JSON.parse(process.env.FAKE_ASK_INPUT) : { questions: [question] }, requires_user_interaction: true }
-            : process.env.FAKE_ASK_TOOL
+            : process.env.FAKE_ASK_SERVER
+              ? // A person's MCP tool under an ask rule, as the real CLI asks (mcp-ask.jsonl): its server, no suggested rule.
+                { subtype: 'can_use_tool', tool_name: tool, mcp_server: { name: process.env.FAKE_ASK_SERVER, source: 'dynamic' }, input: process.env.FAKE_ASK_INPUT ? JSON.parse(process.env.FAKE_ASK_INPUT) : { query: command }, decision_reason_type: 'rule', decision_reason_rule_source: 'flagSettings' }
+              : process.env.FAKE_ASK_TOOL
               ? { subtype: 'can_use_tool', tool_name: process.env.FAKE_ASK_TOOL, input: { url: command }, permission_suggestions: [{ type: 'addRules', rules: [{ toolName: process.env.FAKE_ASK_TOOL }], behavior: 'allow', destination: 'localSettings' }] }
               : { subtype: 'can_use_tool', tool_name: 'Bash', input: { command }, permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: command }], behavior: 'allow', destination: 'localSettings' }] };
       out({ type: 'control_request', request_id: ASK_ID, request });

@@ -353,6 +353,19 @@ export class Store {
     return this.db.select().from(schema.permissionRules).where(eq(schema.permissionRules.roundUpId, roundUpId)).orderBy(asc(schema.permissionRules.id)).all();
   }
 
+  /** Removes every round-up's rules that start with one of `prefixes` (e.g. `mcp__github__`); how many went. */
+  deleteRulesStartingWith(prefixes: readonly string[]): number {
+    if (!prefixes.length) return 0;
+    const ids = this.db
+      .select({ id: schema.permissionRules.id, rule: schema.permissionRules.rule })
+      .from(schema.permissionRules)
+      .all()
+      .filter((r) => prefixes.some((p) => r.rule.startsWith(p)))
+      .map((r) => r.id);
+    if (!ids.length) return 0;
+    return this.db.delete(schema.permissionRules).where(inArray(schema.permissionRules.id, ids)).run().changes;
+  }
+
   /** Removes one of a round-up's rules; false if it has no such rule. */
   deleteRule(roundUpId: string, id: number): boolean {
     return this.db.delete(schema.permissionRules).where(and(eq(schema.permissionRules.id, id), eq(schema.permissionRules.roundUpId, roundUpId))).run().changes > 0;

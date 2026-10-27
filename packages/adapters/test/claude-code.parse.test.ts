@@ -283,6 +283,52 @@ describe('claude-code mapping', () => {
     expect(req?.data.rule).toBeUndefined();
   });
 
+  it("asks about a person's MCP tool by server, tool and arguments, with a rule for that one tool", () => {
+    // As the CLI asks under an ask rule, in auto mode (mcp-ask.jsonl): no suggested rule of its own.
+    const [req] = of(replay('mcp-ask'), 'permission.requested');
+    expect(req?.data).toMatchObject({ tool: 'mcp__claude_ai_Claude_Docs__guide', title: 'claude.ai Claude Docs › guide', rule: 'mcp__claude_ai_Claude_Docs__guide' });
+    const parser = newParser();
+    const [withArgs] = of(
+      parser.parse({
+        type: 'control_request',
+        request_id: 'y',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'mcp__github__search_issues',
+          mcp_server: { name: 'github', source: 'dynamic' },
+          input: { query: 'is:open label:bug', limit: 5, filters: { repo: 'a/b', text: 'x'.repeat(80) } },
+          // A suggestion for the whole server is not taken: only the one tool is ever remembered.
+          permission_suggestions: [{ type: 'addRules', behavior: 'allow', destination: 'localSettings', rules: [{ toolName: 'mcp__github' }] }],
+        },
+      }),
+      'permission.requested',
+    );
+    expect(withArgs?.data.rule).toBe('mcp__github__search_issues');
+    expect(withArgs?.data.title).toMatch(/^github › search_issues · query: "is:open label:bug", limit: 5, filters: \{"repo":"a\/b","text":"x{10,}…$/);
+    expect(withArgs!.data.title.length).toBeLessThanOrEqual(160);
+  });
+
+  it("writes out hidden characters in an MCP call's title: a bidi override can't make it read as another", () => {
+    const [req] = of(
+      newParser().parse({
+        type: 'control_request',
+        request_id: 'z',
+        request: { subtype: 'can_use_tool', tool_name: 'mcp__gh__run', mcp_server: { name: 'gh\u200b', source: 'dynamic' }, input: { path: 'a\u202etxt.exe' } },
+      }),
+      'permission.requested',
+    );
+    expect(req?.data.title).toBe('gh\\u{200b} › run · path: "a\\u{202e}txt.exe"');
+  });
+
+  it('asks about a claude.ai-style server with spaces and dashes in auto mode, by the tool name the CLI gives it', () => {
+    // Captured from Claude Code 2.1.308 in auto mode with the ask rule mcp__claude_ai_My_Tiny_-_Echo
+    // (mcp-ask-dashes.jsonl): the call arrived as can_use_tool, settled by that rule (flagSettings).
+    const [req] = of(replay('mcp-ask-dashes'), 'permission.requested');
+    expect(req?.data).toMatchObject({ tool: 'mcp__claude_ai_My_Tiny_-_Echo__echo', title: 'claude.ai My  Tiny - Echo › echo · text: "hi"', rule: 'mcp__claude_ai_My_Tiny_-_Echo__echo' });
+    const init = lines('mcp-ask-dashes')[0];
+    expect(init.permissionMode).toBe('auto');
+  });
+
   it("falls back on the turn's own last message for a plan, never an earlier turn's", () => {
     const parser = newParser();
     const plan = () => of(parser.parse({ type: 'control_request', request_id: String(Math.random()), request: { subtype: 'can_use_tool', tool_name: 'ExitPlanMode', input: {} } }), 'permission.requested')[0]?.data.plan;

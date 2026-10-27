@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -8,6 +8,7 @@ import lockfile from 'proper-lockfile';
 import { Connections } from './connectors/connector.js';
 import { GitHubConnector } from './connectors/github.js';
 import { canStart, checkHarnesses, shared, type HarnessStatus } from './harness-status.js';
+import { McpServers } from './mcp-servers.js';
 import { Orchestrator } from './orchestrator/orchestrator.js';
 import { createApp } from './server.js';
 import { SessionManager } from './sessions.js';
@@ -74,6 +75,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
       throw new HomeInUseError(`another Kelpie is already using ${home}`);
     });
 
+  // Each harness's MCP configs (secrets among them) are in here while it runs; it removes its own
+  // as it exits, so whatever is here now a crash or a kill left behind. No harness of this home is
+  // running: it is ours (the lock).
+  const tempDir = join(home, 'tmp');
+  rmSync(tempDir, { recursive: true, force: true });
+  mkdirSync(tempDir, { recursive: true, mode: 0o700 });
+  // Where agents' stdio MCP servers start: empty, and only Kelpie writes here (see McpServers).
+  const mcpCwd = join(home, 'mcp-cwd');
+  rmSync(mcpCwd, { recursive: true, force: true });
+  mkdirSync(mcpCwd, { recursive: true, mode: 0o700 });
+
   const store = openStore(join(home, 'kelpie.db'), opts.migrationsFolder ? { migrationsFolder: opts.migrationsFolder } : {});
   const worktrees = new Worktrees({
     store,
@@ -82,11 +94,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     ...(opts.maxWorktrees ? { max: opts.maxWorktrees } : {}),
   });
   const connections = new Connections([new GitHubConnector({ store })]);
+  const mcpServers = new McpServers({ neutralDir: mcpCwd });
   const orchestrator = new Orchestrator({
     store,
     mcpUrl: `http://127.0.0.1:${opts.port}/mcp`,
     worktrees,
     connections,
+    mcpServers,
     ...(opts.maxAgents ? { maxAgents: opts.maxAgents } : {}),
   });
   // As of the last harness check: `claude` is there to start.
@@ -98,7 +112,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     runsDir: join(home, 'runs'),
     scratchDir: join(home, 'scratch'),
     // What may run without asking is settled per session (the orchestrator's specFor, saved rules); anything else asks.
-    defaults: opts.model ? { model: opts.model } : {},
+    defaults: { tempDir, ...(opts.model ? { model: opts.model } : {}) },
     ...(opts.titles === false ? {} : { titles: opts.titles ?? claudeTitles() }),
     // Titles through `claude` wait until a harness check has found it (one runs at start), so a machine
     // without it is not tried, and does not log a failure, for every round-up.
@@ -122,6 +136,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     orchestrator,
     checkHarnesses: harnessStatus,
     connections,
+    mcpServers,
     ...(opts.staticDir ? { staticDir: opts.staticDir } : {}),
     ...(opts.maxUploadBytes ? { maxUploadBytes: opts.maxUploadBytes } : {}),
   });

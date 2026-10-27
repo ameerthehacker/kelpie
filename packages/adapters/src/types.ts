@@ -21,6 +21,11 @@ export interface RunSpec {
   /** Tools that run without a permission prompt (e.g. 'Bash', 'Bash(git:*)'). */
   allowedTools?: string[];
   disallowedTools?: string[];
+  /**
+   * Tools (rules) asked about every time, whatever the permission mode and any allow rule say: in
+   * auto mode the CLI would otherwise decide MCP tool calls itself, without asking us.
+   */
+  askTools?: string[];
   /** Directories outside `cwd` the harness may work in too (e.g. the round-up's scratch folder). */
   addDirs?: string[];
   appendSystemPrompt?: string;
@@ -31,6 +36,12 @@ export interface RunSpec {
    * even if the person has it on by default for their own sessions.
    */
   browser?: boolean;
+  /**
+   * Where the private files a run needs while it lives go (its MCP configs, which can hold
+   * secrets); default the OS temp directory. A spawner that owns this directory can sweep what a
+   * crash left there.
+   */
+  tempDir?: string;
   /** Where raw.jsonl and run.json go. Defaults to ~/.kelpie/runs/<runId>. */
   runDir?: string;
   /** Harness binary; defaults to the CLI on PATH. */

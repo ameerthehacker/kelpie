@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Effort, KelpieEvent } from '@kelpie/protocol';
 import { claudeArgs, claudeCode, runEnv, type RunSpec } from '../src/index.js';
+import { mcpConfigFiles } from '../src/claude-code/spawn.js';
 
 const FAKE = join(import.meta.dirname, 'fake-claude.mjs');
 const FIXTURES = join(import.meta.dirname, '../fixtures/claude-code');
@@ -141,6 +142,14 @@ describe('MCP config', () => {
     expect(existsSync(controls)).toBe(false);
   });
 
+  it('puts the files under the directory it is given, when given one', () => {
+    const base = join(mkdtempSync(join(tmpdir(), 'kelpie-base-')), 'tmp');
+    const { paths, dir } = mcpConfigFiles(['{"mcpServers":{}}'], base);
+    expect(dir!.startsWith(join(base, 'kelpie-mcp-'))).toBe(true);
+    expect(paths[0]!.startsWith(dir!)).toBe(true);
+    expect(statSync(base).mode & 0o777).toBe(0o700);
+  });
+
   it('passes a config path through as it is', () => {
     expect(claudeArgs({ cwd: '/r', mcpConfig: ['/etc/kelpie/mcp.json'] })).toEqual(expect.arrayContaining(['--mcp-config', '/etc/kelpie/mcp.json']));
   });
@@ -178,5 +187,17 @@ describe('claudeArgs', () => {
     expect(on).not.toContain('--no-chrome');
     // Its tools come with the flag, not from an allow rule.
     expect(on).not.toContain('--allowedTools');
+  });
+
+  it('always loads only the MCP servers it is given, and asks about every call to the ones named', () => {
+    const own = JSON.stringify({ mcpServers: { 'claude.ai Claude Docs': { type: 'claudeai-proxy', url: 'https://api.anthropic.com/v1/pages/mcp', id: 'mcpsrv_1' } } });
+    const args = claudeArgs({ ...spec, mcpConfig: ['{"mcpServers":{"kelpie":{}}}', own], askTools: ['mcp__claude_ai_Claude_Docs'] });
+    expect(args).toContain('--strict-mcp-config');
+    expect(args.slice(args.indexOf('--mcp-config') + 1, args.indexOf('--mcp-config') + 3)).toEqual(['{"mcpServers":{"kelpie":{}}}', own]);
+    // An ask rule (flag settings): it beats allow rules and auto mode's own checks.
+    expect(JSON.parse(args[args.indexOf('--settings') + 1]!)).toEqual({ permissions: { ask: ['mcp__claude_ai_Claude_Docs'] } });
+    // Without any, no settings flag at all.
+    expect(claudeArgs(spec)).not.toContain('--settings');
+    expect(claudeArgs(spec)).toContain('--strict-mcp-config');
   });
 });
