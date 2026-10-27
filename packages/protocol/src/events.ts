@@ -17,6 +17,13 @@ export type Harness = z.infer<typeof Harness>;
 export const Mode = z.enum(['auto', 'acceptEdits', 'plan']);
 export type Mode = z.infer<typeof Mode>;
 
+/**
+ * How hard the model thinks before it answers, lowest first: Claude Code's `--effort` levels.
+ * Not every model takes every level (older ones lack `xhigh` and `max`); the CLI falls back for them.
+ */
+export const Effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
+export type Effort = z.infer<typeof Effort>;
+
 /** Coarse tool buckets; these drive the live-log labels in the UI. */
 export const ToolCategory = z.enum(['read', 'search', 'edit', 'bash', 'web', 'todo', 'task', 'mcp', 'other']);
 export type ToolCategory = z.infer<typeof ToolCategory>;

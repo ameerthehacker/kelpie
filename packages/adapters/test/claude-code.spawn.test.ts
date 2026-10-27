@@ -2,8 +2,8 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { KelpieEvent } from '@kelpie/protocol';
-import { claudeArgs, claudeCode, type RunSpec } from '../src/index.js';
+import { Effort, KelpieEvent } from '@kelpie/protocol';
+import { claudeArgs, claudeCode, runEnv, type RunSpec } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, 'fake-claude.mjs');
 const FIXTURES = join(import.meta.dirname, '../fixtures/claude-code');
@@ -115,6 +115,32 @@ describe('MCP config', () => {
     expect(existsSync(path)).toBe(false);
   });
 
+  it('changes a live process’s effort with a control request', async () => {
+    const controls = join(mkdtempSync(join(tmpdir(), 'kelpie-controls-')), 'controls.jsonl');
+    const run = start('plain', { env: { FAKE_FIXTURE: join(FIXTURES, 'plain.jsonl'), FAKE_CONTROL_FILE: controls } });
+    const events = collect(run);
+    expect(await run.setEffort('xhigh')).toBe(true);
+    expect(readFileSync(controls, 'utf8').trim().split('\n').map((l) => JSON.parse(l))).toEqual([
+      { subtype: 'apply_flag_settings', settings: { effortLevel: 'xhigh' } },
+    ]);
+    const stopping = run.stop();
+    expect(await run.setEffort('low')).toBe(false);
+    await stopping;
+    await events;
+    expect(await run.setEffort('low')).toBe(false);
+    expect(readFileSync(controls, 'utf8').trim().split('\n')).toHaveLength(1);
+  });
+
+  it('owns up that a live change cannot get past CLAUDE_CODE_EFFORT_LEVEL', async () => {
+    const controls = join(mkdtempSync(join(tmpdir(), 'kelpie-controls-')), 'controls.jsonl');
+    const run = start('plain', { env: { FAKE_FIXTURE: join(FIXTURES, 'plain.jsonl'), FAKE_CONTROL_FILE: controls, CLAUDE_CODE_EFFORT_LEVEL: 'low' } });
+    const events = collect(run);
+    expect(await run.setEffort('high')).toBe(false);
+    await run.stop();
+    await events;
+    expect(existsSync(controls)).toBe(false);
+  });
+
   it('passes a config path through as it is', () => {
     expect(claudeArgs({ cwd: '/r', mcpConfig: ['/etc/kelpie/mcp.json'] })).toEqual(expect.arrayContaining(['--mcp-config', '/etc/kelpie/mcp.json']));
   });
@@ -122,6 +148,24 @@ describe('MCP config', () => {
 
 describe('claudeArgs', () => {
   const spec: RunSpec = { cwd: '/work/repo', prompt: 'hi' };
+
+  it('drops CLAUDE_CODE_EFFORT_LEVEL for a run with an effort of its own, which the CLI would let it override', () => {
+    const base = { PATH: '/bin', CLAUDE_CODE_EFFORT_LEVEL: 'low' };
+    expect(runEnv({ effort: 'high' }, base)).toEqual({ PATH: '/bin' });
+    expect(runEnv({ effort: 'high', env: { CLAUDE_CODE_EFFORT_LEVEL: 'max', GH_TOKEN: 't' } }, base)).toEqual({ PATH: '/bin', GH_TOKEN: 't' });
+    // Without one, the person's own setting stands.
+    expect(runEnv({}, base)).toEqual(base);
+  });
+
+  it('passes the effort level when there is one, and leaves the harness default alone otherwise', () => {
+    for (const effort of Effort.options) {
+      const args = claudeArgs({ ...spec, effort });
+      expect(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2)).toEqual(['--effort', effort]);
+    }
+    expect(claudeArgs(spec)).not.toContain('--effort');
+    // A resume keeps it: every start passes it again.
+    expect(claudeArgs({ ...spec, resume: 'h', effort: 'max' })).toEqual(expect.arrayContaining(['--resume', 'h', '--effort', 'max']));
+  });
 
   it('turns Claude in Chrome off unless the run asks for the browser', () => {
     // Off explicitly, so the person's "enabled by default" setting doesn't hand it to every agent.

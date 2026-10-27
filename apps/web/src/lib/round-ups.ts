@@ -1,4 +1,4 @@
-import type { LinkedTicket, Mode, UsageLimitPause } from '@kelpie/protocol';
+import type { Effort, LinkedTicket, Mode, UsageLimitPause } from '@kelpie/protocol';
 import { formatDistanceStrict } from 'date-fns';
 import { generatePath } from 'react-router';
 import type { AgentSummary } from './agents.js';
@@ -40,6 +40,8 @@ export interface RoundUp {
   role?: 'orchestrator' | 'agent';
   /** The model asked for; absent for the harness's default. */
   model?: string;
+  /** The reasoning effort asked for; absent for the harness's default. */
+  effort?: Effort;
   /** Ordinary work, or Muster (a sub-agent bringing other agents' branches together). */
   kind?: 'worker' | 'muster';
   /** The branch the round-up starts from (e.g. origin/main) and the commit it was pinned to, once chosen. */

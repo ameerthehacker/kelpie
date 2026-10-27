@@ -3,7 +3,7 @@ import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
 import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
-import { AGENT_HALT_RESUMED, Harness, haltNote, haltResumed, hasHaltNote, parseTicketUrl, type AgentUpdate, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
+import { AGENT_HALT_RESUMED, Harness, haltNote, haltResumed, hasHaltNote, parseTicketUrl, type AgentUpdate, type Effort, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import type { Connections } from '../connectors/connector.js';
 import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
@@ -113,6 +113,8 @@ export interface AgentInfo {
   writes: boolean;
   /** Given the Claude in Chrome tools. */
   browser?: boolean;
+  /** Its reasoning effort, if not the harness's default. */
+  effort?: Effort;
   /** Muster, or ordinary work. */
   kind: 'worker' | 'muster';
   /** A writer's own branch, and whether its work is still to be mustered, mustered, or standalone. */
@@ -136,7 +138,10 @@ export interface SpawnInput {
   task: string;
   writes: boolean;
   harness?: string | undefined;
+  /** Its model; the round-up's without it. */
   model?: string | undefined;
+  /** Its reasoning effort; the round-up's without it. */
+  effort?: Effort | undefined;
   /** A writer's: merged into the feature branch by Muster (default), or a branch that stands alone. */
   deliver?: 'muster' | 'standalone' | undefined;
   /** A read-only agent's: look at this agent's worktree instead of the feature branch. */
@@ -155,6 +160,9 @@ export interface AgentList {
   featureCheckout: string | undefined;
   /** The mode the person has the round-up in. */
   mode: Mode;
+  /** The model and reasoning effort the person picked for the round-up, which agents start with; absent for the harness's default. */
+  model?: string;
+  effort?: Effort;
   /** How many of its agents may work at once (the person sets it in Settings), and how many count against that now (working, or starting). */
   maxAgents: number;
   working: number;
@@ -512,7 +520,9 @@ export class Orchestrator implements SessionHooks {
       role: 'agent' as const,
       writes: input.writes,
       title,
-      ...(input.model ? { model: input.model } : {}),
+      // The person's choices for the round-up, unless the orchestrator picked others for this unit.
+      ...((input.model || parent.model) ? { model: input.model || parent.model } : {}),
+      ...((input.effort ?? parent.effort) ? { effort: input.effort ?? parent.effort } : {}),
       ...(input.browser ? { browser: true } : {}),
     };
     const repo = this.worktrees ? await this.worktrees.repoOf(parent.cwd) : undefined;
@@ -577,6 +587,8 @@ export class Orchestrator implements SessionHooks {
       featureBranch: home?.branch,
       featureCheckout: home && (await this.checkout(home)),
       mode: parent.mode,
+      ...(parent.model ? { model: parent.model } : {}),
+      ...(parent.effort ? { effort: parent.effort } : {}),
       maxAgents: this.maxAgents,
       working: this.busy(parent),
       agents: this.manager.children(parent.id).map((c) => this.agentInfo(c)),
@@ -1332,6 +1344,7 @@ export class Orchestrator implements SessionHooks {
       harness: info.harness,
       writes: c.writes,
       ...(c.browser ? { browser: true } : {}),
+      ...(c.effort ? { effort: c.effort } : {}),
       kind: c.kind,
       ...(row ? { branch: row.branch, worktree: row.state, ...(row.deliver ? { deliver: row.deliver } : {}) } : {}),
       status: this.isWorking(c)

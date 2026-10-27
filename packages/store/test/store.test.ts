@@ -6,6 +6,17 @@ import { describe, expect, it } from 'vitest';
 import { parseTicketUrl, type KelpieEvent, type TicketLink } from '@kelpie/protocol';
 import { openStore } from '../src/index.js';
 
+/**
+ * Adds a round-up to a store made by earlier migrations, as it would have been written then: today's
+ * createSession names columns (effort) that store doesn't have yet.
+ */
+function oldSession(path: string, row: { id: string; cwd: string; parentId?: string; role?: string; title?: string; harness?: string }) {
+  const db = new Database(path);
+  const cols = Object.keys(row).map((k) => k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`));
+  db.prepare(`INSERT INTO sessions (${cols.join(', ')}, created_at, updated_at) VALUES (${cols.map(() => '?').join(', ')}, 0, 0)`).run(...Object.values(row));
+  db.close();
+}
+
 const ev = (seq: number, kind: 'message' | 'activity', data: unknown) =>
   ({ id: `e${seq}`, runId: 'r1', seq, ts: '2026-01-01T00:00:00.000Z', harness: 'claude-code', kind, data }) as KelpieEvent;
 
@@ -97,7 +108,7 @@ describe('store', () => {
     writeFileSync(journal, JSON.stringify(j));
     const path = join(dir, 'kelpie.db');
     const old = openStore(path, { migrationsFolder: before });
-    old.createSession({ id: 'r', cwd: '/r' });
+    oldSession(path, { id: 'r', cwd: '/r' });
     expect(() => old.settings()).toThrow(/no such table/);
     old.close();
     const store = openStore(path);
@@ -105,6 +116,25 @@ describe('store', () => {
     expect(store.settings()).toEqual({});
     store.setSettings({ maxAgents: 3 });
     expect(store.settings()).toEqual({ maxAgents: 3 });
+    store.close();
+  });
+
+  it('adds the effort column to a store made before it, leaving its round-ups at the default', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
+    const before = join(dir, 'drizzle');
+    cpSync(join(import.meta.dirname, '../drizzle'), before, { recursive: true });
+    const journal = join(before, 'meta/_journal.json');
+    const j = JSON.parse(readFileSync(journal, 'utf8')) as { entries: { tag: string }[] };
+    expect(j.entries.map((e) => e.tag)).toContain('0020_session-effort');
+    j.entries = j.entries.filter((e) => e.tag < '0020');
+    writeFileSync(journal, JSON.stringify(j));
+    const path = join(dir, 'kelpie.db');
+    openStore(path, { migrationsFolder: before }).close();
+    oldSession(path, { id: 'r', cwd: '/r', title: 'Old' });
+    const store = openStore(path);
+    expect(store.getSession('r')).toMatchObject({ title: 'Old', effort: null });
+    expect(store.updateSession('r', { effort: 'xhigh' })).toMatchObject({ effort: 'xhigh' });
+    expect(store.updateSession('r', { effort: null })).toMatchObject({ effort: null });
     store.close();
   });
 
@@ -118,8 +148,8 @@ describe('store', () => {
     writeFileSync(journal, JSON.stringify(j));
     const path = join(dir, 'kelpie.db');
     const raw = openStore(path, { migrationsFolder: before });
-    raw.createSession({ id: 'r', cwd: '/r' });
     raw.close();
+    oldSession(path, { id: 'r', cwd: '/r' });
     const db = new Database(path);
     const insert = db.prepare("insert into tickets (round_up_id, ref, provider, kind, url, title, source, created_at) values ('r', ?, 'asana', 'task', ?, ?, 'auto', 1)");
     insert.run('asana:task:1', 'https://app.asana.com/0/0/1', 'Checkout flake');
@@ -143,7 +173,7 @@ describe('store', () => {
     writeFileSync(journal, JSON.stringify(j));
     const path = join(dir, 'kelpie.db');
     const old = openStore(path, { migrationsFolder: before });
-    old.createSession({ id: 'r', cwd: '/r' });
+    oldSession(path, { id: 'r', cwd: '/r' });
     expect(() => old.limits()).toThrow(/no such table/);
     old.close();
     const store = openStore(path);
@@ -203,7 +233,7 @@ describe('store', () => {
     writeFileSync(journal, JSON.stringify(j));
     const path = join(dir, 'kelpie.db');
     const old = openStore(path, { migrationsFolder: before });
-    old.createSession({ id: 'r', cwd: '/r' });
+    oldSession(path, { id: 'r', cwd: '/r' });
     old.close();
     const store = openStore(path);
     expect(store.getSession('r')).toBeDefined();
@@ -379,8 +409,8 @@ describe('reviews', () => {
     writeFileSync(journal, JSON.stringify(j));
     const path = join(dir, 'kelpie.db');
     const old = openStore(path, { migrationsFolder: before });
-    old.createSession({ id: 'r', cwd: '/r' });
-    old.createSession({ id: 'a', cwd: '/r', parentId: 'r', role: 'agent', title: 'API', harness: 'codex' });
+    oldSession(path, { id: 'r', cwd: '/r' });
+    oldSession(path, { id: 'a', cwd: '/r', parentId: 'r', role: 'agent', title: 'API', harness: 'codex' });
     const review = old.ensurePendingReview('r');
     const t = old.addThread(anchor('r', { status: 'open' }));
     old.close();
@@ -449,7 +479,7 @@ describe('workbench', () => {
     writeFileSync(journal, JSON.stringify(j));
     const path = join(dir, 'kelpie.db');
     const old = openStore(path, { migrationsFolder: before });
-    old.createSession({ id: 'r', cwd: '/r' });
+    oldSession(path, { id: 'r', cwd: '/r' });
     expect(() => old.cards()).toThrow(/no such table/);
     old.close();
     const store = openStore(path);

@@ -1,6 +1,6 @@
 import { ArrowUpIcon, SquareIcon } from 'lucide-react';
 import { useState, type KeyboardEvent } from 'react';
-import type { Mode } from '@kelpie/protocol';
+import type { Effort, Mode } from '@kelpie/protocol';
 import { AttachButton, FileChips, useAttachedFiles } from '@/components/chat/attachments';
 import { BranchPicker, HarnessMenu, ModeMenu } from '@/components/chat/composer-controls';
 import { LimitHint } from '@/components/chat/limit-hint';
@@ -17,6 +17,10 @@ interface Props {
   /** The round-up's model, or '' for the default. */
   model: string;
   onModel: (model: string) => void;
+  /** The round-up's reasoning effort, or '' for the default; and what it reaches, for its menu. */
+  effort: '' | Effort;
+  onEffort: (effort: '' | Effort) => void;
+  effortNote?: string | undefined;
   /** The branch the round-up starts from, or '' while not chosen (Kelpie asks before the first writer). */
   base: string;
   onBase: (branch: string) => void;
@@ -33,13 +37,13 @@ interface Props {
 }
 
 /**
- * The design's composer: the message and its files, the harness and model, the mode, the base
+ * The design's composer: the message and its files, the harness, model and effort, the mode, the base
  * branch, and send. Its controls are chips that shrink to icons as it narrows. It clears as
  * soon as a message is sent, and puts the text and files back if sending fails and the box is
  * still empty. While the round-up works, an empty box offers stop; anything typed is still sent
  * (and queued). Files can be attached with the paperclip, dropped on the box, or pasted.
  */
-export function Composer({ status, busy, send, interrupt, model, onModel, base, onBase, branches, baseLocked, baseClearable, mode, modes, onMode }: Props) {
+export function Composer({ status, busy, send, interrupt, model, onModel, effort, onEffort, effortNote, base, onBase, branches, baseLocked, baseClearable, mode, modes, onMode }: Props) {
   const [text, setText] = useState('');
   const attached = useAttachedFiles();
   const { getRootProps, getInputProps, isDragActive, open } = attached.dropzone;
@@ -100,7 +104,7 @@ export function Composer({ status, busy, send, interrupt, model, onModel, base, 
         {/* A container: as the composer narrows, the chips drop their labels instead of wrapping. */}
         <div className="@container -ml-1.5 flex min-w-0 items-center gap-1.5">
           <AttachButton onClick={open} />
-          <HarnessMenu harness="claude-code" model={model} onModel={onModel} />
+          <HarnessMenu harness="claude-code" model={model} onModel={onModel} effort={effort} onEffort={onEffort} effortNote={effortNote} />
           {modes.length > 1 && <ModeMenu mode={mode} modes={modes} onMode={onMode} />}
           {!!branches?.length && <BranchPicker base={base} onBase={onBase} branches={branches} locked={baseLocked} clearable={baseClearable} />}
           <span className="flex-1" />

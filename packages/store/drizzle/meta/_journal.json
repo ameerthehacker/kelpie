@@ -141,6 +141,13 @@
       "when": 1793038384537,
       "tag": "0019_halts",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1793039840689,
+      "tag": "0020_session-effort",
+      "breakpoints": true
     }
   ]
 }

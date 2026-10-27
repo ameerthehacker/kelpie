@@ -1,6 +1,6 @@
 import { PanelLeftIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type Ref } from 'react';
-import type { Mode } from '@kelpie/protocol';
+import type { Effort, Mode } from '@kelpie/protocol';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMatch, useNavigate } from 'react-router';
 import { AgentsButton } from '@/components/agents/agent-pane';
@@ -44,6 +44,7 @@ import { useSession } from '@/hooks/use-session';
 import type { AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
 import { isRequestKind } from '@/lib/attention';
+import { effortPatch } from '@/lib/effort';
 import { ROUND_UP_ROUTE, roundUpPath, roundUpSummary, shortPath, titleOf, type RoundUp } from '@/lib/round-ups';
 import { WORKBENCH_ROUTE } from '@/lib/workbench';
 
@@ -161,6 +162,7 @@ export function App() {
   const [navOpen, setNavOpen] = useNavOpen();
   const [mobileNav, setMobileNav] = useState(false);
   const [draftModel, setDraftModel] = useState('');
+  const [draftEffort, setDraftEffort] = useState<'' | Effort>('');
   const [draftBase, setDraftBase] = useState('');
   const [draftMode, setDraftMode] = useState<Mode>('auto');
   const [modelError, setModelError] = useState<string | undefined>();
@@ -168,6 +170,7 @@ export function App() {
   const onCreated = useCallback((id: string) => navigate(roundUpPath(id), { replace: true }), [navigate]);
   const { events, items, todos, status, busy, error, send, interrupt } = useSession(roundUpId, onCreated, {
     model: draftModel || undefined,
+    effort: draftEffort || undefined,
     baseBranch: draftBase || undefined,
     mode: draftMode,
   });
@@ -191,6 +194,7 @@ export function App() {
   // Steps on a sub-agent's own page are its own; everywhere else they are Kelpie's.
   const actor = current?.role === 'agent' ? titleOf(current) : 'Kelpie';
   const model = roundUpId ? (current?.model ?? '') : draftModel;
+  const effort = roundUpId ? (current?.effort ?? '') : draftEffort;
   const branches = useBranches(current?.role === 'agent' ? undefined : cwd);
   const base = roundUpId ? (current?.baseBranch ?? '') : draftBase;
   const mode = roundUpId ? (current?.mode ?? 'auto') : draftMode;
@@ -222,6 +226,22 @@ export function App() {
     api<RoundUp>('PATCH', `/api/sessions/${roundUpId}`, { model: next || null }).then(
       () => queryClient.invalidateQueries({ queryKey: ['round-up', roundUpId] }),
       (err: Error) => setModelError(`Couldn't change the model: ${err.message}`),
+    );
+  };
+  const changeEffort = (next: '' | Effort) => {
+    if (!roundUpId) return setDraftEffort(next);
+    setModelError(undefined);
+    // Optimistic, like the mode: the segments should answer at once. A live process takes it from its next request.
+    const patch = (r: RoundUp) => (r.id === roundUpId ? { ...r, effort: next || undefined } : r);
+    queryClient.setQueryData<RoundUp[]>(['round-ups'], (list) => list?.map(patch));
+    queryClient.setQueryData<RoundUp>(['round-up', roundUpId], (r) => r && patch(r));
+    api<RoundUp>('PATCH', `/api/sessions/${roundUpId}`, effortPatch(next)).then(
+      () => queryClient.invalidateQueries({ queryKey: ['round-up', roundUpId] }),
+      (err: Error) => {
+        setModelError(`Couldn't change the effort: ${err.message}`);
+        void queryClient.invalidateQueries({ queryKey: ['round-ups'] });
+        void queryClient.invalidateQueries({ queryKey: ['round-up', roundUpId] });
+      },
     );
   };
   const changeMode = (next: Mode) => {
@@ -368,6 +388,10 @@ export function App() {
                       interrupt={interrupt}
                       model={model}
                       onModel={changeModel}
+                      effort={effort}
+                      onEffort={changeEffort}
+                      // A round-up's agents start at its effort; an agent's own page sets only its own.
+                      effortNote={current?.role === 'agent' ? 'This agent only' : 'Agents start with it'}
                       base={base}
                       onBase={changeBase}
                       branches={branches}

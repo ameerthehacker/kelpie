@@ -1,4 +1,4 @@
-import type { Answers, Harness, KelpieEvent, Mode, TodoItem } from '@kelpie/protocol';
+import type { Answers, Effort, Harness, KelpieEvent, Mode, TodoItem } from '@kelpie/protocol';
 import type { UsageLimitStop } from './limits.js';
 
 export interface RunSpec {
@@ -8,6 +8,8 @@ export interface RunSpec {
   /** Defaults to a random UUID. */
   runId?: string;
   model?: string;
+  /** Reasoning effort; the harness's default (its settings, then the model's) without it. */
+  effort?: Effort;
   /** Harness session id to continue. */
   resume?: string;
   /** With `resume` only: the session's todo list as last seen, so the harness's updates to it are not lost. The adapter seeds from it as given. */
@@ -68,6 +70,8 @@ export interface Run {
   answer(requestId: string, answer: PermissionAnswer): boolean;
   /** Switches the live process to a permission mode (a harness value, e.g. `acceptEdits`); false if it refused or never answered. */
   setMode(mode: string): Promise<boolean>;
+  /** Switches the live process to a reasoning effort, from its next request on; false if it refused or never answered. */
+  setEffort(effort: Effort): Promise<boolean>;
   /**
    * Stops the current turn; the session stays alive for further `send()`s.
    * Only if the harness does not answer at all is the process killed.

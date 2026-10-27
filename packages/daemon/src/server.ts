@@ -6,7 +6,7 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE, type SSEMessage } from 'hono/streaming';
 import { getMimeType } from 'hono/utils/mime';
-import { Answers, CardArchive, Mode, NotePost } from '@kelpie/protocol';
+import { Answers, CardArchive, Effort, Mode, NotePost } from '@kelpie/protocol';
 import { checkHarnesses, shared, type HarnessStatus } from './harness-status.js';
 import type { Connections } from './connectors/connector.js';
 import { connectionRoutes } from './connectors/routes.js';
@@ -26,6 +26,7 @@ const MODEL_ERROR = 'model must be a model name or alias, like "sonnet" or "clau
 const isModel = (m: unknown): m is string => typeof m === 'string' && /^[A-Za-z0-9][\w.:\[\]-]{0,79}$/.test(m);
 const isMime = (m: string | undefined): m is string => !!m && m.length <= 100 && /^[\w.+-]+\/[\w.+-]+$/.test(m);
 const MODE_ERROR = `mode must be one of: ${Mode.options.join(', ')}`;
+const EFFORT_ERROR = `effort must be one of: ${Effort.options.join(', ')}`;
 const MAX_ATTACHMENTS = 20;
 /** Uploads the browser may show in place: images (not SVG, which can carry script) and PDFs. */
 const inline = (mime: string) => (mime.startsWith('image/') && mime !== 'image/svg+xml') || mime === 'application/pdf';
@@ -216,16 +217,18 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   }
 
   app.post('/api/sessions', async (c) => {
-    const body = await jsonBody<{ cwd?: unknown; model?: unknown; baseBranch?: unknown; mode?: unknown }>(c);
+    const body = await jsonBody<{ cwd?: unknown; model?: unknown; effort?: unknown; baseBranch?: unknown; mode?: unknown }>(c);
     if (body.cwd !== undefined && typeof body.cwd !== 'string') return c.json({ error: 'cwd must be a string' }, 400);
     if (body.model !== undefined && !isModel(body.model)) return c.json({ error: MODEL_ERROR }, 400);
+    const effort = body.effort === undefined ? undefined : Effort.safeParse(body.effort);
+    if (effort && !effort.success) return c.json({ error: EFFORT_ERROR }, 400);
     const mode = Mode.safeParse(body.mode ?? 'auto');
     if (!mode.success || !sessions.modes.includes(mode.data)) return c.json({ error: MODE_ERROR }, 400);
     if (body.baseBranch !== undefined && (typeof body.baseBranch !== 'string' || !orch)) return c.json({ error: 'baseBranch must be a branch name' }, 400);
     // Relative to the daemon's default repo, not its process cwd (a package dir under `pnpm dev`).
     const cwd = resolve(sessions.defaultCwd, body.cwd ?? '.');
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) return c.json({ error: `not a directory: ${cwd}` }, 400);
-    const session = sessions.create(cwd, { mode: mode.data, ...(body.model ? { model: body.model } : {}) });
+    const session = sessions.create(cwd, { mode: mode.data, ...(body.model ? { model: body.model } : {}), ...(effort?.data ? { effort: effort.data } : {}) });
     if (typeof body.baseBranch === 'string' && orch) {
       try {
         await orch.setBase(session, body.baseBranch);
@@ -331,9 +334,9 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
   app.patch('/api/sessions/:id', async (c) => {
     const s = sessions.get(c.req.param('id'));
     if (!s) return c.json({ error: 'no such session' }, 404);
-    const body = await jsonBody<{ title?: unknown; model?: unknown; baseBranch?: unknown; mode?: unknown }>(c);
-    if (body.title === undefined && body.model === undefined && body.baseBranch === undefined && body.mode === undefined) {
-      return c.json({ error: 'nothing to change: send title, model, baseBranch or mode' }, 400);
+    const body = await jsonBody<{ title?: unknown; model?: unknown; effort?: unknown; baseBranch?: unknown; mode?: unknown }>(c);
+    if (body.title === undefined && body.model === undefined && body.effort === undefined && body.baseBranch === undefined && body.mode === undefined) {
+      return c.json({ error: 'nothing to change: send title, model, effort, baseBranch or mode' }, 400);
     }
     const mode = body.mode === undefined ? undefined : Mode.safeParse(body.mode);
     if (mode && (!mode.success || !sessions.modes.includes(mode.data))) return c.json({ error: MODE_ERROR }, 400);
@@ -341,6 +344,9 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     // Everything is checked before anything is saved: a bad field changes nothing.
     // Null puts the harness's default model back.
     if (body.model !== undefined && body.model !== null && !isModel(body.model)) return c.json({ error: MODEL_ERROR }, 400);
+    // Null puts the harness's default effort back too.
+    const effort = body.effort === undefined || body.effort === null ? undefined : Effort.safeParse(body.effort);
+    if (effort && !effort.success) return c.json({ error: EFFORT_ERROR }, 400);
     const title = typeof body.title === 'string' ? body.title.trim().replace(/\s+/g, ' ') : '';
     if (body.title !== undefined && (!title || title.length > 200)) return c.json({ error: 'title must be 1-200 characters' }, 400);
     if (body.baseBranch !== undefined && (typeof body.baseBranch !== 'string' || !orch)) return c.json({ error: 'baseBranch must be a branch name' }, 400);
@@ -354,6 +360,8 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     }
     if (body.title !== undefined) s.rename(title);
     if (body.model !== undefined) s.setModel(body.model ?? undefined);
+    // Saved at once; the live process takes it in the background (see Session.setEffort).
+    if (body.effort !== undefined) void s.setEffort(effort?.data);
     if (mode?.success) await sessions.setMode(s, mode.data);
     return c.json(s.info());
   });

@@ -50,8 +50,8 @@ function setup(env: Record<string, string> = {}, opts: { maxAgents?: number; not
 }
 
 /** Starts an orchestrator round-up and returns an MCP client holding its run's token. */
-async function orchestrator(ctx: ReturnType<typeof setup>) {
-  const parent = ctx.sessions.create();
+async function orchestrator(ctx: ReturnType<typeof setup>, create: Parameters<SessionManager['create']>[1] = {}) {
+  const parent = ctx.sessions.create(undefined, create);
   await parent.send('Do the things');
   const argv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[0]);
   const config = JSON.parse(argv[argv.indexOf('--mcp-config') + 1]!);
@@ -333,6 +333,56 @@ describe('orchestrator round-ups', () => {
     const resumed = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[3]);
     expect(flag(resumed, '--resume')).toHaveLength(1);
     expect(resumed).toContain('--chrome');
+  });
+
+  it('starts agents on the round-up’s model and effort, or the ones spawn_agent picks', async () => {
+    const ctx = setup({ FAKE_EVERY_TURN: '1' });
+    const { argv, call } = await orchestrator(ctx, { effort: 'high', model: 'opus' });
+    expect(flag(argv, '--effort')).toEqual(['high']);
+    expect(flag(argv, '--append-system-prompt')[0]).toContain("Agents start on the round-up's model and effort");
+    // What raising or lowering is relative to.
+    expect((await call('list_agents')).data).toMatchObject({ model: 'opus', effort: 'high' });
+
+    // One after the other: two processes starting side by side log their arguments in either order.
+    const inherited = await call('spawn_agent', { title: 'Inherits', task: 'Read the docs', writes: false });
+    const inheritedArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
+    const picked = await call('spawn_agent', { title: 'Quick', task: 'Rename a file', writes: false, effort: 'low', model: 'haiku' });
+    const pickedArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[2]);
+    expect(flag(inheritedArgv!, '--effort')).toEqual(['high']);
+    expect(flag(inheritedArgv!, '--model')).toEqual(['opus']);
+    expect(flag(pickedArgv!, '--effort')).toEqual(['low']);
+    expect(flag(pickedArgv!, '--model')).toEqual(['haiku']);
+    expect(ctx.sessions.get(picked.data.agentId)!.summary().effort).toBe('low');
+    expect(ctx.sessions.get(inherited.data.agentId)!.summary().effort).toBe('high');
+    const listed = await call('list_agents');
+    expect(listed.data.agents.map((a: { title: string; effort?: string }) => [a.title, a.effort])).toEqual([
+      ['Inherits', 'high'],
+      ['Quick', 'low'],
+    ]);
+    expect((await call('spawn_agent', { title: 'Bad', task: 'x', writes: false, effort: 'extreme' })).error).toBeDefined();
+
+    // Changed on the agent's own page while it is idle: the pane hears at once.
+    const agent = ctx.sessions.get(inherited.data.agentId)!;
+    await waitFor(() => !agent.working);
+    // Past the pane's update debounce (300ms), so nothing already queued carries the change.
+    await new Promise((r) => setTimeout(r, 800));
+    const pushed: (string | undefined)[] = [];
+    const unwatch = ctx.sessions.watch((u) => u.type === 'agent' && u.agent.id === agent.id && pushed.push(u.agent.effort));
+    await agent.setEffort('max');
+    await waitFor(() => pushed.includes('max'));
+    unwatch();
+  });
+
+  it('starts agents at the harness default when neither the round-up nor spawn_agent picks an effort', async () => {
+    const ctx = setup({ FAKE_EVERY_TURN: '1' });
+    const { argv, call } = await orchestrator(ctx);
+    expect(argv).not.toContain('--effort');
+    expect((await call('list_agents')).data).not.toHaveProperty('effort');
+    const agent = await call('spawn_agent', { title: 'Plain', task: 'Read the docs', writes: false });
+    const agentArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[1]);
+    expect(agentArgv).not.toContain('--effort');
+    expect(agentArgv).not.toContain('--model');
+    expect(ctx.sessions.get(agent.data.agentId)!.summary()).not.toHaveProperty('effort');
   });
 
   it('refuses empty briefs and messages', async () => {

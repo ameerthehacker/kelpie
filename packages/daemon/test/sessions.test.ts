@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -51,6 +51,190 @@ function todosEvent(items: TodoItem[], parentCallId?: string): KelpieEvent {
 const listOf = (e: KelpieEvent | undefined) => (e?.kind === 'todos' ? e.data.items.map((t) => `${t.id}:${t.status}`) : undefined);
 
 const argsOf = (file: string): string[][] => readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+
+describe('reasoning effort', () => {
+  const controlsOf = (file: string) => (existsSync(file) ? argsOf(file) : []) as unknown as Record<string, unknown>[];
+
+  it('starts each process at the session’s effort, changes a live one in place, and restarts for the default', async () => {
+    const store = openStore(':memory:');
+    const controls = join(tmp('kelpie-controls-'), 'controls.jsonl');
+    const specs: RunSpec[] = [];
+    const sessions = manager(store, { FAKE_CONTROL_FILE: controls, FAKE_EVERY_TURN: '1' }, { adapter: recording(specs) });
+    const session = sessions.create(undefined, { effort: 'high' });
+    expect(session.info().effort).toBe('high');
+    session.send('first');
+    let log = await until(session, 'turn.ended');
+    expect(specs[0]!.effort).toBe('high');
+
+    // A live process takes a level as a control request, and goes on.
+    await session.setEffort('max');
+    expect(controlsOf(controls)).toContainEqual({ subtype: 'apply_flag_settings', settings: { effortLevel: 'max' } });
+    expect(store.getSession(session.id)!.effort).toBe('max');
+    session.send('second');
+    log = await until(session, 'turn.ended', log.length);
+    expect(specs).toHaveLength(1);
+
+    // The default needs a new process, resumed without the flag.
+    await session.setEffort(undefined);
+    expect(session.info().effort).toBeUndefined();
+    log = await until(session, 'process.exited', log.length);
+    session.send('third');
+    await until(session, 'turn.ended', log.length);
+    await sessions.stopAll();
+    expect(specs).toHaveLength(2);
+    expect(specs[1]!.effort).toBeUndefined();
+    expect(specs[1]!.resume).toBe(session.info().harnessSessionId);
+    store.close();
+  });
+
+  it('restarts once idle when the live process refuses the change, resuming with the new effort', async () => {
+    const specs: RunSpec[] = [];
+    const sessions = manager(openStore(':memory:'), { FAKE_CONTROL_ERROR: 'apply_flag_settings', FAKE_EVERY_TURN: '1' }, { adapter: recording(specs) });
+    const session = sessions.create(undefined, { effort: 'low' });
+    session.send('first');
+    let log = await until(session, 'turn.ended');
+    const exited = until(session, 'process.exited', log.length);
+    await session.setEffort('high');
+    log = await exited;
+    session.send('second');
+    await until(session, 'turn.ended', log.length);
+    await sessions.stopAll();
+    expect(specs.map((s) => [s.effort, s.resume])).toEqual([
+      ['low', undefined],
+      ['high', session.info().harnessSessionId],
+    ]);
+  });
+
+  it('lets a turn under way finish before going back to the default, then resumes without the flag', async () => {
+    const hold = join(tmp('kelpie-hold-'), 'hold');
+    writeFileSync(hold, '');
+    const specs: RunSpec[] = [];
+    const sessions = manager(openStore(':memory:'), { FAKE_HOLD_FILE: hold, FAKE_EVERY_TURN: '1' }, { adapter: recording(specs) });
+    const session = sessions.create(undefined, { effort: 'max' });
+    const ended = until(session, 'turn.ended');
+    session.send('first');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(session.working).toBe(true);
+    await session.setEffort(undefined);
+    // Mid-turn, nothing is stopped: the process ends only once the turn is done.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(session.working).toBe(true);
+    rmSync(hold);
+    let log = await ended;
+    expect(log.at(-1)).toMatchObject({ kind: 'turn.ended', data: { status: 'completed' } });
+    log = await until(session, 'process.exited', log.length);
+    session.send('second');
+    await until(session, 'turn.ended', log.length);
+    await sessions.stopAll();
+    expect(specs.map((s) => [s.effort, s.resume])).toEqual([
+      ['max', undefined],
+      [undefined, session.info().harnessSessionId],
+    ]);
+  });
+
+  it('keeps a stale process for a turn sent just as it went idle, and ends it after that turn', async () => {
+    const hold = join(tmp('kelpie-hold-'), 'hold');
+    writeFileSync(hold, '');
+    const specs: RunSpec[] = [];
+    const sessions = manager(openStore(':memory:'), { FAKE_HOLD_FILE: hold, FAKE_EVERY_TURN: '1', FAKE_TURN_DELAY: '1800' }, { adapter: recording(specs) });
+    const session = sessions.create(undefined, { effort: 'max' });
+    const ended: string[] = [];
+    session.subscribe(({ event }) => {
+      if (event.kind !== 'turn.ended') return;
+      ended.push(event.data.status);
+      // Sent between the turn's end and the idle that follows it; it outlasts a stop's grace period (1.5s).
+      if (ended.length === 1) session.send('second');
+    });
+    session.send('first');
+    await new Promise((r) => setTimeout(r, 100));
+    await session.setEffort(undefined);
+    rmSync(hold);
+    await until(session, 'process.exited');
+    await sessions.stopAll();
+    expect(ended).toEqual(['completed', 'completed']);
+    expect(specs).toHaveLength(1);
+  });
+
+  it('saves an effort set while its process is stopping, and the next process starts with it', async () => {
+    const specs: RunSpec[] = [];
+    const sessions = manager(openStore(':memory:'), { FAKE_EVERY_TURN: '1' }, { adapter: recording(specs) });
+    const session = sessions.create();
+    session.send('first');
+    let log = await until(session, 'turn.ended');
+    const stopped = session.stop();
+    await session.setEffort('xhigh');
+    await stopped;
+    log = await until(session, 'process.exited', log.length - 1);
+    expect(session.info().effort).toBe('xhigh');
+    session.send('second');
+    await until(session, 'turn.ended', log.length);
+    await sessions.stopAll();
+    expect(specs.map((s) => s.effort)).toEqual([undefined, 'xhigh']);
+  });
+
+  it('does not restart a process started while a live change was still being answered', async () => {
+    const answers: ((ok: boolean) => void)[] = [];
+    const stops: number[] = [];
+    const specs: RunSpec[] = [];
+    const exit = { code: 0, signal: null };
+    // Each run starts idle, refuses nothing until told, and ends when stopped.
+    const adapter: Adapter = {
+      ...claudeCode,
+      start(spec) {
+        specs.push(spec);
+        const n = specs.length;
+        const runId = spec.runId!;
+        let seq = 0;
+        let ended!: () => void;
+        const end = new Promise<void>((r) => (ended = r));
+        const ev = (kind: string, data: object) => ({ id: `${runId}:${seq}`, runId, seq: seq++, ts: new Date().toISOString(), harness: 'claude-code', kind, data }) as KelpieEvent;
+        let exited = false;
+        async function* events() {
+          yield ev('session.started', { harnessSessionId: 'h', model: 'm', cwd: spec.cwd, tools: [] });
+          await end;
+          exited = true;
+          yield ev('process.exited', { ...exit, stderrTail: '' });
+        }
+        return {
+          runId, harness: 'claude-code', runDir: '', events: events(), harnessSessionId: 'h', busy: false,
+          get exited() { return exited; },
+          send() {}, answer: () => false, setMode: async () => true,
+          setEffort: () => new Promise<boolean>((r) => answers.push(r)),
+          interrupt: async () => {}, stop: async () => (stops.push(n), ended(), exit), done: Promise.resolve(exit),
+        } satisfies Run;
+      },
+    };
+    const sessions = manager(openStore(':memory:'), {}, { adapter });
+    const session = sessions.create();
+    await session.send('first');
+    const changing = session.setEffort('high');
+    // Meanwhile the first process ends and a new one starts, already at high.
+    await session.stop();
+    await session.send('second');
+    expect(specs.map((s) => s.effort)).toEqual([undefined, 'high']);
+    answers[0]!(false);
+    await changing;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(stops).toEqual([1]);
+    await sessions.stopAll();
+  });
+
+  it('takes the daemon default unless asked for another, and keeps it across a restart', () => {
+    const db = join(tmp('kelpie-home-'), 'kelpie.db');
+    let store = openStore(db);
+    let sessions = manager(store, {}, { defaults: { bin: FAKE, effort: 'low' } });
+    const defaulted = sessions.create();
+    const chosen = sessions.create(undefined, { effort: 'xhigh' });
+    expect(defaulted.info().effort).toBe('low');
+    expect(chosen.info().effort).toBe('xhigh');
+    store.close();
+    store = openStore(db);
+    sessions = manager(store);
+    expect(sessions.get(chosen.id)!.info().effort).toBe('xhigh');
+    expect(sessions.get(chosen.id)!.effort).toBe('xhigh');
+    store.close();
+  });
+});
 
 describe('persistent round-ups', () => {
   it('survive a daemon restart with their log, title and harness session, and resume it', async () => {
@@ -213,7 +397,7 @@ describe('persistent round-ups', () => {
         }
         return {
           runId, harness: 'claude-code', runDir: '', events: events(), harnessSessionId: 'h', busy: false, exited: true,
-          send() {}, answer: () => false, setMode: async () => true, interrupt: async () => {}, stop: async () => exit, done: Promise.resolve(exit),
+          send() {}, answer: () => false, setMode: async () => true, setEffort: async () => true, interrupt: async () => {}, stop: async () => exit, done: Promise.resolve(exit),
         } satisfies Run;
       },
     };

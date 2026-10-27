@@ -1,4 +1,4 @@
-import { firstLine, type KelpieEvent, type TodoItem, type ToolCategory, type UsageLimitPause } from '@kelpie/protocol';
+import { firstLine, type Effort, type KelpieEvent, type TodoItem, type ToolCategory, type UsageLimitPause } from '@kelpie/protocol';
 
 /**
  * A sub-agent at a glance, for the agent pane: kept current from its events, so listing
@@ -11,6 +11,8 @@ export interface AgentSummary {
   harness: string;
   /** The model the harness reports, once it has started. */
   model: string | undefined;
+  /** The reasoning effort it was given, if not the harness's default. */
+  effort?: Effort;
   writes: boolean;
   /** Given the Claude in Chrome tools: it may drive the person's own browser. */
   browser: boolean;
