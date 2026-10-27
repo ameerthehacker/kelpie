@@ -1,5 +1,5 @@
 import { format } from 'date-fns';
-import { MoonIcon, SunriseIcon } from 'lucide-react';
+import { MoonIcon, PlayIcon, SquareIcon, SunriseIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useLimitActions } from '@/hooks/use-limit';
 import { useNow } from '@/hooks/use-now';
@@ -54,6 +54,17 @@ export function ResumedLine({ ts }: { ts: string }) {
     <p className="text-mu2 flex items-center gap-2.5 text-[13px]">
       <SunriseIcon aria-hidden="true" className="text-run size-3.5 shrink-0" strokeWidth={2} />
       {RESUMED_LINE} · {format(new Date(ts), 'HH:mm')}
+    </p>
+  );
+}
+
+/** The person stopped every agent of the round-up ("Stop all"), or resumed them. */
+export function HaltLine({ action, text, ts }: { action: 'stopped' | 'resumed'; text: string; ts: string }) {
+  const Icon = action === 'stopped' ? SquareIcon : PlayIcon;
+  return (
+    <p className="text-mu2 flex items-center gap-2.5 text-[13px]">
+      <Icon aria-hidden="true" className={cn('size-3.5 shrink-0', action === 'stopped' ? 'fill-mu2' : 'text-run fill-run/30')} strokeWidth={2} />
+      {text} · {format(new Date(ts), 'HH:mm')}
     </p>
   );
 }

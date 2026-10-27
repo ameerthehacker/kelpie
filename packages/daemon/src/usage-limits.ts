@@ -227,6 +227,18 @@ export class UsageLimits {
     return true;
   }
 
+  /**
+   * The person resumed a session they stopped ("Resume all") while it was paused here: it resumes on
+   * its own again, at its time (now, if that has passed). False if it isn't paused.
+   */
+  restore(id: string): boolean {
+    const row = this.rows.get(id);
+    if (!row) return false;
+    if (!row.auto) this.update(id, { auto: true });
+    this.arm();
+    return true;
+  }
+
   /** The session is gone. */
   forget(id: string): void {
     this.resuming.delete(id);

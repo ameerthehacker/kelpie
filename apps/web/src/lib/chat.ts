@@ -1,4 +1,4 @@
-import { questionsOf, stripAttachments, stripTicketsNote, type AgentUpdate, type Answers, type Attachment, type EventOf, type KelpieEvent, type Question, type TodoItem, type ToolCategory, type TurnLimit } from '@kelpie/protocol';
+import { haltLine, questionsOf, stripAttachments, stripHaltNote, stripTicketsNote, type AgentUpdate, type Answers, type Attachment, type EventOf, type KelpieEvent, type Question, type TodoItem, type ToolCategory, type TurnLimit } from '@kelpie/protocol';
 
 export interface ToolView {
   type: 'tool';
@@ -33,7 +33,9 @@ export type AssistantPart =
   /** A turn that stopped at the usage limit (not a failure), and when Kelpie was to pick it up; the harness's words in `message`. */
   | { type: 'limit'; limit: TurnLimit; message: string; ts: string }
   /** Kelpie picked the work up again after the usage limit reset. */
-  | { type: 'resumed'; ts: string };
+  | { type: 'resumed'; ts: string }
+  /** The person stopped every agent ("Stop all"), or resumed them: "You stopped 3 agents". */
+  | { type: 'halt'; action: 'stopped' | 'resumed'; text: string; ts: string };
 
 export interface QuestionView {
   type: 'question';
@@ -187,7 +189,12 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
       continue;
     }
     switch (ev.kind) {
+      case 'halt':
+        assistant(ev.id).push({ type: 'halt', action: ev.data.action, text: haltLine(ev.data), ts: ev.ts });
+        break;
       case 'message':
+        // What Kelpie told the orchestrator of the person stopping or resuming everything: the halt line says it.
+        if (ev.data.role === 'user' && fromKelpie(ev.data) && (ev.data.resumed === 'halt' || ev.data.halt)) break;
         // Turns Kelpie sent itself (notifications, restarts) are not the person speaking.
         if (ev.data.role === 'user' && fromKelpie(ev.data) && ev.data.resumed === 'limit') assistant(ev.id).push({ type: 'resumed', ts: ev.ts });
         else if (ev.data.role === 'user' && fromKelpie(ev.data)) assistant(ev.id).push(...kelpieTurn(ev.data, ev.ts));
@@ -195,8 +202,9 @@ export function buildChat(events: readonly KelpieEvent[]): ChatItem[] {
           items.push({
             role: 'user',
             id: ev.id,
-            // Kelpie's note to the orchestrator about tickets it linked is not the person's.
-            text: stripTicketsNote(ev.data.attachments?.length ? stripAttachments(ev.data.text) : ev.data.text),
+            // Kelpie's notes to the orchestrator (tickets it linked, agents the person stopped) are not the person's.
+            // The halt note comes last (after the files' block, which must end the text to be found), the tickets note before the files.
+            text: stripTicketsNote(ev.data.attachments?.length ? stripAttachments(stripHaltNote(ev.data.text)) : stripHaltNote(ev.data.text)),
             ts: ev.ts,
             ...(ev.data.source ? { source: ev.data.source } : {}),
             ...(ev.data.attachments?.length ? { attachments: ev.data.attachments } : {}),

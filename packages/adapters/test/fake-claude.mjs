@@ -24,6 +24,8 @@
 // (usage-limit.jsonl): a rejected rate_limit_event, the CLI's synthetic message, a failed result. The
 // file holds JSON { resetsAt?: epoch seconds, text?: the message }; remove it and turns go through again.
 // FAKE_TURN_DELAY (ms) holds each later FAKE_EVERY_TURN answer back that long after its echo: a turn that takes a while.
+// FAKE_SLOW (ms) does the same for the first turn: its init and echo go out at once, the rest of the fixture that much later.
+// A turn held back by either ends at an interrupt the way the real CLI's does: "[Request interrupted by user]", then an aborted result.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -68,6 +70,14 @@ function limitTurn(message, limit) {
 
 const ASK_ID = 'fake-ask-1';
 let asking = false;
+/** A turn's answer held back by FAKE_TURN_DELAY or FAKE_SLOW, until an interrupt ends the turn instead. */
+let delayed;
+const later = (ms, fn) => {
+  delayed = setTimeout(() => {
+    delayed = undefined;
+    fn();
+  }, ms);
+};
 for await (const line of createInterface({ input: process.stdin })) {
   const msg = JSON.parse(line);
   if (msg.type === 'control_response' && msg.response?.request_id === ASK_ID && asking) {
@@ -81,6 +91,15 @@ for await (const line of createInterface({ input: process.stdin })) {
       asking = false;
       const session_id = JSON.parse(lines[0]).session_id;
       if (process.env.FAKE_NO_CANCEL !== '1') out({ type: 'control_cancel_request', request_id: ASK_ID });
+      out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } });
+      out({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] }, session_id, parent_tool_use_id: null });
+      out({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_streaming', session_id, total_cost_usd: 0, usage: {} });
+      continue;
+    }
+    if (msg.request?.subtype === 'interrupt' && delayed && !hang) {
+      clearTimeout(delayed);
+      delayed = undefined;
+      const session_id = JSON.parse(lines[0]).session_id;
       out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } });
       out({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] }, session_id, parent_tool_use_id: null });
       out({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_streaming', session_id, total_cost_usd: 0, usage: {} });
@@ -103,7 +122,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }, session_id, parent_tool_use_id: null });
       out({ type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id, total_cost_usd: 0, usage: {} });
     };
-    if (process.env.FAKE_TURN_DELAY) setTimeout(answer, Number(process.env.FAKE_TURN_DELAY));
+    if (process.env.FAKE_TURN_DELAY) later(Number(process.env.FAKE_TURN_DELAY), answer);
     else answer();
   } else if (msg.type === 'user' && !printed) {
     printed = true;
@@ -123,6 +142,11 @@ for await (const line of createInterface({ input: process.stdin })) {
       out({ type: 'control_request', request_id: ASK_ID, request });
     } else if (hang) {
       lines.filter((l) => !l.includes('"type":"result"')).slice(0, 3).forEach(out);
+    } else if (process.env.FAKE_SLOW) {
+      // Its init and the echo of the turn at once (the turn is taken in), the answer later.
+      const echo = lines.findIndex((l) => JSON.parse(l).type === 'user') + 1;
+      lines.slice(0, echo).forEach(out);
+      later(Number(process.env.FAKE_SLOW), () => lines.slice(echo).forEach(out));
     } else {
       lines.forEach(out);
     }

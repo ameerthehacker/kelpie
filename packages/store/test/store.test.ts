@@ -163,6 +163,36 @@ describe('store', () => {
     store.close();
   });
 
+  it('adds the halts table to a store made before it, and keeps a stop until cleared', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
+    const before = join(dir, 'drizzle');
+    cpSync(join(import.meta.dirname, '../drizzle'), before, { recursive: true });
+    const journal = join(before, 'meta/_journal.json');
+    const j = JSON.parse(readFileSync(journal, 'utf8')) as { entries: { tag: string }[] };
+    j.entries = j.entries.filter((e) => e.tag < '0019');
+    writeFileSync(journal, JSON.stringify(j));
+    const path = join(dir, 'kelpie.db');
+    const old = openStore(path, { migrationsFolder: before });
+    old.createSession({ id: 'r', cwd: '/r' });
+    expect(() => old.haltOf('r')).toThrow(/no such table/);
+    old.close();
+    const store = openStore(path);
+    expect(store.haltOf('r')).toBeUndefined();
+    expect(store.setHalt('r', 1234)).toBe(1234);
+    // Stopped again: when it first was stays.
+    expect(store.setHalt('r', 5678)).toBe(1234);
+    store.close();
+    const again = openStore(path);
+    expect(again.haltOf('r')).toBe(1234);
+    expect(again.clearHalt('r')).toBe(true);
+    expect(again.clearHalt('r')).toBe(false);
+    again.setHalt('r');
+    // Goes with its session.
+    again.deleteSession('r');
+    expect(again.haltOf('r')).toBeUndefined();
+    again.close();
+  });
+
   it('adds the tickets table to a store made before it, keeping its round-ups', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
     const before = join(dir, 'drizzle');

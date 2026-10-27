@@ -435,3 +435,16 @@ export const usageLimits = sqliteTable('usage_limits', {
   /** Epoch ms it first paused. */
   createdAt: integer('created_at').notNull(),
 });
+
+/**
+ * Sessions the person stopped with "Stop all", one row each, until they resume them. On a round-up,
+ * its orchestrator may not start or message agents meanwhile; on a sub-agent, "Resume all" picks it up
+ * again. Kept across restarts, which never resume them on their own.
+ */
+export const halts = sqliteTable('halts', {
+  sessionId: text('session_id')
+    .primaryKey()
+    .references(() => sessions.id, { onDelete: 'cascade' }),
+  /** Epoch ms the person stopped it. */
+  createdAt: integer('created_at').notNull(),
+});

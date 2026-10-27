@@ -433,6 +433,40 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     return c.json(s.info(), 202);
   });
 
+  if (orch) {
+    // "Stop all": every agent working under a round-up stops (and, unless `orchestrator` is false, its own
+    // turn), stays stopped across restarts, and its orchestrator may not start or message agents meanwhile.
+    app.post('/api/sessions/:id/stop-all', async (c) => {
+      const s = sessions.get(c.req.param('id'));
+      if (!s) return c.json({ error: 'no such session' }, 404);
+      if (s.parentId) return c.json({ error: "stop the agent's round-up, or interrupt the agent" }, 400);
+      const body = await jsonBody<{ orchestrator?: unknown }>(c);
+      if (body.orchestrator !== undefined && typeof body.orchestrator !== 'boolean') return c.json({ error: 'orchestrator must be true or false' }, 400);
+      const stopped = await orch.stopAll(s, { orchestrator: body.orchestrator !== false });
+      return c.json({ ...stopped, session: s.info() });
+    });
+
+    // "Resume all": the agents the person stopped continue (under the agent limit), and the orchestrator may work again.
+    app.post('/api/sessions/:id/resume-all', async (c) => {
+      const s = sessions.get(c.req.param('id'));
+      if (!s) return c.json({ error: 'no such session' }, 404);
+      if (s.parentId) return c.json({ error: "resume the agent's round-up, or the agent on its own" }, 400);
+      if (!s.halted && !sessions.children(s.id).some((a) => a.halted)) return c.json({ error: 'nothing here was stopped' }, 409);
+      const resumed = await orch.resumeAll(s);
+      return c.json({ ...resumed, session: s.info() });
+    });
+
+    // One agent the person stopped, resumed on its own.
+    app.post('/api/sessions/:id/resume', async (c) => {
+      const s = sessions.get(c.req.param('id'));
+      if (!s) return c.json({ error: 'no such session' }, 404);
+      if (!s.parentId) return c.json({ error: 'a round-up is resumed with resume-all' }, 400);
+      if (!s.halted) return c.json({ error: 'it was not stopped by you' }, 409);
+      const resumed = await orch.resumeAgent(s);
+      return c.json({ ...resumed, session: s.info() });
+    });
+  }
+
   // A session paused at the usage limit: try it now ("Resume now"), or keep it paused until the person sends it something.
   app.post('/api/sessions/:id/limit/resume', (c) => {
     const s = sessions.get(c.req.param('id'));
