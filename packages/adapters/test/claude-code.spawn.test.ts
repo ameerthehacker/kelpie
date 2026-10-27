@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Effort, KelpieEvent } from '@kelpie/protocol';
-import { claudeArgs, claudeCode, type RunSpec } from '../src/index.js';
+import { claudeArgs, claudeCode, runEnv, type RunSpec } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, 'fake-claude.mjs');
 const FIXTURES = join(import.meta.dirname, '../fixtures/claude-code');
@@ -123,9 +123,22 @@ describe('MCP config', () => {
     expect(readFileSync(controls, 'utf8').trim().split('\n').map((l) => JSON.parse(l))).toEqual([
       { subtype: 'apply_flag_settings', settings: { effortLevel: 'xhigh' } },
     ]);
-    await run.stop();
+    const stopping = run.stop();
+    expect(await run.setEffort('low')).toBe(false);
+    await stopping;
     await events;
     expect(await run.setEffort('low')).toBe(false);
+    expect(readFileSync(controls, 'utf8').trim().split('\n')).toHaveLength(1);
+  });
+
+  it('owns up that a live change cannot get past CLAUDE_CODE_EFFORT_LEVEL', async () => {
+    const controls = join(mkdtempSync(join(tmpdir(), 'kelpie-controls-')), 'controls.jsonl');
+    const run = start('plain', { env: { FAKE_FIXTURE: join(FIXTURES, 'plain.jsonl'), FAKE_CONTROL_FILE: controls, CLAUDE_CODE_EFFORT_LEVEL: 'low' } });
+    const events = collect(run);
+    expect(await run.setEffort('high')).toBe(false);
+    await run.stop();
+    await events;
+    expect(existsSync(controls)).toBe(false);
   });
 
   it('passes a config path through as it is', () => {
@@ -135,6 +148,14 @@ describe('MCP config', () => {
 
 describe('claudeArgs', () => {
   const spec: RunSpec = { cwd: '/work/repo', prompt: 'hi' };
+
+  it('drops CLAUDE_CODE_EFFORT_LEVEL for a run with an effort of its own, which the CLI would let it override', () => {
+    const base = { PATH: '/bin', CLAUDE_CODE_EFFORT_LEVEL: 'low' };
+    expect(runEnv({ effort: 'high' }, base)).toEqual({ PATH: '/bin' });
+    expect(runEnv({ effort: 'high', env: { CLAUDE_CODE_EFFORT_LEVEL: 'max', GH_TOKEN: 't' } }, base)).toEqual({ PATH: '/bin', GH_TOKEN: 't' });
+    // Without one, the person's own setting stands.
+    expect(runEnv({}, base)).toEqual(base);
+  });
 
   it('passes the effort level when there is one, and leaves the harness default alone otherwise', () => {
     for (const effort of Effort.options) {

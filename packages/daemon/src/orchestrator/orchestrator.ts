@@ -131,6 +131,7 @@ export interface SpawnInput {
   task: string;
   writes: boolean;
   harness?: string | undefined;
+  /** Its model; the round-up's without it. */
   model?: string | undefined;
   /** Its reasoning effort; the round-up's without it. */
   effort?: Effort | undefined;
@@ -152,6 +153,9 @@ export interface AgentList {
   featureCheckout: string | undefined;
   /** The mode the person has the round-up in. */
   mode: Mode;
+  /** The model and reasoning effort the person picked for the round-up, which agents start with; absent for the harness's default. */
+  model?: string;
+  effort?: Effort;
   /** How many of its agents may work at once (the person sets it in Settings), and how many count against that now (working, or starting). */
   maxAgents: number;
   working: number;
@@ -482,8 +486,8 @@ export class Orchestrator implements SessionHooks {
       role: 'agent' as const,
       writes: input.writes,
       title,
-      ...(input.model ? { model: input.model } : {}),
-      // The person's choice for the round-up, unless the orchestrator picked one for this unit.
+      // The person's choices for the round-up, unless the orchestrator picked others for this unit.
+      ...((input.model || parent.model) ? { model: input.model || parent.model } : {}),
       ...((input.effort ?? parent.effort) ? { effort: input.effort ?? parent.effort } : {}),
       ...(input.browser ? { browser: true } : {}),
     };
@@ -549,6 +553,8 @@ export class Orchestrator implements SessionHooks {
       featureBranch: home?.branch,
       featureCheckout: home && (await this.checkout(home)),
       mode: parent.mode,
+      ...(parent.model ? { model: parent.model } : {}),
+      ...(parent.effort ? { effort: parent.effort } : {}),
       maxAgents: this.maxAgents,
       working: this.busy(parent),
       agents: this.manager.children(parent.id).map((c) => this.agentInfo(c)),

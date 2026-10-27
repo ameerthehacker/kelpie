@@ -87,6 +87,16 @@ export function mcpConfigFiles(configs: string[] | undefined): { paths: string[]
   return { paths, dir };
 }
 
+/**
+ * The environment a run's CLI gets. With an effort of its own, without CLAUDE_CODE_EFFORT_LEVEL: the
+ * CLI lets that beat --effort, and quietly ignores a live change while it is set.
+ */
+export function runEnv(spec: Pick<RunSpec, 'env' | 'effort'>, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...base, ...spec.env };
+  if (spec.effort) delete env.CLAUDE_CODE_EFFORT_LEVEL;
+  return env;
+}
+
 export const userTurn = (text: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } }) + '\n';
 
@@ -112,6 +122,8 @@ class ClaudeCodeRun implements Run {
   private resolveDone!: (e: RunExit) => void;
   /** Where its MCP config files are, removed when it exits. */
   private mcpDir: string | undefined;
+  /** Its effort is pinned by CLAUDE_CODE_EFFORT_LEVEL, which no live change gets past. */
+  private effortPinned = false;
 
   constructor(spec: RunSpec) {
     this.runId = spec.runId ?? randomUUID();
@@ -134,7 +146,9 @@ class ClaudeCodeRun implements Run {
     );
     this.raw = createWriteStream(join(this.runDir, 'raw.jsonl'), { flags: 'a' });
 
-    this.child = spawn(bin, args, { cwd: spec.cwd, env: { ...process.env, ...spec.env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const env = runEnv(spec);
+    this.effortPinned = !!env.CLAUDE_CODE_EFFORT_LEVEL;
+    this.child = spawn(bin, args, { cwd: spec.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child.stdin.on('error', () => {}); // EPIPE after exit is reported via 'close'
     this.child.stdout.setEncoding('utf8');
     this.child.stderr.setEncoding('utf8');
@@ -194,7 +208,8 @@ class ClaudeCodeRun implements Run {
   }
 
   async setEffort(effort: Effort): Promise<boolean> {
-    if (this.exit || this.stopping) return false;
+    // Pinned, the CLI answers success and changes nothing: only a new process (without the variable) takes it.
+    if (this.exit || this.stopping || this.effortPinned) return false;
     // The session-scoped settings layer `--effort` sets; the CLI clamps a level the model lacks.
     const res = await this.control({ subtype: 'apply_flag_settings', settings: { effortLevel: effort } });
     return res?.subtype === 'success';

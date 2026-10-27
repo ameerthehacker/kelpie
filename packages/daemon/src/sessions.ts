@@ -898,6 +898,11 @@ export class Session {
     if (!this.working) void this.stop();
   }
 
+  /** The model asked for, if not the harness's default. */
+  get model(): string | undefined {
+    return this.row.model ?? undefined;
+  }
+
   get effort(): Effort | undefined {
     return this.row.effort ?? undefined;
   }
@@ -912,9 +917,12 @@ export class Session {
   async setEffort(effort: Effort | undefined): Promise<void> {
     if ((this.row.effort ?? undefined) === effort) return;
     this.update({ effort: effort ?? null });
+    if (this.row.parentId) this.ctx.agentChanged(this);
     const run = this.run;
     if (!run || run.exited) return;
-    if (!effort || !(await run.setEffort(effort))) this.restartWhenIdle();
+    if (effort && (await run.setEffort(effort))) return;
+    // A process started meanwhile (the answer can take seconds) already has it.
+    if (this.run === run) this.restartWhenIdle();
   }
 
   /** Ends the harness process, if any, once its last events are logged. */
@@ -1002,8 +1010,9 @@ export class Session {
         } else if (event.kind === 'activity') {
           this.busyState = event.data.busy;
           if (event.data.busy) clearTimeout(this.idleTimer);
-          else if (this.stale) void this.stop();
-          else this.armIdle(run);
+          // Not while a turn sent just now is on its way in: stopping would drop it. Its own idle ends the process.
+          else if (this.stale && !run.busy) void this.stop();
+          else if (!this.stale) this.armIdle(run);
           changed = true;
         } else if (event.kind === 'rate_limit') {
           this.ctx.reportUsage(event.harness, event.data);

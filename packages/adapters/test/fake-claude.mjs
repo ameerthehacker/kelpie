@@ -24,6 +24,7 @@
 // (usage-limit.jsonl): a rejected rate_limit_event, the CLI's synthetic message, a failed result. The
 // file holds JSON { resetsAt?: epoch seconds, text?: the message }; remove it and turns go through again.
 // FAKE_CONTROL_FILE gets a line of JSON per control request received (the request), other than interrupts.
+// FAKE_CONTROL_ERROR=<subtype> refuses control requests of that subtype (e.g. apply_flag_settings) with an error.
 // FAKE_TURN_DELAY (ms) holds each later FAKE_EVERY_TURN answer back that long after its echo: a turn that takes a while.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -88,7 +89,10 @@ for await (const line of createInterface({ input: process.stdin })) {
       out({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_streaming', session_id, total_cost_usd: 0, usage: {} });
       continue;
     }
-    if (!hang) out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } });
+    if (hang) continue;
+    if (process.env.FAKE_CONTROL_ERROR && msg.request?.subtype === process.env.FAKE_CONTROL_ERROR) {
+      out({ type: 'control_response', response: { subtype: 'error', request_id: msg.request_id, error: 'refused by fake' } });
+    } else out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } });
   } else if (msg.type === 'user' && process.env.FAKE_STDIN_FILE) {
     appendFileSync(process.env.FAKE_STDIN_FILE, JSON.stringify({ resume: args.includes('--resume') ? resume : null, text: msg.message.content[0].text }) + '\n');
   }
