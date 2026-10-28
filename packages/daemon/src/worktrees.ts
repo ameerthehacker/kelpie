@@ -373,6 +373,11 @@ export async function operationIn(dir: string): Promise<Operation | undefined> {
 
 /** What a removal is about to take away: work that would be lost is committed first. */
 const CHECKPOINT = (what: string) => `kelpie: checkpoint (${what})`;
+/** Someone's edits, committed for them: the files changed, the first few by name. */
+export const EDITS = (who: string, files: string[]) => {
+  const named = files.slice(0, 3).join(', ');
+  return `kelpie: ${who} edits (${named}${files.length > 3 ? ` and ${files.length - 3} more` : ''})`;
+};
 
 /**
  * Kelpie's git worktrees: an orchestrator's home (its feature branch) and one per writing
@@ -557,14 +562,24 @@ export class Worktrees {
   }
 
   /** Commits whatever is uncommitted, so nothing a later merge or removal relies on is lost. True if it did. */
-  async checkpoint(row: WorktreeRow, what: string): Promise<boolean> {
+  checkpoint(row: WorktreeRow, what: string): Promise<boolean> {
+    return this.commitAll(row, () => CHECKPOINT(what));
+  }
+
+  /** As `checkpoint`, for `who`'s own edits (e.g. the orchestrator's), committed under the files they changed. */
+  commitEdits(row: WorktreeRow, who: string): Promise<boolean> {
+    return this.commitAll(row, (files) => EDITS(who, files));
+  }
+
+  private async commitAll(row: WorktreeRow, message: (files: string[]) => string): Promise<boolean> {
     if (!existsSync(row.path)) return false;
     return this.locked(row.repoRoot, async () => {
       // Half a merge or rebase is not work to commit: it stays as it is, for whoever finishes it.
       if ((await operationIn(row.path)) || !(await this.dirty(row.path))) return false;
       await ok(row.path, ['add', '-A']);
+      const files = (await ok(row.path, ['diff', '--cached', '--name-only', '-z'])).split('\0').filter(Boolean);
       // No hooks: a checkpoint must not be refused by a linter. Kelpie's name only if git has none.
-      await ok(row.path, [...(await this.identity(row.path)), 'commit', '--quiet', '--no-verify', '-m', CHECKPOINT(what)]);
+      await ok(row.path, [...(await this.identity(row.path)), 'commit', '--quiet', '--no-verify', '-m', message(files)]);
       return true;
     });
   }

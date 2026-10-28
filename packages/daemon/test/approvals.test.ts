@@ -46,7 +46,7 @@ function setup(store = openStore(':memory:'), env: Record<string, string> = {}) 
 
 /** An orchestrator round-up with `n` read-only agents, all asking. */
 async function roundUp(ctx: ReturnType<typeof setup>, n: number) {
-  const parent = ctx.sessions.create();
+  const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
   await parent.send('Go');
   // The orchestrator's own Bash request is refused by Kelpie's policy, never shown to the person.
   await waitFor(() => jsonLines<{ behavior: string }>(ctx.answers).length === 1);
@@ -62,7 +62,7 @@ async function roundUp(ctx: ReturnType<typeof setup>, n: number) {
 describe('approvals', () => {
   it('turns down what the orchestrator itself asks for, without asking the person', async () => {
     const ctx = setup();
-    const parent = ctx.sessions.create();
+    const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
     await parent.send('Go');
     const [answer] = await waitFor(() => jsonLines<{ behavior: string; message: string }>(ctx.answers).length === 1 && jsonLines<{ behavior: string; message: string }>(ctx.answers));
     expect(answer).toMatchObject({ behavior: 'deny' });
@@ -123,7 +123,7 @@ describe('approvals', () => {
 
   it('never saves or applies a rule for the Claude in Chrome tools, even one saved before', async () => {
     const ctx = setup(openStore(':memory:'), { FAKE_ASK: 'https://claude.ai/', FAKE_ASK_TOOL: 'mcp__claude-in-chrome__navigate' });
-    const parent = ctx.sessions.create();
+    const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
     await parent.send('Go');
     await waitFor(() => jsonLines(ctx.answers).length === 1);
     // As if saved by an earlier Kelpie, which offered "Allow for round-up" for them.
@@ -168,7 +168,7 @@ describe('approvals', () => {
 
   it('approves a plan only with the mode to carry it out in, and takes the round-up out of plan mode', async () => {
     const ctx = setup(openStore(':memory:'), { FAKE_ASK_TOOL: 'ExitPlanMode', FAKE_ASK: '1. Add sub' });
-    const parent = ctx.sessions.create(undefined, { mode: 'plan' });
+    const parent = ctx.sessions.create(undefined, { mode: 'plan', delegation: 'delegate' });
     await parent.send('Plan it');
     const [plan] = await waitFor(() => ctx.sessions.approvals(parent.id).length === 1 && ctx.sessions.approvals(parent.id));
     expect(plan).toMatchObject({ tool: 'ExitPlanMode', plan: '1. Add sub' });
@@ -189,7 +189,7 @@ describe('approvals', () => {
 
     it('puts what an agent asks to the person, and hands their answers back to its harness', async () => {
       const ctx = asking();
-      const parent = ctx.sessions.create();
+      const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
       await parent.send('Go');
       const agent = ctx.sessions.get((await ctx.orch.spawn(parent, { title: 'Picker', task: 'pick', writes: false })).agentId)!;
       // The orchestrator's own question comes to the person too, never to Kelpie's policy.
@@ -226,7 +226,7 @@ describe('approvals', () => {
 
     it('takes answers over the API, one question at a time, and skips them with a deny', async () => {
       const ctx = asking();
-      const parent = ctx.sessions.create();
+      const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
       await parent.send('Go');
       const [q] = await waitFor(() => ctx.sessions.approvals(parent.id).length === 1 && ctx.sessions.approvals(parent.id));
       const item = { sessionId: q!.sessionId, requestId: q!.requestId };
@@ -247,7 +247,7 @@ describe('approvals', () => {
       ['says nothing of it', { FAKE_NO_CANCEL: '1' }],
     ])('closes a question when its turn is interrupted and the CLI %s', async (_, env) => {
       const ctx = setup(openStore(':memory:'), { FAKE_ASK_TOOL: 'AskUserQuestion', FAKE_ASK: QUESTION, ...env });
-      const parent = ctx.sessions.create();
+      const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
       await parent.send('Go');
       const [q] = await waitFor(() => ctx.sessions.approvals(parent.id).length === 1 && ctx.sessions.approvals(parent.id));
       await parent.interrupt();
@@ -285,7 +285,7 @@ describe('approvals', () => {
         ],
       };
       const ctx = setup(openStore(':memory:'), { FAKE_ASK_TOOL: 'AskUserQuestion', FAKE_ASK: QUESTION, FAKE_ASK_INPUT: JSON.stringify(input) });
-      const parent = ctx.sessions.create();
+      const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
       await parent.send('Go');
       const [q] = await waitFor(() => ctx.sessions.approvals(parent.id).length === 1 && ctx.sessions.approvals(parent.id));
       expect(q!.questions).toEqual([
@@ -305,7 +305,7 @@ describe('approvals', () => {
     it('lists questions again after a reconnect, and closes them when Kelpie restarts', async () => {
       const store = openStore(':memory:');
       const ctx = setup(store, { FAKE_ASK_TOOL: 'AskUserQuestion', FAKE_ASK: QUESTION });
-      const parent = ctx.sessions.create();
+      const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
       await parent.send('Go');
       await waitFor(() => ctx.sessions.approvals(parent.id).length === 1);
       // What a page that (re)connects is sent.
