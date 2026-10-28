@@ -206,4 +206,61 @@ describe('claudeArgs', () => {
     expect(claudeArgs(spec)).not.toContain('--settings');
     expect(claudeArgs(spec)).toContain('--strict-mcp-config');
   });
+
+  describe('command guard', () => {
+    const files = () => {
+      const dir = mkdtempSync(join(tmpdir(), 'kelpie-hook-'));
+      return { controls: join(dir, 'controls.jsonl'), answers: join(dir, 'answers.jsonl') };
+    };
+    const lines = (path: string) => readFileSync(path, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    /** Its events, until its turn ends (then it is stopped). */
+    const turn = (run: ReturnType<typeof start>) => collect(run, (e) => void (e.kind === 'turn.ended' && run.stop()));
+
+    it('registers a PreToolUse hook on Bash before the first turn, and rewrites a command by its verdict', async () => {
+      const { controls, answers } = files();
+      const calls: unknown[] = [];
+      const run = start('plain', {
+        prompt: 'hi',
+        env: { FAKE_FIXTURE: join(FIXTURES, 'plain.jsonl'), FAKE_CONTROL_FILE: controls, FAKE_ANSWER_FILE: answers, FAKE_HOOK: 'pnpm test', FAKE_HOOK_CWD: '/repo' },
+        commandGuard: (call) => {
+          calls.push(call);
+          return { command: `cd /feature && ${call.command}` };
+        },
+      });
+      const events = await turn(run);
+      expect(events.some((e) => e.kind === 'turn.ended' && e.data.status === 'completed')).toBe(true);
+      expect(lines(controls)[0]).toEqual({ subtype: 'initialize', hooks: { PreToolUse: [{ matcher: 'Bash', hookCallbackIds: ['kelpie-command'] }] } });
+      expect(calls).toEqual([{ command: 'pnpm test', cwd: '/repo' }]);
+      // No decision: the new command still goes to the CLI's own permission checks.
+      expect(lines(answers)).toEqual([{ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { command: 'cd /feature && pnpm test', description: 'A command' } } }]);
+    });
+
+    it('refuses a command the guard denies, or that it fails to check, and lets one it passes through as it is', async () => {
+      for (const [guard, output] of [
+        [() => ({ deny: 'Muster is merging' }), { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Muster is merging' } }],
+        [() => { throw new Error('boom'); }, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Kelpie could not check this command: boom' } }],
+        [async () => undefined, {}],
+      ] as const) {
+        const { answers } = files();
+        const run = start('plain', { prompt: 'hi', env: { FAKE_FIXTURE: join(FIXTURES, 'plain.jsonl'), FAKE_ANSWER_FILE: answers, FAKE_HOOK: 'ls' }, commandGuard: guard });
+        await turn(run);
+        expect(lines(answers)).toEqual([output]);
+      }
+    });
+
+    it('registers no hook for a run without a guard', async () => {
+      const { controls, answers } = files();
+      const run = start('plain', { prompt: 'hi', env: { FAKE_FIXTURE: join(FIXTURES, 'plain.jsonl'), FAKE_CONTROL_FILE: controls, FAKE_ANSWER_FILE: answers, FAKE_HOOK: 'ls' } });
+      await turn(run);
+      expect(existsSync(controls)).toBe(false);
+      expect(existsSync(answers)).toBe(false);
+    });
+
+    it('ends a run whose CLI does not take the hook, rather than run its commands unchecked', async () => {
+      const run = start('plain', { hang: true, commandGuard: () => undefined, env: { FAKE_FIXTURE: join(FIXTURES, 'plain.jsonl'), FAKE_CONTROL_ERROR: 'initialize' } });
+      const events = await collect(run);
+      const exited = events.find((e) => e.kind === 'process.exited');
+      expect(exited?.kind === 'process.exited' && exited.data.stderrTail).toContain("the harness did not take Kelpie's command check: refused by fake");
+    });
+  });
 });

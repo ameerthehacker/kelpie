@@ -3,6 +3,7 @@ import { useLocation } from 'react-router';
 import type { Effort, KelpieEvent, Mode } from '@kelpie/protocol';
 import { api, isGone } from '@/lib/api';
 import { buildChat, latestTodos, type ChatItem } from '@/lib/chat';
+import type { Delegation } from '@/lib/delegation';
 import { logStream } from '@/lib/live-stream';
 import { uploadFile } from '@/lib/uploads';
 import { chatStatus, lastBusy, settlePending, type PendingMessage } from '@/lib/session-state';
@@ -32,7 +33,7 @@ const belongs = (m: Pending, view: string) => m.view === view || m.created === v
  * while one is in flight), so everything they touch on completion is
  * checked against the view on screen now.
  */
-export function useSession(id: string | undefined, onCreated: (id: string) => void, draft: { model?: string; effort?: Effort; baseBranch?: string; mode?: Mode } = {}) {
+export function useSession(id: string | undefined, onCreated: (id: string) => void, draft: { model?: string; effort?: Effort; baseBranch?: string; mode?: Mode; delegation?: Delegation } = {}) {
   const [events, setEvents] = useState<KelpieEvent[]>([]);
   const [pending, setPending] = useState<Pending[]>([]);
   const [error, setError] = useState<string | undefined>();
@@ -98,8 +99,8 @@ export function useSession(id: string | undefined, onCreated: (id: string) => vo
         let target = from.startsWith('draft:') || goneRef.current === from ? undefined : from;
         if (!target) {
           if (creating.current?.view !== from) {
-            const { model, effort, baseBranch, mode } = draftRef.current;
-            const promise = api<{ id: string }>('POST', '/api/sessions', { ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(baseBranch ? { baseBranch } : {}), ...(mode ? { mode } : {}) }).then(({ id: created }) => {
+            const { model, effort, baseBranch, mode, delegation } = draftRef.current;
+            const promise = api<{ id: string }>('POST', '/api/sessions', { ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(baseBranch ? { baseBranch } : {}), ...(mode ? { mode } : {}), ...(delegation ? { delegation } : {}) }).then(({ id: created }) => {
               // Every message sent from this view goes with it, and stays visible while the route changes.
               setPending((p) => p.map((m) => (m.view === from ? { ...m, created } : m)));
               // Only follow it there if the user is still looking at where they sent from.

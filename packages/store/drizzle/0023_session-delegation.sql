@@ -1,0 +1,1 @@
+ALTER TABLE `sessions` ADD `delegation` text DEFAULT 'balanced' NOT NULL;

@@ -264,10 +264,21 @@ function orchestratorServer(orch: Orchestrator, parent: Session): McpServer {
     {
       description:
         'Set the branch this round-up starts from, as the person chose it (never pick it yourself). A remote branch is fetched first. ' +
-        'Fixed once a writing agent has started.',
+        'Fixed once a writing agent has started or the feature checkout is open.',
       inputSchema: { branch: z.string().min(1).describe('A branch from list_branches, e.g. origin/main.') },
     },
     ({ branch }) => result(() => orch.setBase(parent, branch)),
+  );
+
+  mcp.registerTool(
+    'open_feature_checkout',
+    {
+      description:
+        'Make your feature branch\'s checkout if it does not exist yet (from the base branch; see set_base_branch), or bring it back if it was cleaned up, and return its path. ' +
+        'Edit there by absolute path; your commands run there (Kelpie starts each one there unless your shell is already inside it). Kelpie commits what you leave uncommitted when your turn ends, and before it starts a writer or musters. ' +
+        'Writers fork from the feature branch, so their work starts from yours.',
+    },
+    () => result(() => orch.openFeatureCheckout(parent)),
   );
 
   mcp.registerTool(

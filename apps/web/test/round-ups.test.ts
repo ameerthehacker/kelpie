@@ -4,7 +4,7 @@ import { nextMode } from '../src/lib/modes.js';
 
 const NOW = new Date('2026-10-23T12:00:00').getTime();
 const MIN = 60_000;
-const r = (over: Partial<RoundUp>): RoundUp => ({ id: 'x', title: '', cwd: '/r', createdAt: 0, updatedAt: NOW - 5 * MIN, busy: false, mode: 'auto', ...over });
+const r = (over: Partial<RoundUp>): RoundUp => ({ id: 'x', title: '', cwd: '/r', createdAt: 0, updatedAt: NOW - 5 * MIN, busy: false, mode: 'auto', delegation: 'balanced', ...over });
 
 describe('round-up rows', () => {
   it('says how long ago', () => {

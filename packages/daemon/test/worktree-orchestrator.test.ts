@@ -78,7 +78,8 @@ function setup(env: Record<string, string> = {}, maxAgents = 6, scratch = false)
 }
 
 async function orchestrator(ctx: ReturnType<typeof setup>, create: Parameters<SessionManager['create']>[1] = {}) {
-  const parent = ctx.sessions.create(undefined, create);
+  // Today's orchestrator, which only coordinates, unless a test picks another level.
+  const parent = ctx.sessions.create(undefined, { delegation: 'delegate', ...create });
   await parent.send('Ship guest checkout');
   const argv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[0]);
   const { url, headers } = JSON.parse(argv[argv.indexOf('--mcp-config') + 1]!).mcpServers.kelpie;

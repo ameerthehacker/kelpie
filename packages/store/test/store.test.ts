@@ -152,6 +152,29 @@ describe('store', () => {
     store.close();
   });
 
+  it('adds the delegation column to a store made before it, leaving its round-ups balanced', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
+    const before = join(dir, 'drizzle');
+    cpSync(join(import.meta.dirname, '../drizzle'), before, { recursive: true });
+    const journal = join(before, 'meta/_journal.json');
+    const j = JSON.parse(readFileSync(journal, 'utf8')) as { entries: { tag: string }[] };
+    expect(j.entries.map((e) => e.tag)).toContain('0023_session-delegation');
+    j.entries = j.entries.filter((e) => e.tag < '0023');
+    writeFileSync(journal, JSON.stringify(j));
+    const path = join(dir, 'kelpie.db');
+    openStore(path, { migrationsFolder: before }).close();
+    oldSession(path, { id: 'r', cwd: '/r', title: 'Old' });
+    const store = openStore(path);
+    expect(store.getSession('r')).toMatchObject({ title: 'Old', delegation: 'balanced' });
+    expect(store.updateSession('r', { delegation: 'solo' })).toMatchObject({ delegation: 'solo' });
+    expect(store.createSession({ id: 'n', cwd: '/n', delegation: 'delegate' })).toMatchObject({ delegation: 'delegate' });
+    store.close();
+    const again = openStore(path);
+    expect(again.getSession('r')?.delegation).toBe('solo');
+    expect(again.getSession('n')?.delegation).toBe('delegate');
+    again.close();
+  });
+
   it("marks titles a store had before title sources as the orchestrator's (only it could title one)", () => {
     const dir = mkdtempSync(join(tmpdir(), 'kelpie-store-'));
     const before = join(dir, 'drizzle');

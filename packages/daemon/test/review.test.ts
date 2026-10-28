@@ -76,7 +76,7 @@ describe('reviews', () => {
     const { parent, api, head } = await mustered(ctx);
     const orchestrator = await mcpClient(ctx, await startWith(ctx, "You are Kelpie's orchestrator"));
     expect(await orchestrator.tools()).toEqual([
-      'assign_threads', 'create_card', 'interrupt_agent', 'link_ticket', 'list_agents', 'list_branches', 'list_review_threads', 'message_agent', 'muster_agents', 'read_agent', 'read_review',
+      'assign_threads', 'create_card', 'interrupt_agent', 'link_ticket', 'list_agents', 'list_branches', 'list_review_threads', 'message_agent', 'muster_agents', 'open_feature_checkout', 'read_agent', 'read_review',
       'reply_to_thread', 'resolve_thread', 'set_base_branch', 'spawn_agent', 'unlink_ticket', 'update_card', 'workbench_post', 'workbench_read',
     ]);
     const t1 = (await comment(ctx, parent, head(), { path: 'app.txt', side: 'additions', line: 2, lineText: 'L2 api' }, 'rename this')).body.thread as ReviewThread;
@@ -167,7 +167,7 @@ describe('reviews', () => {
 
   it('never sends a review state older than one already sent', async () => {
     const ctx = start();
-    const parent = ctx.sessions.create();
+    const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
     const seen: ManagerUpdate[] = [];
     ctx.sessions.watch((u) => u.type === 'review' && seen.push(u));
     const builds: ((s: ReviewState) => void)[] = [];

@@ -30,7 +30,7 @@ export class SavedSettings {
   update(patch: unknown): Settings {
     const parsed = SettingsPatch.safeParse(patch);
     if (!parsed.success) throw new SettingsError(parsed.error.issues.map((i) => (i.code === 'unrecognized_keys' ? `unknown setting: ${i.keys.join(', ')}` : i.message)).join('; '));
-    if (!Object.keys(parsed.data).length) throw new SettingsError('nothing to change: send maxAgents, autoResume, useUserMcp or mcpAllow');
+    if (!Object.keys(parsed.data).length) throw new SettingsError('nothing to change: send maxAgents, autoResume, useUserMcp, mcpAllow or delegation');
     const prev = this.current;
     this.store.setSettings(parsed.data);
     const next: Record<string, unknown> = { ...prev };

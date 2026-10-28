@@ -89,6 +89,12 @@ export function groupApprovals(items: readonly PendingApproval[]): ApprovalGroup
   return [...groups.values()];
 }
 
+/**
+ * Whether "Allow for round-up" is offered: there is a rule to save, and an agent is asking. Saved rules
+ * are for the round-up's agents only, so the orchestrator's own requests are allowed once each.
+ */
+export const canRemember = (g: Pick<ApprovalGroup, 'rule' | 'items'>) => !!g.rule && g.items.some((a) => a.sessionId !== a.roundUpId);
+
 /** The rule "Allow for round-up" would save, when it allows more than the row shows (`Bash(npm run:*)` for `npm run test`). */
 export function broaderRule(g: Pick<ApprovalGroup, 'tool' | 'label' | 'rule'>): string | undefined {
   return g.rule && g.rule !== `${g.tool}(${g.label})` ? g.rule : undefined;

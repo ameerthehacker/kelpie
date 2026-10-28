@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import { attachmentsBlock, findTickets, mergeUsage, ticketsNote, type SessionTitleSource, type LinkedTicket, type TicketLink, type TicketTitleSource, type Answers, type Attachment, type EventOf, type Question, type Mode, type Effort, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings, type WorkbenchCard, type UsageLimitPause } from '@kelpie/protocol';
+import { attachmentsBlock, findTickets, mergeUsage, ticketsNote, type SessionTitleSource, type LinkedTicket, type TicketLink, type TicketTitleSource, type Answers, type Attachment, type EventOf, type Question, type Mode, type Delegation, type Effort, type EventData, type EventKind, type HarnessUsage, type KelpieEvent, type TodoItem, type Settings, type WorkbenchCard, type UsageLimitPause } from '@kelpie/protocol';
 import { claudeCode, isChromeTool, type Adapter, type PermissionAnswer, type Run, type RunSpec } from '@kelpie/adapters';
 import type { AttachmentRow, OutboxSource, SessionPatch, SessionRow, Store, TicketRow, TicketSource } from '@kelpie/store';
 import { nowOf, SUMMARY_KINDS, type AgentSummary, type Now } from './agent-summary.js';
@@ -46,6 +46,8 @@ export interface SessionInfo {
   baseCommit: string | undefined;
   /** The round-up's mode; a sub-agent reports its round-up's. */
   mode: Mode;
+  /** How much the round-up's orchestrator does itself rather than delegates; a sub-agent reports its round-up's. */
+  delegation: Delegation;
   /** Jira and Asana tickets linked to a top-level round-up, in the order they were linked; none on a sub-agent. */
   tickets: LinkedTicket[];
   /** A sub-agent's own branch and its worktree's state, as in its AgentSummary: whether its work still waits to be mustered. */
@@ -250,6 +252,7 @@ export interface CreateOptions {
   model?: string;
   effort?: Effort;
   mode?: Mode;
+  delegation?: Delegation;
 }
 
 export interface SessionManagerOptions {
@@ -525,6 +528,17 @@ export class Session {
     this.update({ mode });
   }
 
+  /** The round-up's delegation level: its own, or for a sub-agent its orchestrator's. */
+  get delegation(): Delegation {
+    const parent = this.row.parentId ? this.ctx.get(this.row.parentId) : undefined;
+    return parent ? parent.delegation : this.row.delegation;
+  }
+
+  /** Records a top-level round-up's delegation level (see SessionManager.setDelegation). */
+  saveDelegation(delegation: Delegation): void {
+    this.update({ delegation });
+  }
+
   /** Switches the running harness process, if any, to a harness permission mode. */
   async switchMode(harnessMode: string): Promise<boolean> {
     return this.run && !this.run.exited ? this.run.setMode(harnessMode) : false;
@@ -583,6 +597,7 @@ export class Session {
       baseBranch: baseBranch ?? undefined,
       baseCommit: baseCommit ?? undefined,
       mode: this.mode,
+      delegation: this.delegation,
       tickets: this.tickets(),
       ...(parentId ? this.worktreeSummary() : {}),
       ...(this.limited ? { limited: this.limited } : {}),
@@ -679,6 +694,9 @@ export class Session {
   /**
    * What the person allowed for a sub-agent's whole round-up. Never the Claude in Chrome tools, even
    * by a rule saved before Kelpie stopped offering them: every use of the person's browser is asked about.
+   * Never the orchestrator, even when it works itself (solo, balanced): the person allowed those for
+   * agents in worktrees of their own, while its commands land in the feature checkout every writer forks
+   * from, so they go by the harness's own checks (auto mode's) and the person, one at a time.
    */
   private savedRules(): string[] {
     if (!this.row.parentId) return [];
@@ -1349,6 +1367,7 @@ export class SessionManager {
       ...(opts.browser ? { browser: true } : {}),
       ...(opts.title ? { title: opts.title } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
+      ...(opts.delegation ? { delegation: opts.delegation } : {}),
     });
     const session = new Session(row, this.ctx);
     this.sessions.set(session.id, session);
@@ -1485,6 +1504,7 @@ export class SessionManager {
           continue;
         }
       }
+      // Never one the orchestrator asked for: rules are its agents' (see Session.savedRules), so its own is allowed once.
       const rule = opts.allow && opts.remember && session.parentId && pending.rule && !isChromeTool(pending.rule) ? pending.rule : undefined;
       const ok = session.answer(
         requestId,
@@ -1539,6 +1559,17 @@ export class SessionManager {
     session.saveMode(mode);
     if (this.ctx.hooks.modeChanged) await this.ctx.hooks.modeChanged(session);
     else await session.switchMode(mode);
+  }
+
+  /**
+   * Saves a top-level round-up's delegation level. True if it changed: the caller then tells the
+   * orchestrator (`Orchestrator.setDelegation`), which restarts it with the level's tools and prompt.
+   */
+  setDelegation(session: Session, delegation: Delegation): boolean {
+    if (session.parentId) throw new Error("a sub-agent follows its round-up's delegation level");
+    if (session.delegation === delegation) return false;
+    session.saveDelegation(delegation);
+    return true;
   }
 
   /** Each harness's latest subscription usage. */

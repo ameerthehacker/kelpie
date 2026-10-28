@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEve
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { useAgents } from '@/hooks/use-agents';
 import { useAnswerApprovals, useForgetRule, useRules, type Answer } from '@/hooks/use-approvals';
-import { approvalsSummary, focusAfter, groupApprovals, pendingQuestions, questionKey, shownQuestion, type ApprovalGroup, type PendingApproval } from '@/lib/approvals';
+import { approvalsSummary, canRemember, focusAfter, groupApprovals, pendingQuestions, questionKey, shownQuestion, type ApprovalGroup, type PendingApproval } from '@/lib/approvals';
 import { cn } from '@/lib/utils';
 import { ApprovalRow, type GroupAnswer } from './approval-row';
 import { QuestionItem } from './question-item';
@@ -106,7 +106,7 @@ export function ApprovalTray({ approvals, roundUpId, inChat, docked = false, fit
       k: () => setSelected((i) => Math.max(0, i - 1)),
       ArrowUp: () => setSelected((i) => Math.max(0, i - 1)),
       a: () => g && void run([g], { decision: 'allow' }),
-      r: () => g?.rule && void run([g], { decision: 'allow', remember: true }),
+      r: () => g && canRemember(g) && void run([g], { decision: 'allow', remember: true }),
       d: () => g && void run([g], { decision: 'deny' }),
     };
     const f = act[e.key];
@@ -161,7 +161,7 @@ export function ApprovalTray({ approvals, roundUpId, inChat, docked = false, fit
           >
             <ul ref={approvalsList} tabIndex={0} onKeyDown={onKey} className="group/approvals flex flex-col gap-0.5 rounded-xl outline-none" aria-label="Approvals (j/k to move, a allow, r allow for round-up, d deny)">
               {groups.map((g, i) => (
-                <ApprovalRow key={g.key} group={g} selected={i === selected} busy={busy} onSelect={() => setSelected(i)} onAnswer={(a) => void run([g], a)} />
+                <ApprovalRow key={g.key} group={g} selected={i === selected} busy={busy} canRemember={canRemember(g)} onSelect={() => setSelected(i)} onAnswer={(a) => void run([g], a)} />
               ))}
             </ul>
             {error && <p className="text-fail px-2.5 pt-1.5 text-xs">{error}</p>}
