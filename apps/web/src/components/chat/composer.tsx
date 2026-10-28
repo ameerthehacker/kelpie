@@ -2,11 +2,12 @@ import { ArrowUpIcon, SquareIcon } from 'lucide-react';
 import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { Effort, Mode } from '@kelpie/protocol';
 import { AttachButton, FileChips, useAttachedFiles } from '@/components/chat/attachments';
-import { BranchPicker, HarnessMenu, ModeMenu } from '@/components/chat/composer-controls';
+import { BranchPicker, DelegationMenu, HarnessMenu, ModeMenu } from '@/components/chat/composer-controls';
 import { SuggestionMenu, useSuggestions } from '@/components/chat/composer-suggestions';
 import { LimitHint } from '@/components/chat/limit-hint';
 import type { Branch } from '@/hooks/use-branches';
 import type { ChatStatus } from '@/hooks/use-session';
+import type { Delegation } from '@/lib/delegation';
 import { nextMode } from '@/lib/modes';
 import { cn } from '@/lib/utils';
 
@@ -35,6 +36,9 @@ interface Props {
   mode: Mode;
   modes: readonly Mode[];
   onMode: (mode: Mode) => void;
+  /** How much the orchestrator does itself; no pill without `onDelegation` (a sub-agent's page). */
+  delegation: Delegation;
+  onDelegation?: ((delegation: Delegation) => void) | undefined;
   /** Who the message goes to (a round-up or one of its agents): `/` offers its commands, `@` its files. Undefined before the round-up exists. */
   sessionId?: string | undefined;
   /** The round-up whose agents `@` offers. */
@@ -42,14 +46,14 @@ interface Props {
 }
 
 /**
- * The design's composer: the message and its files, the harness, model and effort, the mode, the base
+ * The design's composer: the message and its files, the harness, model and effort, the mode, the delegation level, the base
  * branch, and send. Its controls are chips that shrink to icons as it narrows. It clears as
  * soon as a message is sent, and puts the text and files back if sending fails and the box is
  * still empty. While the round-up works, an empty box offers stop; anything typed is still sent
  * (and queued). Files can be attached with the paperclip, dropped on the box, or pasted. `/` at the
  * start offers slash commands, and `@` files and agents to mention (composer-suggestions).
  */
-export function Composer({ status, busy, send, interrupt, model, onModel, effort, onEffort, effortNote, base, onBase, branches, baseLocked, baseClearable, mode, modes, onMode, sessionId, mentionRoundUpId }: Props) {
+export function Composer({ status, busy, send, interrupt, model, onModel, effort, onEffort, effortNote, base, onBase, branches, baseLocked, baseClearable, mode, modes, onMode, delegation, onDelegation, sessionId, mentionRoundUpId }: Props) {
   const [text, setText] = useState('');
   const [caret, setCaret] = useState(0);
   const box = useRef<HTMLTextAreaElement>(null);
@@ -150,6 +154,7 @@ export function Composer({ status, busy, send, interrupt, model, onModel, effort
           <AttachButton onClick={open} />
           <HarnessMenu harness="claude-code" model={model} onModel={onModel} effort={effort} onEffort={onEffort} effortNote={effortNote} />
           {modes.length > 1 && <ModeMenu mode={mode} modes={modes} onMode={onMode} />}
+          {onDelegation && <DelegationMenu delegation={delegation} onDelegation={onDelegation} />}
           {!!branches?.length && <BranchPicker base={base} onBase={onBase} branches={branches} locked={baseLocked} clearable={baseClearable} />}
           <span className="flex-1" />
           {stop ? (

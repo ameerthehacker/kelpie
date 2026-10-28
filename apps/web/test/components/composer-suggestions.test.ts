@@ -63,6 +63,7 @@ beforeEach(() => {
           mode: 'auto',
           modes: ['auto', 'plan'],
           onMode,
+          delegation: 'balanced',
           sessionId: 'r1',
           mentionRoundUpId: 'r1',
         }),

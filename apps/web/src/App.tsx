@@ -44,10 +44,12 @@ import { useNow } from '@/hooks/use-now';
 import { useRoundUps } from '@/hooks/use-round-ups';
 import { useWorkbench } from '@/hooks/use-workbench';
 import { useSession } from '@/hooks/use-session';
+import { useSettings } from '@/hooks/use-settings';
 import type { AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
 import { artifactCount, pullRequestsOf } from '@/lib/artifacts';
 import { isRequestKind } from '@/lib/attention';
+import { changeDelegation, DEFAULT_DELEGATION, delegationOf, type Delegation } from '@/lib/delegation';
 import { effortPatch } from '@/lib/effort';
 import { chatProgress } from '@/lib/progress';
 import { RoundUpTitle } from '@/components/shell/round-up-title';
@@ -188,6 +190,9 @@ export function App() {
   const [draftEffort, setDraftEffort] = useState<'' | Effort>('');
   const [draftBase, setDraftBase] = useState('');
   const [draftMode, setDraftMode] = useState<Mode>('auto');
+  // Unset until the person picks one: a new round-up starts at Settings' default.
+  const [draftDelegation, setDraftDelegation] = useState<Delegation | undefined>();
+  const defaultDelegation = useSettings().data?.delegation ?? DEFAULT_DELEGATION;
   const [modelError, setModelError] = useState<string | undefined>();
   const { roundUps, error: listError, defaultCwd, rename, remove, actionError, clearActionError } = useRoundUps();
   // A failed rename shows as the list's action error.
@@ -198,6 +203,7 @@ export function App() {
     effort: draftEffort || undefined,
     baseBranch: draftBase || undefined,
     mode: draftMode,
+    delegation: draftDelegation ?? defaultDelegation,
   });
   const modes = useHarnesses()?.find((h) => h.harness === 'claude-code')?.modes ?? [];
   // Sub-agents are not in the sidebar list; fetch one directly when it is opened.
@@ -225,6 +231,7 @@ export function App() {
   const branches = useBranches(current?.role === 'agent' ? undefined : cwd);
   const base = roundUpId ? (current?.baseBranch ?? '') : draftBase;
   const mode = roundUpId ? (current?.mode ?? 'auto') : draftMode;
+  const delegation = roundUpId ? delegationOf(current?.delegation) : (draftDelegation ?? defaultDelegation);
   // Once a writer has a branch of its own, it started from the base: that can't change any more.
   const baseLocked = !!agents?.some((a) => a.branch);
   // The tab's title counts what is waiting on the person: every open approval, and what they were
@@ -281,6 +288,11 @@ export function App() {
       setModelError(`Couldn't change the mode: ${err.message}`);
       void queryClient.invalidateQueries({ queryKey: ['round-ups'] });
     });
+  };
+  const changeLevel = (next: Delegation) => {
+    if (!roundUpId) return setDraftDelegation(next);
+    setModelError(undefined);
+    changeDelegation(queryClient, roundUpId, next).catch((err: Error) => setModelError(`Couldn't change the delegation: ${err.message}`));
   };
   const changeBase = (next: string) => {
     if (!roundUpId) return setDraftBase(next);
@@ -449,6 +461,9 @@ export function App() {
                       mode={mode}
                       modes={current?.role === 'agent' ? [] : modes}
                       onMode={changeMode}
+                      // The level is the orchestrator's: a sub-agent's page has no pill.
+                      delegation={delegation}
+                      onDelegation={current?.role === 'agent' ? undefined : changeLevel}
                       // `/` and `@` offer what this session can be sent; `@` its round-up's agents.
                       sessionId={roundUpId}
                       mentionRoundUpId={current?.role === 'agent' ? current.parentId : roundUpId}
