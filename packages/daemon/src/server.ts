@@ -6,7 +6,7 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE, type SSEMessage } from 'hono/streaming';
 import { getMimeType } from 'hono/utils/mime';
-import { Answers, ArtifactAccept, CardArchive, Effort, Mode, NotePost } from '@kelpie/protocol';
+import { Answers, ArtifactAccept, CardArchive, type ArtifactsChanged, Effort, Mode, NotePost } from '@kelpie/protocol';
 import { ArtifactError } from './artifacts.js';
 import { checkHarnesses, shared, type HarnessStatus } from './harness-status.js';
 import type { Connections } from './connectors/connector.js';
@@ -157,6 +157,7 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
         else if (u.type === 'usage') send({ event: 'usage', data: JSON.stringify(u.usage) });
         else if (u.type === 'review') send({ event: 'review', data: JSON.stringify({ roundUpId: u.roundUpId, state: u.state }) });
         else if (u.type === 'changes') send({ event: 'changes', data: JSON.stringify({ roundUpId: u.roundUpId, sessionId: u.sessionId }) });
+        else if (u.type === 'artifacts') send({ event: 'artifacts', data: JSON.stringify({ roundUpId: u.roundUpId, path: u.path } satisfies ArtifactsChanged) });
         else if (u.type === 'settings') send({ event: 'settings', data: JSON.stringify(u.settings) });
         else if (u.type === 'card') send({ event: 'card', data: JSON.stringify(u.card) });
         else if (u.type === 'card-removed') send({ event: 'card-removed', data: JSON.stringify({ id: u.id }) });
@@ -684,8 +685,13 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     const a = artifactsOf(c);
     if (!a) return c.json({ error: 'no such session' }, 404);
     const body = ArtifactAccept.safeParse(await jsonBody(c));
-    if (!body.success) return c.json({ error: 'key must be doc:<path> or changes:<agentId>@<commit>' }, 400);
-    a.artifacts.accept(a.roundUp, body.data.key);
+    if (!body.success) return c.json({ error: 'key must be doc:<path> (with seen: the updatedAt you saw) or changes:<agentId>@<commit>' }, 400);
+    try {
+      await a.artifacts.accept(a.roundUp, a.agents, body.data.key, body.data.seen);
+    } catch (err) {
+      if (err instanceof ArtifactError) return c.json({ error: err.message }, err.status);
+      throw err;
+    }
     return c.json(await a.artifacts.list(a.roundUp, a.agents));
   });
 

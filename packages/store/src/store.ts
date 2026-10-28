@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
-import { and, asc, desc, eq, gte, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { HarnessUsage, KelpieEvent, type EventData, type EventKind, type EventOf, type TicketLink, type TicketTitleSource, titleWins } from '@kelpie/protocol';
@@ -845,23 +845,23 @@ export class Store {
 
   /**
    * The latest successful edit or write (`file.changed`) of each file under `dir` by any of these
-   * sessions: who last wrote it, and when (the event's ISO time).
+   * sessions, of only files ending in one of `extensions` (`.md`) when given: who last wrote it,
+   * and when (the event's ISO time). Of writes at the same time, the one logged last wins.
    */
-  lastWritesUnder(sessionIds: string[], dir: string): { path: string; sessionId: string; ts: string }[] {
+  lastWritesUnder(sessionIds: string[], dir: string, extensions: readonly string[] = []): { path: string; sessionId: string; ts: string }[] {
     if (!sessionIds.length) return [];
     const path = sql<string>`json_extract(${schema.events.event}, '$.data.path')`;
+    const ts = sql<string>`json_extract(${schema.events.event}, '$.ts')`;
     const prefix = `${dir.replace(/\/+$/, '')}/`;
+    const ofKind = extensions.length ? or(...extensions.map((e) => sql`lower(${path}) like ${`%${e.toLowerCase()}`}`)) : undefined;
     const rows = this.db
-      .select({ sessionId: schema.events.sessionId, path, event: schema.events.event })
+      .select({ sessionId: schema.events.sessionId, path, ts })
       .from(schema.events)
-      .where(and(inArray(schema.events.sessionId, sessionIds), eq(schema.events.kind, 'file.changed'), sql`substr(${path}, 1, ${prefix.length}) = ${prefix}`))
+      .where(and(inArray(schema.events.sessionId, sessionIds), eq(schema.events.kind, 'file.changed'), sql`substr(${path}, 1, ${prefix.length}) = ${prefix}`, ofKind))
+      .orderBy(asc(ts), asc(sql`${schema.events}.rowid`))
       .all();
     const latest = new Map<string, { path: string; sessionId: string; ts: string }>();
-    for (const r of rows) {
-      const ts = (JSON.parse(r.event) as KelpieEvent).ts;
-      const seen = latest.get(r.path);
-      if (!seen || seen.ts <= ts) latest.set(r.path, { path: r.path, sessionId: r.sessionId, ts });
-    }
+    for (const r of rows) latest.set(r.path, r);
     return [...latest.values()];
   }
 
