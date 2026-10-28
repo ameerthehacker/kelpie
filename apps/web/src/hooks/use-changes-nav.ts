@@ -1,15 +1,17 @@
 import { useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
 
-export type RoundUpTab = 'conversation' | 'changes';
+export type RoundUpTab = 'conversation' | 'changes' | 'artifacts';
+
+const TABS: RoundUpTab[] = ['changes', 'artifacts'];
 
 /**
  * Where the person is in a round-up's changes, kept in the query string so it survives a reload
- * and the back button: `?tab=changes`, and full screen as `?full=feature|<agentId>&file=<path>`.
+ * and the back button: `?tab=changes` (or `artifacts`), and full screen as `?full=feature|<agentId>&file=<path>`.
  */
 export function useChangesNav() {
   const [params, setParams] = useSearchParams();
-  const tab: RoundUpTab = params.get('tab') === 'changes' ? 'changes' : 'conversation';
+  const tab: RoundUpTab = TABS.find((t) => t === params.get('tab')) ?? 'conversation';
   const full = params.get('full') ?? undefined;
   const file = params.get('file') ?? undefined;
   const roundParam = params.get('round');
@@ -33,7 +35,7 @@ export function useChangesNav() {
       tab,
       full,
       file,
-      setTab: (t: RoundUpTab) => update((p) => (t === 'changes' ? p.set('tab', 'changes') : p.delete('tab'))),
+      setTab: (t: RoundUpTab) => update((p) => (t === 'conversation' ? p.delete('tab') : p.set('tab', t))),
       round,
       /** `full`: 'feature', or an agent's id (and the round of its work on show). */
       openFull: (which: string, path?: string, round?: number) =>

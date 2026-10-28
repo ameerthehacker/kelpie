@@ -15,6 +15,7 @@ import { Reviews, type ReviewClaim } from '../review/reviews.js';
 import { SavedSettings } from '../settings.js';
 import { askRule, mcpToolPrefix, type McpServers } from '../mcp-servers.js';
 import { Workbench } from '../workbench.js';
+import { Artifacts } from '../artifacts.js';
 import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, limitResumed, musterPrompt, orchestratorPrompt, reviewBrief, type WorkPlace } from './prompt.js';
 import { LIMIT_RESUMED } from '../usage-limits.js';
 
@@ -231,6 +232,8 @@ export class Orchestrator implements SessionHooks {
   readonly reviews: Reviews;
   /** The person's board of features, and where agents say what they are on and leave each other notes. */
   readonly workbench: Workbench;
+  /** What the round-up's agents produced for the person: the documents in its scratch folder, and the person's Accepts. */
+  readonly artifacts: Artifacts;
 
   constructor(opts: OrchestratorOptions) {
     this.store = opts.store;
@@ -255,6 +258,7 @@ export class Orchestrator implements SessionHooks {
       claim: (parent, agentId) => this.claimForReview(parent, agentId),
     });
     this.workbench = new Workbench(this.store, this.worktrees);
+    this.artifacts = new Artifacts(this.store);
   }
 
   attach(sessions: SessionManager): void {

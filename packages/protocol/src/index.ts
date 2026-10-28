@@ -7,3 +7,4 @@ export * from './limits.js';
 export * from './halt.js';
 export * from './titles.js';
 export * from './mcp-servers.js';
+export * from './artifacts.js';
