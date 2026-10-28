@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentUpdate } from '@kelpie/protocol';
+import type { AgentUpdate, Artifacts } from '@kelpie/protocol';
 import type { AgentSummary } from '../src/lib/agents.js';
 import type { ChatItem } from '../src/lib/chat.js';
 import { chatProgress, changeStat, progressOf, progressState } from '../src/lib/progress.js';
@@ -43,7 +43,7 @@ describe('progressOf', () => {
 
   it('folds the bar into a run per state past its cap', () => {
     const agents = [...Array.from({ length: 5 }, () => agent('done')), agent('needs-approval'), ...Array.from({ length: 3 }, () => agent('working'))];
-    expect(progressOf(agents, new Map(), 4).segments).toEqual([
+    expect(progressOf(agents, new Map(), undefined, 4).segments).toEqual([
       { state: 'done', size: 5 },
       { state: 'needs-you', size: 1 },
       { state: 'working', size: 3 },
@@ -78,11 +78,33 @@ describe('progressOf', () => {
     ]);
     const p = progressOf([writer, merged, reader, agent('working', { updatedAt: 1 })], updates);
     expect(p.ready).toEqual([
-      { agentId: writer.id, title: 'Guest form', harness: 'claude-code', kind: 'changes', detail: '+7 −1 · 2 files', state: 'review', at: 50 },
-      { agentId: reader.id, title: 'Survey', harness: 'claude-code', kind: 'report', detail: 'all good', state: 'done', at: 30 },
-      { agentId: merged.id, title: 'Schema', harness: 'claude-code', kind: 'changes', state: 'merged', at: 10 },
+      { key: `changes:${writer.id}`, ref: { kind: 'changes', agentId: writer.id }, agentId: writer.id, title: 'Guest form', harness: 'claude-code', kind: 'changes', detail: '+7 −1 · 2 files', state: 'review', at: 50 },
+      { key: reader.id, agentId: reader.id, title: 'Survey', harness: 'claude-code', kind: 'report', detail: 'all good', state: 'done', at: 30 },
+      { key: `changes:${merged.id}`, ref: { kind: 'changes', agentId: merged.id }, agentId: merged.id, title: 'Schema', harness: 'claude-code', kind: 'changes', state: 'merged', at: 10 },
     ]);
     expect(p.lastChange).toBe(50);
+  });
+
+  it('adds the documents left for the person, and drops what they accepted', () => {
+    const writer = agent('done', { title: 'Guest form', writes: true, branch: 'b', worktree: 'active', updatedAt: 50 });
+    const accepted = agent('done', { title: 'Schema', writes: true, branch: 'c', worktree: 'active', updatedAt: 40 });
+    const artifacts: Artifacts = {
+      documents: [
+        { path: 'plan.md', title: 'Plan', author: { kind: 'orchestrator', title: 'Kelpie', harness: 'claude-code' }, size: 1, updatedAt: 60 },
+        { path: 'notes/survey.md', title: 'Survey', author: { kind: 'agent', agentId: 'x', title: 'Surveyor', harness: 'codex' }, size: 1, updatedAt: 20 },
+        { path: 'old.md', title: 'Old', size: 1, updatedAt: 70, acceptedAt: 71 },
+      ],
+      accepted: { [`changes:${accepted.id}@abc123`]: 45, 'doc:old.md': 71 },
+    };
+    const p = progressOf([writer, accepted], new Map(), artifacts);
+    expect(p.ready.map((d) => [d.key, d.kind, d.detail])).toEqual([
+      ['doc:plan.md', 'document', 'Kelpie'],
+      [`changes:${writer.id}`, 'changes', undefined],
+      ['doc:notes/survey.md', 'document', 'Surveyor'],
+    ]);
+    expect(p.ready[0]).toMatchObject({ ref: { kind: 'document', path: 'plan.md' }, state: 'review' });
+    expect(p.ready[2]?.agentId).toBe('x');
+    expect(p.done).toBe(2);
   });
 });
 
