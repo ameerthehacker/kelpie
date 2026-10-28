@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openStore } from '@kelpie/store';
 import type { McpGrant } from '@kelpie/protocol';
-import { notCommand, Orchestrator, SessionManager, type McpServers } from '../src/index.js';
+import { ARTIFACT_TOOLS, ARTIFACT_WRITE_RULES, CLAUDE_DEFAULT_TOOLS } from '@kelpie/adapters';
+import { notCommand, Orchestrator, READ_ONLY_TOOLS, SessionManager, type McpServers } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
 const FIXTURE = join(import.meta.dirname, '../../adapters/fixtures/claude-code/plain.jsonl');
@@ -46,6 +47,11 @@ const SERVERS: Record<string, object> = {
   'claude.ai My  Tiny - Echo': { type: 'claudeai-proxy', url: 'https://api.anthropic.com/v1/pages/mcp', id: 'mcpsrv_2' },
   kelpie: { command: 'evil' },
 };
+/** Their tools that change things, as `forAgents` gives them. */
+const WRITES: Record<string, string[]> = {
+  'claude.ai Claude Docs': ['mcp__claude_ai_Claude_Docs__create', 'mcp__claude_ai_Claude_Docs__update'],
+  notes: ['mcp__notes__write'],
+};
 
 function setup(env: Record<string, string> = {}) {
   const store = openStore(':memory:');
@@ -58,9 +64,13 @@ function setup(env: Record<string, string> = {}) {
     forAgents: (_cwd, allow) => {
       const servers: Record<string, object> = {};
       const skipped: { name: string; reason: string }[] = [];
+      const writes: string[] = [];
       for (const { name } of allow) if (name === 'kelpie') skipped.push({ name, reason: 'reserved' });
-      else if (SERVERS[name]) servers[name] = SERVERS[name];
-      return { servers, skipped };
+      else if (SERVERS[name]) {
+        servers[name] = SERVERS[name];
+        writes.push(...(WRITES[name] ?? []));
+      }
+      return { servers, skipped, writes };
     },
     warnOnce: (m) => void (warned.includes(m) || warned.push(m)),
   };
@@ -77,12 +87,12 @@ function setup(env: Record<string, string> = {}) {
   return { store, orch, sessions, argsFile, answers, asked, warned };
 }
 
-/** An orchestrator round-up, and the argv of an agent it started. */
-async function agentArgs(ctx: ReturnType<typeof setup>) {
+/** An orchestrator round-up, and the argv of an agent it started (a reader, unless `writes`). */
+async function agentArgs(ctx: ReturnType<typeof setup>, writes = false) {
   const parent = ctx.sessions.create();
   await parent.send('Go');
   await waitFor(() => jsonLines<string[]>(ctx.argsFile).length === 1);
-  const { agentId } = await ctx.orch.spawn(parent, { title: 'Reader', task: 'look', writes: false });
+  const { agentId } = await ctx.orch.spawn(parent, writes ? { title: 'Writer', task: 'change', writes: true } : { title: 'Reader', task: 'look', writes: false });
   const argv = await waitFor(() => jsonLines<string[]>(ctx.argsFile).find((a) => !isOrchestrator(a)));
   const orchestrator = jsonLines<string[]>(ctx.argsFile).find(isOrchestrator)!;
   return { parent, agent: ctx.sessions.get(agentId)!, argv, orchestrator };
@@ -112,8 +122,13 @@ describe("the person's MCP servers for agents", () => {
     const [kelpie, own] = flag(argv, '--mcp-config').map((c) => JSON.parse(c).mcpServers);
     expect(Object.keys(kelpie)).toEqual(['kelpie']);
     expect(own).toEqual({ github: SERVERS.github, 'claude.ai Claude Docs': SERVERS['claude.ai Claude Docs'] });
-    expect(JSON.parse(flag(argv, '--settings')[0]!)).toEqual({ permissions: { ask: ['mcp__github', 'mcp__claude_ai_Claude_Docs'] } });
+    // A claude.ai connector brings Claude Code's artifact tools, asked about like it.
+    expect(JSON.parse(flag(argv, '--settings')[0]!)).toEqual({ permissions: { ask: ['mcp__github', 'mcp__claude_ai_Claude_Docs', ...ARTIFACT_TOOLS] } });
+    expect(argv[argv.indexOf('--tools') + 1]).toBe([...READ_ONLY_TOOLS, ...ARTIFACT_TOOLS].join(','));
     expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie']);
+    // A reader is denied what changes things: the connector's writing tools, and the artifact tools' writing actions.
+    expect(flag(argv, '--disallowedTools')).toEqual([...WRITES['claude.ai Claude Docs']!, ...ARTIFACT_WRITE_RULES]);
+    expect(argv.find((a) => a.includes('# You are a sub-agent'))).toContain("refuses an artifact link with `access`");
     // The connector's entry was made sure of first, for the round-up's repo.
     expect(ctx.asked).toEqual([{ cwd: tmpdir(), allow: grants('github', 'claude.ai Claude Docs') }]);
 
@@ -128,7 +143,26 @@ describe("the person's MCP servers for agents", () => {
     ctx.orch.settings.update({ useUserMcp: true, mcpAllow: grants('claude.ai My  Tiny - Echo') });
     const { argv } = await agentArgs(ctx);
     // The CLI collapses a claude.ai name's runs of _ (mcp-ask-dashes.jsonl: mcp__claude_ai_My_Tiny_-_Echo__echo).
-    expect(JSON.parse(flag(argv, '--settings')[0]!).permissions.ask).toEqual(['mcp__claude_ai_My_Tiny_-_Echo']);
+    expect(JSON.parse(flag(argv, '--settings')[0]!).permissions.ask).toEqual(['mcp__claude_ai_My_Tiny_-_Echo', ...ARTIFACT_TOOLS]);
+  });
+
+  it('gives a writer the artifact tools with a connector, asked about, and denies it nothing', async () => {
+    const ctx = setup();
+    ctx.orch.settings.update({ useUserMcp: true, mcpAllow: grants('claude.ai Claude Docs', 'notes') });
+    const { argv } = await agentArgs(ctx, true);
+    expect(argv[argv.indexOf('--tools') + 1]).toBe([...CLAUDE_DEFAULT_TOOLS, ...ARTIFACT_TOOLS].join(','));
+    expect(JSON.parse(flag(argv, '--settings')[0]!).permissions.ask).toEqual(['mcp__claude_ai_Claude_Docs', 'mcp__notes', ...ARTIFACT_TOOLS]);
+    expect(argv).not.toContain('--disallowedTools');
+  });
+
+  it('gives no artifact tools without a claude.ai connector, and denies a reader the servers’ writing tools', async () => {
+    const ctx = setup();
+    ctx.orch.settings.update({ useUserMcp: true, mcpAllow: grants('github', 'notes') });
+    const { argv } = await agentArgs(ctx);
+    expect(argv[argv.indexOf('--tools') + 1]).toBe(READ_ONLY_TOOLS.join(','));
+    expect(JSON.parse(flag(argv, '--settings')[0]!).permissions.ask).toEqual(['mcp__github', 'mcp__notes']);
+    expect(flag(argv, '--disallowedTools')).toEqual(['mcp__notes__write']);
+    expect(argv.join('\n')).not.toContain('`access`');
   });
 
   it('keeps a server named like Kelpie’s own out, and warns once', async () => {

@@ -184,6 +184,42 @@ describe('claude-code mapping', () => {
     expect(chrome('tabs_create_mcp', {})).toBe('Chrome: tabs_create_mcp');
   });
 
+  it('titles artifact calls by what they do, to which artifact', () => {
+    const url = 'https://claude.ai/artifact/abc';
+    expect(toolTitle('Artifact', { action: 'list' }, '/work/repo')).toBe('Artifact › list');
+    expect(toolTitle('Artifact', { action: 'read', url }, '/work/repo')).toBe(`Artifact › read · ${url}`);
+    expect(toolTitle('Artifact', { file_path: '/work/repo/out/report.html', title: 'Report', url }, '/work/repo')).toBe(`Artifact › publish · out/report.html → ${url}`);
+    expect(toolTitle('Artifact', { action: 'publish', title: 'Report' }, '/work/repo')).toBe('Artifact › publish · "Report"');
+    expect(toolTitle('ArtifactComments', { action: 'reply', url, thread_id: 't' }, '/work/repo')).toBe(`Artifact comments › reply · ${url}`);
+    expect(toolTitle('ArtifactData', { action: 'set', url, collection: 'tasks', doc_id: 't1', data: {} }, '/work/repo')).toBe(`Artifact data › set · tasks/t1 · ${url}`);
+  });
+
+  it('asks about an artifact call with its title and no rule: the CLI suggests none, so each is asked', () => {
+    // As the CLI 2.1.308 asks under an ask rule (CLAUDE_CODE_ARTIFACT=1), its own fields in the input.
+    const [req] = of(
+      newParser().parse({
+        type: 'control_request',
+        request_id: 'a',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'ArtifactData',
+          input: { action: 'get', url: 'https://claude.ai/artifact/abc', collection: 'probe', doc_id: 'probe' },
+          description: "read an artifact's database (read-only) [shared: public]",
+          permission_suggestions: null,
+          tool_use_id: 'toolu_1',
+        },
+      }),
+      'permission.requested',
+    );
+    expect(req?.data).toEqual({
+      requestId: 'a',
+      tool: 'ArtifactData',
+      title: 'Artifact data › get · probe/probe · https://claude.ai/artifact/abc',
+      input: { action: 'get', url: 'https://claude.ai/artifact/abc', collection: 'probe', doc_id: 'probe' },
+      callId: 'toolu_1',
+    });
+  });
+
   it('ignores updates to todos it never saw created', () => {
     const items = [{ id: '1', text: 'a', status: 'pending' as const }];
     expect(applyTodoTool('TaskUpdate', { taskId: '9', status: 'completed' }, { success: true }, items)).toBeUndefined();

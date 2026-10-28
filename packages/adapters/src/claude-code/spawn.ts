@@ -37,6 +37,24 @@ export const DEFAULT_TOOLS = [
   'AskUserQuestion',
 ];
 
+/**
+ * Claude Code's own tools for the person's claude.ai artifacts (pages, comments, an artifact's
+ * shared database), signed in with their claude.ai login. Print-mode sessions leave them out
+ * unless CLAUDE_CODE_ARTIFACT is set: `runEnv` sets it when a run is given one of them.
+ */
+export const ARTIFACT_TOOLS = ['Artifact', 'ArtifactComments', 'ArtifactData'];
+
+/**
+ * Deny rules for the artifact tools' actions that change something, as Claude Code 2.1.308 names
+ * them: each tool both reads and writes, by its `action`, so a reader gets the tools and these.
+ */
+export const ARTIFACT_WRITE_RULES = [
+  ...['publish', 'delete', 'pin', 'unpin'].map((a) => `Artifact(action:${a})`),
+  // A watch arms automatic replies to new comments.
+  ...['reply', 'resolve', 'watch'].map((a) => `ArtifactComments(action:${a})`),
+  ...['set', 'update', 'str_replace', 'delete', 'batch'].map((a) => `ArtifactData(action:${a})`),
+];
+
 const STDERR_TAIL = 8 * 1024;
 const CONTROL_TIMEOUT_MS = 5000;
 
@@ -92,11 +110,13 @@ export function mcpConfigFiles(configs: string[] | undefined, base: string = tmp
 
 /**
  * The environment a run's CLI gets. With an effort of its own, without CLAUDE_CODE_EFFORT_LEVEL: the
- * CLI lets that beat --effort, and quietly ignores a live change while it is set.
+ * CLI lets that beat --effort, and quietly ignores a live change while it is set. Given an artifact
+ * tool, with CLAUDE_CODE_ARTIFACT, without which print mode drops them.
  */
-export function runEnv(spec: Pick<RunSpec, 'env' | 'effort'>, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function runEnv(spec: Pick<RunSpec, 'env' | 'effort' | 'tools'>, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = { ...base, ...spec.env };
   if (spec.effort) delete env.CLAUDE_CODE_EFFORT_LEVEL;
+  if (spec.tools?.some((t) => ARTIFACT_TOOLS.includes(t))) env.CLAUDE_CODE_ARTIFACT = '1';
   return env;
 }
 

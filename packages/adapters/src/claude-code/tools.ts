@@ -77,6 +77,7 @@ export function toolTitle(name: string, input: Obj, cwd: string | undefined): st
     case 'TaskUpdate':
       return `#${input.taskId}${input.status ? ` → ${input.status}` : ''}`;
   }
+  if (Object.hasOwn(ARTIFACT_NAMES, name)) return artifactTitle(name, input, cwd);
   if (isChromeTool(name)) return chromeTitle(name.slice('mcp__claude-in-chrome__'.length), input);
   if (name.startsWith('mcp__')) return name.slice('mcp__'.length).split('__').join('/');
   return name;
@@ -102,6 +103,23 @@ export function mcpTitle(name: string, input: Obj, server?: string): string {
     .join(', ');
   // Hidden characters written out (a bidi override in an argument must not make it read as another).
   return oneLine(visible(`${server || prefix} › ${rest.join('__') || name}${args ? ` · ${args}` : ''}`), 160);
+}
+
+const ARTIFACT_NAMES: Record<string, string> = { Artifact: 'Artifact', ArtifactComments: 'Artifact comments', ArtifactData: 'Artifact data' };
+
+/**
+ * An artifact tool call: what it does, to what (`Artifact › publish · report.html → https://claude.ai/artifact/…`,
+ * `Artifact data › set · tasks/t1 · https://claude.ai/artifact/…`). Without an action, Artifact publishes.
+ */
+function artifactTitle(name: string, input: Obj, cwd: string | undefined): string {
+  const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined);
+  const action = str(input.action) ?? (name === 'Artifact' ? 'publish' : '');
+  const file = str(input.file_path) ? displayPath(input.file_path, cwd) : Array.isArray(input.files) ? `${input.files.length} files` : undefined;
+  const source = file ?? (str(input.title) ? JSON.stringify(input.title) : undefined);
+  const doc = [str(input.collection), str(input.doc_id)].filter(Boolean).join('/');
+  const target = [doc, str(input.url)].filter(Boolean).join(' · ');
+  const what = source && target ? `${source} → ${target}` : (source ?? target);
+  return oneLine(visible(`${ARTIFACT_NAMES[name]} › ${action}${what ? ` · ${what}` : ''}`), 160);
 }
 
 /** What a Claude in Chrome call does in the person's browser: where it goes, what it clicks, types or runs. */

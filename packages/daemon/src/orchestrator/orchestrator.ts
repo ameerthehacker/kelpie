@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
-import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
+import { ARTIFACT_TOOLS, ARTIFACT_WRITE_RULES, CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
 import { AGENT_HALT_RESUMED, Harness, haltNote, haltResumed, hasHaltNote, parseTicketUrl, type Settings, type AgentUpdate, type Effort, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import type { Connections } from '../connectors/connector.js';
@@ -294,23 +294,30 @@ export class Orchestrator implements SessionHooks {
       // Every agent may read the scratch folder (its brief's files are there); writers may leave files in it.
       const scratchRules = scratch ? (session.writes ? FILE_TOOLS : ['Read']).map((t) => `${t}(${under(scratch)})`) : [];
       const own = this.personsServers(session);
+      // A claude.ai connector allowed lets agents act with the person's claude.ai login: Claude Code's
+      // own artifact tools come with it, asked about like the connector's.
+      const artifacts = !!own && Object.values(own.servers).some((c) => c.type === 'claudeai-proxy');
+      const tools = session.writes ? DEFAULT_TOOLS : READ_ONLY_TOOLS;
+      // A reader is denied their tools that change things: those not marked read-only, and the artifact tools' writing actions.
+      const denied = own && !session.writes ? [...own.writes, ...(artifacts ? ARTIFACT_WRITE_RULES : [])] : [];
       return {
-        tools: session.writes ? DEFAULT_TOOLS : READ_ONLY_TOOLS,
+        tools: artifacts ? [...tools, ...ARTIFACT_TOOLS] : tools,
         // No blanket Bash: auto mode's checks or accept-edits' approvals decide what runs.
         permissionMode: agentMode(session.mode),
         // Its kelpie tools are its review threads and the Workbench, as itself.
         allowedTools: [...scratchRules, 'mcp__kelpie'],
         // The person's own servers, beside Kelpie's (still only these: --strict-mcp-config). None of
         // their tools is allowed by rule; an ask rule sends every call to the person, auto mode too.
-        mcpConfig: own ? [...mcpConfig, JSON.stringify({ mcpServers: own })] : mcpConfig,
-        ...(own ? { askTools: Object.keys(own).map(askRule) } : {}),
+        mcpConfig: own ? [...mcpConfig, JSON.stringify({ mcpServers: own.servers })] : mcpConfig,
+        ...(own ? { askTools: [...Object.keys(own.servers).map(askRule), ...(artifacts ? ARTIFACT_TOOLS : [])] } : {}),
+        ...(denied.length ? { disallowedTools: denied } : {}),
         ...(scratch ? { addDirs: [scratch] } : {}),
         ...connected,
         // The person's one browser, shared by every agent given it: only when the orchestrator asked.
         // Its tools are asked about like any other (auto mode's checks, or the person); none is allowed by rule.
         browser: session.browser,
         appendSystemPrompt:
-          (session.kind === 'muster' && place ? musterPrompt(place) : agentPrompt(session.writes, place, scratch, session.browser)) + preface,
+          (session.kind === 'muster' && place ? musterPrompt(place) : agentPrompt(session.writes, place, scratch, session.browser, artifacts)) + preface,
       };
     }
     // Deny beats allow, so a scratch folder inside the repo (KELPIE_HOME under it) would be denied
@@ -441,14 +448,15 @@ export class Orchestrator implements SessionHooks {
 
   /**
    * The person's MCP servers an agent gets, as an `mcpServers` map: those they allowed, exactly as
-   * allowed (where configured, and what they run), while the setting is on. Undefined for none.
+   * allowed (where configured, and what they run), while the setting is on; with their tools that
+   * change things. Undefined for none.
    */
-  private personsServers(agent: Session): Record<string, object> | undefined {
+  private personsServers(agent: Session): { servers: Record<string, { type?: unknown }>; writes: string[] } | undefined {
     const settings = this.settings.get();
     if (!this.mcpServers || !settings.useUserMcp || !settings.mcpAllow.length) return undefined;
-    const { servers, skipped } = this.mcpServers.forAgents(this.roundUpCwd(agent), settings.mcpAllow);
+    const { servers, skipped, writes } = this.mcpServers.forAgents(this.roundUpCwd(agent), settings.mcpAllow);
     for (const { name, reason } of skipped) this.mcpServers.warnOnce(`kelpie: not giving agents your MCP server "${name}": ${reason}`);
-    return Object.keys(servers).length ? servers : undefined;
+    return Object.keys(servers).length ? { servers, writes } : undefined;
   }
 
   /**

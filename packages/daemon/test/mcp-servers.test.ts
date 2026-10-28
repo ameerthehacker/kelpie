@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { McpGrant, McpServerInfo, McpServerList } from '@kelpie/protocol';
 import { openStore } from '@kelpie/store';
-import { askRule, blockedReason, createApp, fingerprint, mcpToolPrefix, McpServers, Orchestrator, SessionManager } from '../src/index.js';
+import { askRule, blockedReason, createApp, fingerprint, KNOWN_WRITES, mcpToolPrefix, McpServers, Orchestrator, SessionManager } from '../src/index.js';
 
 const FAKE = join(import.meta.dirname, 'fake-claude-mcp.mjs');
 const tmp = (prefix: string) => realpathSync(mkdtempSync(join(tmpdir(), prefix)));
@@ -225,8 +225,29 @@ describe('allowing servers by what they are', () => {
     expect(Object.keys(mcp.forAgents(repo, [github]).servers)).toEqual(['github']);
     config.mcpServers.github.url = 'https://elsewhere.example/mcp';
     writeFileSync(claudeJson, JSON.stringify(config));
-    expect(mcp.forAgents(repo, [github])).toEqual({ servers: {}, skipped: [{ name: 'github', reason: 'it changed since it was allowed' }] });
+    expect(mcp.forAgents(repo, [github])).toEqual({ servers: {}, skipped: [{ name: 'github', reason: 'it changed since it was allowed' }], writes: [] });
     expect(find(mcp.list(repo), 'user', 'github').fingerprint).not.toBe(github.fingerprint);
+  });
+
+  it('names the tools that change things: those Claude Code lists as not read-only, else the known ones', async () => {
+    const tools = (...t: [string, object?][]) => t.map(([name, annotations = {}]) => ({ name, annotations }));
+    const { repo, mcp } = fixture({
+      status: [
+        { name: 'claude.ai Claude Docs', status: 'connected', scope: 'claudeai', config: CONNECTOR, tools: tools(['read', { readOnly: true }], ['update'], ['delete', { destructive: true }]) },
+        { name: 'github', status: 'connected', scope: 'user', config: { type: 'http', url: GITHUB.url }, tools: tools(['search_issues', { readOnly: true }], ['create.issue']) },
+      ],
+    });
+    const list = await mcp.refresh(repo);
+    const grants = [grantFor(find(list, 'claudeai', 'claude.ai Claude Docs')), grantFor(find(list, 'user', 'github'))];
+    expect(mcp.forAgents(repo, grants).writes).toEqual(['mcp__github__create_issue', 'mcp__claude_ai_Claude_Docs__update', 'mcp__claude_ai_Claude_Docs__delete']);
+
+    // Tools not listed (none were, or it wasn't checked): Claude Docs' known ones, and none for a server Kelpie knows nothing of.
+    const unlisted = fixture();
+    const before = await unlisted.mcp.refresh(unlisted.repo);
+    const docs = grantFor(find(before, 'claudeai', 'claude.ai Claude Docs'));
+    expect(unlisted.mcp.forAgents(unlisted.repo, [docs, grantFor(find(before, 'user', 'github'))]).writes).toEqual(
+      KNOWN_WRITES['claude.ai Claude Docs']!.map((t) => `mcp__claude_ai_Claude_Docs__${t}`),
+    );
   });
 
   it("never lets a repo's own server stand in for the person's, and keeps a repo's grants to that repo", async () => {
@@ -343,7 +364,7 @@ describe('fingerprints', () => {
       { ...web, type: 'sse' },
     ]) {
       write(changed);
-      expect(mcp.forAgents(repo, [allowed])).toEqual({ servers: {}, skipped: [{ name: 'web', reason: 'it changed since it was allowed' }] });
+      expect(mcp.forAgents(repo, [allowed])).toEqual({ servers: {}, skipped: [{ name: 'web', reason: 'it changed since it was allowed' }], writes: [] });
       expect(mcp.list(repo).servers.find((s) => s.name === 'web')!.fingerprint).not.toBe(allowed.fingerprint);
     }
   });
@@ -405,7 +426,7 @@ describe('how stdio servers start', () => {
     expect(Object.keys(mcp.forAgents(repo, [allowed]).servers)).toEqual(['repoTool']);
     // An agent (or a pull) changes the script: the entry is the same, the server isn't.
     writeFileSync(join(repo, 'tool.js'), 'require("child_process").execSync("evil")');
-    expect(mcp.forAgents(repo, [allowed])).toEqual({ servers: {}, skipped: [{ name: 'repoTool', reason: 'it changed since it was allowed' }] });
+    expect(mcp.forAgents(repo, [allowed])).toEqual({ servers: {}, skipped: [{ name: 'repoTool', reason: 'it changed since it was allowed' }], writes: [] });
     expect(find(mcp.list(repo), 'project', 'repoTool').fingerprint).not.toBe(allowed.fingerprint);
   });
 
