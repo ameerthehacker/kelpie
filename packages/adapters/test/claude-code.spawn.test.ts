@@ -140,6 +140,12 @@ describe('claudeArgs', () => {
     expect(runEnv({}, base)).toEqual(base);
   });
 
+  it('turns on the artifact tools for a run given one, which print mode otherwise drops', () => {
+    expect(runEnv({ tools: ['Read', 'ArtifactData'] }, { PATH: '/bin' })).toEqual({ PATH: '/bin', CLAUDE_CODE_ARTIFACT: '1' });
+    expect(runEnv({ tools: ['Read'] }, { PATH: '/bin' })).toEqual({ PATH: '/bin' });
+    expect(runEnv({}, { PATH: '/bin' })).toEqual({ PATH: '/bin' });
+  });
+
   it('passes the effort level when there is one, and leaves the harness default alone otherwise', () => {
     for (const effort of Effort.options) {
       const args = claudeArgs({ ...spec, effort });

@@ -121,6 +121,40 @@ describe('claude-code mapping', () => {
     expect(states).toEqual(['ended:false', 'sub:true', 'ended:false']);
   });
 
+  it('takes a local command the CLI never replays (/context) as sent, so the turn ends idle', () => {
+    const parser = newParser();
+    for (let i = 0; i < 3; i++) parser.noteSent();
+    const seen: string[] = [];
+    lines('local-commands').forEach((o, i) => {
+      for (const e of parser.parse(o, i + 1)) {
+        if (e.kind === 'message') seen.push(`${e.data.role}${e.data.sent ? ' sent' : ''}: ${e.data.text.split('\n')[0]}`);
+        if (e.kind === 'turn.ended') seen.push(`ended, busy ${parser.busy}`);
+      }
+    });
+    expect(seen).toEqual([
+      // Before its output, as a replay would be.
+      'user sent: /context',
+      'assistant: ## Context Usage',
+      'ended, busy true',
+      'user sent: <command-message>proj-hello</command-message>',
+      expect.stringMatching(/^assistant: /),
+      'ended, busy true',
+      'user: This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.',
+      // /compact is replayed (as its output): it is not taken in twice.
+      'user sent: <local-command-stdout>Compacted </local-command-stdout>',
+      'ended, busy false',
+    ]);
+  });
+
+  it('takes a local command in at its result when it printed nothing, and never more than was sent', () => {
+    const parser = newParser();
+    parser.noteSent();
+    const evs = parser.parse({ type: 'result', subtype: 'success', local_command: 'reload-skills', usage: {} });
+    expect(of(evs, 'message').map((e) => e.data)).toEqual([{ role: 'user', text: '/reload-skills', sent: true }]);
+    expect(parser.busy).toBe(false);
+    expect(of(parser.parse({ type: 'result', subtype: 'success', local_command: 'usage', usage: {} }), 'message')).toEqual([]);
+  });
+
   it('reads an aborted turn as interrupted', () => {
     expect(of(replay('interrupt'), 'turn.ended')[0]!.data.status).toBe('interrupted');
   });
@@ -182,6 +216,42 @@ describe('claude-code mapping', () => {
     expect(chrome('find', { query: 'the publish button' })).toBe('Chrome: find "the publish button"');
     expect(chrome('javascript_tool', { action: 'javascript_exec', text: 'document.title\n// more' })).toBe('Chrome: run JavaScript document.title // more');
     expect(chrome('tabs_create_mcp', {})).toBe('Chrome: tabs_create_mcp');
+  });
+
+  it('titles artifact calls by what they do, to which artifact', () => {
+    const url = 'https://claude.ai/artifact/abc';
+    expect(toolTitle('Artifact', { action: 'list' }, '/work/repo')).toBe('Artifact › list');
+    expect(toolTitle('Artifact', { action: 'read', url }, '/work/repo')).toBe(`Artifact › read · ${url}`);
+    expect(toolTitle('Artifact', { file_path: '/work/repo/out/report.html', title: 'Report', url }, '/work/repo')).toBe(`Artifact › publish · out/report.html → ${url}`);
+    expect(toolTitle('Artifact', { action: 'publish', title: 'Report' }, '/work/repo')).toBe('Artifact › publish · "Report"');
+    expect(toolTitle('ArtifactComments', { action: 'reply', url, thread_id: 't' }, '/work/repo')).toBe(`Artifact comments › reply · ${url}`);
+    expect(toolTitle('ArtifactData', { action: 'set', url, collection: 'tasks', doc_id: 't1', data: {} }, '/work/repo')).toBe(`Artifact data › set · tasks/t1 · ${url}`);
+  });
+
+  it('asks about an artifact call with its title and no rule: the CLI suggests none, so each is asked', () => {
+    // As the CLI 2.1.308 asks under an ask rule (CLAUDE_CODE_ARTIFACT=1), its own fields in the input.
+    const [req] = of(
+      newParser().parse({
+        type: 'control_request',
+        request_id: 'a',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'ArtifactData',
+          input: { action: 'get', url: 'https://claude.ai/artifact/abc', collection: 'probe', doc_id: 'probe' },
+          description: "read an artifact's database (read-only) [shared: public]",
+          permission_suggestions: null,
+          tool_use_id: 'toolu_1',
+        },
+      }),
+      'permission.requested',
+    );
+    expect(req?.data).toEqual({
+      requestId: 'a',
+      tool: 'ArtifactData',
+      title: 'Artifact data › get · probe/probe · https://claude.ai/artifact/abc',
+      input: { action: 'get', url: 'https://claude.ai/artifact/abc', collection: 'probe', doc_id: 'probe' },
+      callId: 'toolu_1',
+    });
   });
 
   it('ignores updates to todos it never saw created', () => {

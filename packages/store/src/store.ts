@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
-import { and, asc, desc, eq, gte, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { HarnessUsage, KelpieEvent, type EventData, type EventKind, type EventOf, type TicketLink, type TicketTitleSource, titleWins } from '@kelpie/protocol';
@@ -823,6 +823,46 @@ export class Store {
   /** The person resumed it. False if it was not stopped. */
   clearHalt(sessionId: string): boolean {
     return this.db.delete(schema.halts).where(eq(schema.halts.sessionId, sessionId)).run().changes > 0;
+  }
+
+  // ── artifacts ────────────────────────────────────────────────────────
+
+  /** The person accepted an artifact (see `artifactReviews`); accepting it again moves the time on. */
+  acceptArtifact(roundUpId: string, key: string, now = Date.now()): number {
+    this.db
+      .insert(schema.artifactReviews)
+      .values({ roundUpId, key, acceptedAt: now })
+      .onConflictDoUpdate({ target: [schema.artifactReviews.roundUpId, schema.artifactReviews.key], set: { acceptedAt: now } })
+      .run();
+    return now;
+  }
+
+  /** Every artifact of the round-up the person accepted, by key, with when (epoch ms). */
+  acceptedArtifacts(roundUpId: string): Map<string, number> {
+    const rows = this.db.select().from(schema.artifactReviews).where(eq(schema.artifactReviews.roundUpId, roundUpId)).all();
+    return new Map(rows.map((r) => [r.key, r.acceptedAt]));
+  }
+
+  /**
+   * The latest successful edit or write (`file.changed`) of each file under `dir` by any of these
+   * sessions, of only files ending in one of `extensions` (`.md`) when given: who last wrote it,
+   * and when (the event's ISO time). Of writes at the same time, the one logged last wins.
+   */
+  lastWritesUnder(sessionIds: string[], dir: string, extensions: readonly string[] = []): { path: string; sessionId: string; ts: string }[] {
+    if (!sessionIds.length) return [];
+    const path = sql<string>`json_extract(${schema.events.event}, '$.data.path')`;
+    const ts = sql<string>`json_extract(${schema.events.event}, '$.ts')`;
+    const prefix = `${dir.replace(/\/+$/, '')}/`;
+    const ofKind = extensions.length ? or(...extensions.map((e) => sql`lower(${path}) like ${`%${e.toLowerCase()}`}`)) : undefined;
+    const rows = this.db
+      .select({ sessionId: schema.events.sessionId, path, ts })
+      .from(schema.events)
+      .where(and(inArray(schema.events.sessionId, sessionIds), eq(schema.events.kind, 'file.changed'), sql`substr(${path}, 1, ${prefix.length}) = ${prefix}`, ofKind))
+      .orderBy(asc(ts), asc(sql`${schema.events}.rowid`))
+      .all();
+    const latest = new Map<string, { path: string; sessionId: string; ts: string }>();
+    for (const r of rows) latest.set(r.path, r);
+    return [...latest.values()];
   }
 
   close(): void {

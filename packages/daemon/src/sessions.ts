@@ -138,6 +138,8 @@ export type ManagerUpdate =
   | { type: 'review'; roundUpId: string; state: ReviewState }
   /** What `GET /api/sessions/:sessionId/changes` returns may have changed (an agent went idle, a muster merged). */
   | { type: 'changes'; roundUpId: string; sessionId: string }
+  /** A file in a round-up's scratch folder was written (`path`, relative to it): its Artifacts may have changed. */
+  | { type: 'artifacts'; roundUpId: string; path: string }
   /** The person changed their settings: all of them, as they are now. */
   | { type: 'settings'; settings: Settings }
   /** A Workbench card changed (or was made), with what Kelpie derives for it now. */
@@ -1179,7 +1181,9 @@ export class Session {
           const row = this.ctx.store.undelivered(this.id)[0];
           if (row) {
             deliveredId = row.id;
-            event = { ...event, data: { ...event.data, ...(row.meta ? JSON.parse(row.meta) : {}), source: row.source } };
+            // A slash command shows as the person typed it, not as the CLI echoes it (`<command-name>…`, or its output).
+            const typed = row.source === 'user' && /^\s*\//.test(row.text) ? { text: row.text } : {};
+            event = { ...event, data: { ...event.data, ...typed, ...(row.meta ? JSON.parse(row.meta) : {}), source: row.source } };
           }
         }
 

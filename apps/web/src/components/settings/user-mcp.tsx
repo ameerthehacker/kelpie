@@ -1,8 +1,11 @@
 import { formatDistanceToNow } from 'date-fns';
-import { CheckIcon, PlugIcon, RefreshCwIcon, TerminalIcon, TriangleAlertIcon } from 'lucide-react';
+import { CheckIcon, ChevronRightIcon, PlugIcon, RefreshCwIcon, SearchIcon, TerminalIcon, TriangleAlertIcon } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
@@ -26,6 +29,17 @@ const STATUS_TONE: Record<McpStatus, string> = {
 };
 
 const chip = 'rounded-full px-2 py-px text-[11px] font-medium';
+
+/** From this many servers on, the list gets a filter. */
+const FILTER_FROM = 6;
+
+/** Whether a row matches the filter: by its name, type, scope or status. */
+function matches(row: McpRow, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const s = row.server;
+  return [row.name, SCOPE_LABEL[s?.scope ?? row.grant!.scope], s?.type, s && STATUS_LABEL[s.status]].some((t) => t?.toLowerCase().includes(q));
+}
 
 /** Why a row isn't simply on or off, in words a screen reader hears with its checkbox. */
 function rowNote(row: McpRow): string | undefined {
@@ -70,25 +84,42 @@ function ServerRow({ row, onToggle }: { row: McpRow; onToggle: (on: boolean) => 
             </span>
           )}
         </span>
-        {s?.runs && (
-          <div id={`${id}-runs`} className="flex flex-col gap-0.5">
-            <span className="text-mu text-xs">This repo’s server runs:</span>
-            {s.runs.map((line, i) => (
-              <code key={i} className={cn('bg-chip rounded-md px-2 py-1 font-mono text-[11px] break-all whitespace-pre-wrap', line.includes('${') ? 'text-wait' : 'text-fg2')}>
-                {line}
-              </code>
-            ))}
-          </div>
-        )}
-        {s?.warnings && (
-          <ul id={`${id}-warnings`} className="text-wait flex flex-col gap-0.5 text-xs">
-            {s.warnings.map((w, i) => (
-              <li key={i} className="flex items-start gap-1.5">
-                <TriangleAlertIcon aria-hidden="true" className="mt-px size-3.5 shrink-0" strokeWidth={2} />
-                {w}
-              </li>
-            ))}
-          </ul>
+        {(s?.runs || s?.warnings) && (
+          // Closed, the details stay in the page (hidden), so the checkbox is still described by them.
+          <Collapsible className="group/details flex flex-col gap-1">
+            <CollapsibleTrigger className="text-mu hover:text-fg2 focus-visible:ring-ring/50 flex w-fit items-center gap-1 rounded-md text-xs outline-none focus-visible:ring-3">
+              <ChevronRightIcon aria-hidden="true" className="size-3.5 transition-transform group-data-[state=open]/details:rotate-90" strokeWidth={2} />
+              {s.runs ? 'What it runs' : 'Details'}
+              {s.warnings && (
+                <span className="text-wait flex items-center gap-1">
+                  · <TriangleAlertIcon aria-hidden="true" className="size-3" strokeWidth={2} />
+                  {s.warnings.length === 1 ? '1 warning' : `${s.warnings.length} warnings`}
+                </span>
+              )}
+            </CollapsibleTrigger>
+            <CollapsibleContent forceMount className="flex flex-col gap-1 data-[state=closed]:hidden">
+              {s?.runs && (
+                <div id={`${id}-runs`} className="flex flex-col gap-0.5">
+                  <span className="text-mu text-xs">This repo’s server runs:</span>
+                  {s.runs.map((line, i) => (
+                    <code key={i} className={cn('bg-chip rounded-md px-2 py-1 font-mono text-[11px] break-all whitespace-pre-wrap', line.includes('${') ? 'text-wait' : 'text-fg2')}>
+                      {line}
+                    </code>
+                  ))}
+                </div>
+              )}
+              {s?.warnings && (
+                <ul id={`${id}-warnings`} className="text-wait flex flex-col gap-0.5 text-xs">
+                  {s.warnings.map((w, i) => (
+                    <li key={i} className="flex items-start gap-1.5">
+                      <TriangleAlertIcon aria-hidden="true" className="mt-px size-3.5 shrink-0" strokeWidth={2} />
+                      {w}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CollapsibleContent>
+          </Collapsible>
         )}
         {note && (
           <p id={`${id}-note`} className={cn('flex items-start gap-1.5 text-xs', row.state === 'blocked' ? 'text-fail' : 'text-wait')}>
@@ -118,6 +149,7 @@ export function UserMcp({ value, allow }: { value: boolean; allow: McpGrant[] })
   const statusId = useId();
   const listId = useId();
   const repoId = useId();
+  const [query, setQuery] = useState('');
   const [saved, setSaved] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const checkedOnce = useRef(new Set<string>());
@@ -144,6 +176,8 @@ export function UserMcp({ value, allow }: { value: boolean; allow: McpGrant[] })
   }, [value, repo, picked, data?.checkedAt, check]);
 
   const rows = data ? mcpRows(data.servers, allow, data.repo) : [];
+  const filterable = rows.length >= FILTER_FROM;
+  const shown = filterable ? rows.filter((row) => matches(row, query)) : rows;
   const checking = refresh.isPending;
   const error = refresh.error ?? list.error;
   const checkedAt = data?.checkedAt;
@@ -234,15 +268,42 @@ export function UserMcp({ value, allow }: { value: boolean; allow: McpGrant[] })
               <Skeleton className="h-10 w-full rounded-xl" />
             </div>
           ) : rows.length ? (
-            <ul aria-labelledby={listId} className="divide-ln flex flex-col divide-y">
-              {rows.map((row) => (
-                <ServerRow
-                  key={row.key}
-                  row={row}
-                  onToggle={(on) => send({ mcpAllow: row.server ? setGrant(allow, row.server, on) : dropGrant(allow, row.key) })}
-                />
-              ))}
-            </ul>
+            <>
+              {filterable && (
+                <div className="flex items-center gap-3">
+                  <InputGroup className="h-8 flex-1">
+                    <InputGroupAddon>
+                      <SearchIcon aria-hidden="true" />
+                    </InputGroupAddon>
+                    <InputGroupInput
+                      type="search"
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Filter by name, type or scope"
+                      aria-label="Filter servers"
+                      aria-controls={`${listId}-list`}
+                      className="text-[13px]"
+                    />
+                  </InputGroup>
+                  <span className="text-mu2 shrink-0 text-xs tabular-nums" aria-live="polite">
+                    {query.trim() ? `${shown.length} of ${rows.length}` : `${rows.length} servers`}
+                  </span>
+                </div>
+              )}
+              {/* Many servers scroll inside the card, so the page doesn't run on for screens. */}
+              <ScrollArea className="-mx-2" viewportClassName="max-h-[min(28rem,60dvh)] px-2">
+                <ul id={`${listId}-list`} aria-labelledby={listId} className="divide-ln flex flex-col divide-y">
+                  {shown.map((row) => (
+                    <ServerRow
+                      key={row.key}
+                      row={row}
+                      onToggle={(on) => send({ mcpAllow: row.server ? setGrant(allow, row.server, on) : dropGrant(allow, row.key) })}
+                    />
+                  ))}
+                </ul>
+                {!shown.length && <p className="text-mu py-2 text-[13px]">No server matches “{query.trim()}”.</p>}
+              </ScrollArea>
+            </>
           ) : (
             data && (
               <p className="text-mu py-2 text-[13px]">

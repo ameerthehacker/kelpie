@@ -2469,6 +2469,363 @@ Note: The user's next message may contain a correction or preference. Pay close 
 ]
 `;
 
+exports[`fixture local-commands > matches the golden snapshot 1`] = `
+[
+  {
+    "data": {
+      "cwd": "/private/tmp/kelpie-probe/ws",
+      "harnessSessionId": "90c5cde6-91d8-4ec6-9b82-10679ed233aa",
+      "harnessVersion": "2.1.308",
+      "model": "claude-haiku-5-5",
+      "permissionMode": "default",
+      "tools": [
+        "Read",
+      ],
+    },
+    "harness": "claude-code",
+    "id": "run:0",
+    "kind": "session.started",
+    "rawLine": 1,
+    "runId": "run",
+    "seq": 0,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "role": "assistant",
+      "text": "## Context Usage
+
+**Tokens:** 4.1k / 1m (0%)
+",
+    },
+    "harness": "claude-code",
+    "id": "run:1",
+    "kind": "message",
+    "rawLine": 2,
+    "runId": "run",
+    "seq": 1,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": true,
+    },
+    "harness": "claude-code",
+    "id": "run:2",
+    "kind": "activity",
+    "rawLine": 2,
+    "runId": "run",
+    "seq": 2,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+    },
+    "harness": "claude-code",
+    "id": "run:3",
+    "kind": "usage",
+    "rawLine": 3,
+    "runId": "run",
+    "seq": 3,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "durationMs": 735,
+      "numTurns": 0,
+      "resultText": "## Context Usage
+
+**Tokens:** 4.1k / 1m (0%)
+",
+      "status": "completed",
+    },
+    "harness": "claude-code",
+    "id": "run:4",
+    "kind": "turn.ended",
+    "rawLine": 3,
+    "runId": "run",
+    "seq": 4,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": false,
+    },
+    "harness": "claude-code",
+    "id": "run:5",
+    "kind": "activity",
+    "rawLine": 3,
+    "runId": "run",
+    "seq": 5,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "role": "user",
+      "sent": true,
+      "text": "<command-message>proj-hello</command-message>
+<command-name>/proj-hello</command-name>
+<command-args>Robin</command-args>",
+    },
+    "harness": "claude-code",
+    "id": "run:6",
+    "kind": "message",
+    "rawLine": 5,
+    "runId": "run",
+    "seq": 6,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": true,
+    },
+    "harness": "claude-code",
+    "id": "run:7",
+    "kind": "activity",
+    "rawLine": 5,
+    "runId": "run",
+    "seq": 7,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "role": "assistant",
+      "text": "Hello, Robin! Welcome back. The \`/context\` output shows you're at about 0% usage, so there's plenty of room for whatever you're working on. What would you like to do?",
+    },
+    "harness": "claude-code",
+    "id": "run:8",
+    "kind": "message",
+    "rawLine": 6,
+    "runId": "run",
+    "seq": 8,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "resetsAt": "2026-10-28T09:30:00.000Z",
+      "status": "allowed",
+      "utilization": 0.34,
+      "window": "five_hour",
+      "windows": {
+        "five_hour": {
+          "resetsAt": "2026-10-28T09:30:00.000Z",
+          "utilization": 0.34,
+        },
+        "seven_day": {
+          "resetsAt": "2026-10-29T10:00:00.000Z",
+          "utilization": 0.49,
+        },
+      },
+    },
+    "harness": "claude-code",
+    "id": "run:9",
+    "kind": "rate_limit",
+    "rawLine": 7,
+    "runId": "run",
+    "seq": 9,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "cacheReadTokens": 5075,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.00008045,
+      "inputTokens": 2,
+      "outputTokens": 59,
+    },
+    "harness": "claude-code",
+    "id": "run:10",
+    "kind": "usage",
+    "rawLine": 8,
+    "runId": "run",
+    "seq": 10,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "durationMs": 1909,
+      "numTurns": 1,
+      "resultText": "Hello, Robin! Welcome back. The \`/context\` output shows you're at about 0% usage, so there's plenty of room for whatever you're working on. What would you like to do?",
+      "status": "completed",
+    },
+    "harness": "claude-code",
+    "id": "run:11",
+    "kind": "turn.ended",
+    "rawLine": 8,
+    "runId": "run",
+    "seq": 11,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": false,
+    },
+    "harness": "claude-code",
+    "id": "run:12",
+    "kind": "activity",
+    "rawLine": 8,
+    "runId": "run",
+    "seq": 12,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "raw": {
+        "session_id": "90c5cde6-91d8-4ec6-9b82-10679ed233aa",
+        "status": "compacting",
+        "subtype": "status",
+        "type": "system",
+        "uuid": "bdbcdb41-c1d7-4344-b8ed-57cb211f6522",
+      },
+      "type": "system.status",
+    },
+    "harness": "claude-code",
+    "id": "run:13",
+    "kind": "other",
+    "rawLine": 9,
+    "runId": "run",
+    "seq": 13,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "raw": {
+        "compact_result": "success",
+        "session_id": "90c5cde6-91d8-4ec6-9b82-10679ed233aa",
+        "status": null,
+        "subtype": "status",
+        "type": "system",
+        "uuid": "3f9a0702-e100-4ac8-9855-b2d16c24e98d",
+      },
+      "type": "system.status",
+    },
+    "harness": "claude-code",
+    "id": "run:14",
+    "kind": "other",
+    "rawLine": 10,
+    "runId": "run",
+    "seq": 14,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "raw": {
+        "compact_metadata": {
+          "cumulative_dropped_tokens": 4114,
+          "duration_ms": 5939,
+          "post_tokens": 1022,
+          "pre_tokens": 5136,
+          "trigger": "manual",
+        },
+        "logical_parent_uuid": "0a2ddfc9-d187-4a57-a8bb-c8727d31966d",
+        "session_id": "90c5cde6-91d8-4ec6-9b82-10679ed233aa",
+        "subtype": "compact_boundary",
+        "type": "system",
+        "uuid": "5a89cb57-246b-4bfe-b0bc-fbae3466ca99",
+      },
+      "type": "system.compact_boundary",
+    },
+    "harness": "claude-code",
+    "id": "run:15",
+    "kind": "other",
+    "rawLine": 12,
+    "runId": "run",
+    "seq": 15,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "role": "user",
+      "text": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. The person asked for /context and /proj-hello.",
+    },
+    "harness": "claude-code",
+    "id": "run:16",
+    "kind": "message",
+    "rawLine": 13,
+    "runId": "run",
+    "seq": 16,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": true,
+    },
+    "harness": "claude-code",
+    "id": "run:17",
+    "kind": "activity",
+    "rawLine": 13,
+    "runId": "run",
+    "seq": 17,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "role": "user",
+      "sent": true,
+      "text": "<local-command-stdout>Compacted </local-command-stdout>",
+    },
+    "harness": "claude-code",
+    "id": "run:18",
+    "kind": "message",
+    "rawLine": 14,
+    "runId": "run",
+    "seq": 18,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.0007861049999999999,
+      "inputTokens": 0,
+      "outputTokens": 0,
+    },
+    "harness": "claude-code",
+    "id": "run:19",
+    "kind": "usage",
+    "rawLine": 15,
+    "runId": "run",
+    "seq": 19,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "durationMs": 5957,
+      "numTurns": 0,
+      "resultText": "",
+      "status": "completed",
+    },
+    "harness": "claude-code",
+    "id": "run:20",
+    "kind": "turn.ended",
+    "rawLine": 15,
+    "runId": "run",
+    "seq": 20,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+  {
+    "data": {
+      "busy": false,
+    },
+    "harness": "claude-code",
+    "id": "run:21",
+    "kind": "activity",
+    "rawLine": 15,
+    "runId": "run",
+    "seq": 21,
+    "ts": "2026-01-01T00:00:00.000Z",
+  },
+]
+`;
+
 exports[`fixture mcp-ask > matches the golden snapshot 1`] = `
 [
   {

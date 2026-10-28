@@ -17,6 +17,7 @@ import { useEventLog } from '@/hooks/use-agents';
 import { useApprovals } from '@/hooks/use-approvals';
 import { useChanges } from '@/hooks/use-changes';
 import { AgentChanges } from '@/components/changes/agent-changes';
+import { ArtifactDetail, ArtifactTabLabel } from '@/components/artifacts/artifact-detail';
 import { TabStrip } from '@/components/changes/tab-strip';
 import { groupApprovals } from '@/lib/approvals';
 import { useNow } from '@/hooks/use-now';
@@ -24,6 +25,7 @@ import { useOpenSession } from '@/hooks/use-open-session';
 import { useMaxAgents } from '@/hooks/use-settings';
 import { byAttention, elapsed, STATUS_LABEL, STATUS_ORDER, type AgentStatus, type AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
+import { refOfKey } from '@/lib/artifacts';
 import { buildChat } from '@/lib/chat';
 import { unechoed, type SentMessage } from '@/lib/session-state';
 import { uploadFile } from '@/lib/uploads';
@@ -71,12 +73,13 @@ function BranchLine({ agent: a }: { agent: AgentSummary }) {
 
 const iconButton = 'text-mu2 hover:bg-hov hover:text-fg flex size-8 shrink-0 items-center justify-center rounded-full';
 
-/** The right-hand card of an orchestrator round-up: all its agents, and a tab per agent opened. */
+/** The right-hand card of an orchestrator round-up: all its agents, and a tab per agent or artifact opened. */
 export function AgentPane({ agents, docked }: { agents: AgentSummary[]; docked?: boolean }) {
   const pane = useAgentPane()!;
   const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
-  const tabs = pane.tabs.filter((id) => byId.has(id));
+  const tabs = pane.tabs.filter((id) => byId.has(id) || (!!pane.roundUpId && !!refOfKey(id)));
   const active = pane.active ? byId.get(pane.active) : undefined;
+  const artifact = !active && pane.active && pane.roundUpId ? refOfKey(pane.active) : undefined;
 
   return (
     <section
@@ -91,16 +94,17 @@ export function AgentPane({ agents, docked }: { agents: AgentSummary[]; docked?:
         <button
           type="button"
           role="tab"
-          aria-selected={!active}
+          aria-selected={!active && !artifact}
           onClick={pane.showList}
-          className={cn('flex h-[34px] shrink-0 items-center gap-[7px] rounded-full px-3 text-[13px]', active ? 'text-mu hover:text-fg' : 'bg-raise text-fg')}
+          className={cn('flex h-[34px] shrink-0 items-center gap-[7px] rounded-full px-3 text-[13px]', active || artifact ? 'text-mu hover:text-fg' : 'bg-raise text-fg')}
         >
           <ListIcon className="size-3.5" />
           All
         </button>
         {tabs.map((id) => {
-          const a = byId.get(id)!;
-          const on = id === active?.id;
+          const a = byId.get(id);
+          const on = id === pane.active;
+          const label = a ? a.title : <ArtifactTabLabel roundUpId={pane.roundUpId!} artifact={refOfKey(id)!} agents={byId} />;
           return (
             <span key={id} className={cn('flex shrink-0 items-center rounded-full', on && 'bg-raise')}>
               <button
@@ -110,13 +114,13 @@ export function AgentPane({ agents, docked }: { agents: AgentSummary[]; docked?:
                 onClick={() => pane.openAgent(id)}
                 className={cn('flex h-[34px] items-center gap-2 pr-1 pl-3 text-[13px] whitespace-nowrap', on ? 'text-fg' : 'text-mu hover:text-fg')}
               >
-                <StatusDot status={a.status} />
-                <span className="max-w-40 truncate">{a.title}</span>
+                {a && <StatusDot status={a.status} />}
+                <span className="flex max-w-40 items-center gap-2 truncate">{label}</span>
               </button>
               <button
                 type="button"
                 onClick={() => pane.closeTab(id)}
-                aria-label={`Close ${a.title}`}
+                aria-label={`Close ${a ? a.title : 'tab'}`}
                 className="text-mu2 hover:text-fg mr-[5px] flex size-[22px] items-center justify-center rounded-full"
               >
                 <XIcon className="size-[11px]" strokeWidth={2.4} />
@@ -129,7 +133,15 @@ export function AgentPane({ agents, docked }: { agents: AgentSummary[]; docked?:
           <XIcon className="size-[15px]" />
         </button>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col">{active ? <AgentView key={active.id} agent={active} /> : <AgentList agents={agents} />}</div>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {active ? (
+          <AgentView key={active.id} agent={active} />
+        ) : artifact ? (
+          <ArtifactDetail key={pane.active} roundUpId={pane.roundUpId!} artifact={artifact} />
+        ) : (
+          <AgentList agents={agents} />
+        )}
+      </div>
     </section>
   );
 }
@@ -509,7 +521,7 @@ function AgentTimeline({
                     </p>
                   );
                 case 'question':
-                  return <QuestionCard key={key} questions={p.questions} state={p.state} answers={p.answers} sessionId={a.id} requestId={p.requestId} />;
+                  return <QuestionCard key={key} questions={p.questions} state={p.state} answers={p.answers} sessionId={a.id} requestId={p.requestId} who={a.title} />;
                 case 'limit':
                   return <LimitLine key={key} limit={p.limit} message={p.message} ts={p.ts} />;
                 case 'resumed':

@@ -1,14 +1,58 @@
 import { describe, expect, it } from 'vitest';
-import type { Question } from '@kelpie/protocol';
+import { relayQuestion, unrelayed, type Question } from '@kelpie/protocol';
 import { clearDrafts, draftKey, getDrafts, setDrafts, subscribeDrafts } from '../src/lib/question-drafts.js';
-import { answered, answersOf, canSubmit, chosen, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, questionsLine } from '../src/lib/questions.js';
+import { answered, answerOf, answersOf, canSubmit, chosen, decide, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, questionsLine, relayedFrom, sendersOf, YOU_DECIDE } from '../src/lib/questions.js';
 
 const color: Question = { question: 'Which color?', header: 'Color', options: [{ label: 'Red' }, { label: 'Blue' }] };
 const extras: Question = { question: 'Which extras?', options: [{ label: 'Tests' }, { label: 'Docs' }, { label: 'Lint' }], multiSelect: true };
 const name: Question = { question: 'Name?', kind: 'text', options: [] };
 const slides: Question = { question: 'Slides?', kind: 'number', min: 3, max: 20, defaultValue: 8, unit: 'slides', options: [] };
 
+describe('relayed questions', () => {
+  const titles = ['API', 'Checkout API', 'Docs'];
+
+  it('names the agent a question was passed on from, by its exact title, longest first', () => {
+    expect(relayedFrom([{ question: 'Checkout API asks: Where should guest orders live?' }], titles)).toBe('Checkout API');
+    expect(relayedFrom([{ question: 'checkout api asks: Which table?' }], titles)).toBe('Checkout API');
+    expect(relayedFrom([{ question: 'API asks: Which version?' }], titles)).toBe('API');
+    expect(relayedFrom([{ question: relayQuestion('Docs', 'Which tone?') }], titles)).toBe('Docs');
+  });
+
+  it("names each question's own agent, not only the first's", () => {
+    const qs = [{ question: 'Which branch?' }, { question: 'Docs asks: Which tone?' }, { question: 'Checkout API asks: Which table?' }, { question: 'Docs asks: How long?' }];
+    expect(sendersOf(qs, titles)).toEqual([undefined, 'Docs', 'Checkout API', 'Docs']);
+    expect(relayedFrom(qs, titles)).toBe('Docs and Checkout API');
+  });
+
+  it('leaves Kelpie’s own questions alone', () => {
+    expect(relayedFrom([{ question: 'Which branch should agents start from?' }], titles)).toBeUndefined();
+    expect(relayedFrom([{ question: 'Billing asks: Which plan?' }], titles)).toBeUndefined();
+    expect(relayedFrom([], titles)).toBeUndefined();
+  });
+
+  it('shows the question without the agent it came from', () => {
+    expect(unrelayed('Checkout API asks: Where should guest orders live?', 'Checkout API')).toBe('Where should guest orders live?');
+    expect(unrelayed('Where should guest orders live?', 'Checkout API')).toBe('Where should guest orders live?');
+    expect(unrelayed('Docs asks: Which tone?', undefined)).toBe('Docs asks: Which tone?');
+  });
+});
+
 describe('answering questions', () => {
+  it('leaves the call to the asker with "You decide", in place of anything picked', () => {
+    const d = decide(pick(extras, emptyDraft(), 1));
+    expect(answerOf(extras, d)).toEqual(['You decide']);
+    expect(answerOf(color, decide(emptyDraft()))).toEqual(['You decide']);
+    // Picking anything after is the person's own call.
+    expect(pick(color, decide(emptyDraft()), 0)).toEqual({ picked: [0], other: false, text: '' });
+  });
+
+  it('takes "You decide" written as their own answer as their words, not the button', () => {
+    const d = { ...pick(color, emptyDraft(), otherIndex(color)), text: YOU_DECIDE };
+    expect(d.decided).toBeUndefined();
+    expect(isPicked(color, d, otherIndex(color))).toBe(true);
+    expect(answerOf(color, d)).toEqual([YOU_DECIDE]);
+  });
+
   it('picks one option at a time, or "Other" in its place', () => {
     let d = pick(color, emptyDraft(), 0);
     expect(d.picked).toEqual([0]);

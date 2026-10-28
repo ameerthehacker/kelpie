@@ -17,13 +17,17 @@ const query = (round: number | undefined, patches: boolean) => {
 /**
  * What a round-up's feature branch, or one agent's branch, changed. Without patches it is just the
  * file list (for a tab's count). Kept current by the stream's `changes` events, and polled while
- * an agent is still at work on files it has not committed.
+ * an agent is still at work on files it has not committed. `enabled: false` only reads what is
+ * already fetched: for one of many rows, until the person opens it.
  */
-export function useChanges(sessionId: string | undefined, { round, patches = true, working = false }: { round?: number; patches?: boolean; working?: boolean } = {}) {
+export function useChanges(
+  sessionId: string | undefined,
+  { round, patches = true, working = false, enabled = true }: { round?: number; patches?: boolean; working?: boolean; enabled?: boolean } = {},
+) {
   return useQuery({
     queryKey: changesKey(sessionId, round, patches),
     queryFn: () => api<Changes>('GET', `/api/sessions/${sessionId}/changes${query(round, patches)}`),
-    enabled: !!sessionId,
+    enabled: !!sessionId && enabled,
     refetchInterval: working ? 15_000 : false,
     placeholderData: (prev) => (prev?.sessionId === sessionId ? prev : undefined),
   });

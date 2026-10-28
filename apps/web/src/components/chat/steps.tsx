@@ -2,7 +2,8 @@ import {
   BotIcon,
   EllipsisIcon,
   EyeIcon,
-  GitForkIcon,
+  GitBranchIcon,
+  GitMergeIcon,
   GlobeIcon,
   ListChecksIcon,
   type LucideIcon,
@@ -29,15 +30,17 @@ const ICON: Record<StepKind, LucideIcon> = {
   run: TerminalIcon,
   web: GlobeIcon,
   agent: BotIcon,
-  spawn: GitForkIcon,
-  check: ListChecksIcon,
+  spawn: GitBranchIcon,
+  merge: GitMergeIcon,
+  check: EyeIcon,
+  tasks: ListChecksIcon,
   message: MessageSquareIcon,
   pause: PauseIcon,
   think: EllipsisIcon,
   tool: WrenchIcon,
 };
 
-// The design's tint per kind of activity.
+// The design's tint per kind of activity: reading and looking quiet, agents started in the brand's green.
 const TINT: Record<StepKind, string> = {
   read: 'text-mu',
   search: 'text-mu',
@@ -46,7 +49,9 @@ const TINT: Record<StepKind, string> = {
   web: 'text-mu',
   agent: 'text-acc',
   spawn: 'text-acc',
-  check: 'text-acc',
+  merge: 'text-done',
+  check: 'text-mu',
+  tasks: 'text-fg2',
   message: 'text-acc',
   pause: 'text-wait',
   think: 'text-mu2',
@@ -142,8 +147,8 @@ function Block({ label, text, tone, language }: { label: string; text: string; t
 export function StepIcon({ kind, tone }: { kind: StepKind; tone?: 'running' | 'error' }) {
   const Icon = ICON[kind];
   return (
-    <span aria-hidden="true" className={cn('bg-chip flex size-[26px] items-center justify-center rounded-full', tone === 'error' ? 'text-fail' : TINT[kind], tone === 'running' && 'motion-safe:animate-k-pulse')}>
-      <Icon className="size-[13px]" strokeWidth={2.2} />
+    <span aria-hidden="true" className={cn('bg-chip flex size-6 shrink-0 items-center justify-center rounded-full', tone === 'error' ? 'text-fail' : TINT[kind], tone === 'running' && 'motion-safe:animate-k-pulse')}>
+      <Icon className="size-3" strokeWidth={2.2} />
     </span>
   );
 }
@@ -216,7 +221,7 @@ export function StepRow({ tool, nameOf }: { tool: ToolView; nameOf?: (id: string
   const output = diff && tool.state === 'done' ? undefined : tool.output;
   const details = !!(diff || input || output || tool.steps.length);
   return (
-    <Collapsible className="group/step grid grid-cols-[26px_1fr] gap-3">
+    <Collapsible className="group/step grid grid-cols-[24px_1fr] gap-3">
       <StepIcon kind={step.kind} tone={tool.state === 'running' ? 'running' : tool.state === 'error' ? 'error' : undefined} />
       <div className="flex min-w-0 flex-col gap-[5px] pt-0.5">
         <CollapsibleTrigger disabled={!details} className="hover:text-strong text-left text-sm leading-[1.45] disabled:cursor-default disabled:hover:text-inherit">
@@ -239,14 +244,22 @@ export function StepRow({ tool, nameOf }: { tool: ToolView; nameOf?: (id: string
 export function ShowCommandsToggle() {
   const [on, toggle] = useShowCommands();
   return (
-    <button type="button" onClick={toggle} aria-pressed={on} className="bg-chip text-mu hover:text-fg h-[26px] shrink-0 rounded-full px-2.5 text-xs">
+    <button type="button" onClick={toggle} aria-pressed={on} className="bg-chip text-mu hover:text-fg h-6 shrink-0 rounded-full px-2.5 text-[11px]">
       {on ? 'Hide commands' : 'Show commands'}
     </button>
   );
 }
 
-/** A run of tool calls, headed "Kelpie · N steps" as in the design. */
+/** Steps a long run shows before the earlier ones fold away. */
+const STEPS_SHOWN = 8;
+
+/**
+ * A run of tool calls, headed "Kelpie · N steps" as in the design, with the switch for every
+ * step's raw command. A long run shows its latest steps; the earlier ones are a click away.
+ */
 export function StepGroup({ tools, actor, nameOf }: { tools: ToolView[]; actor: string; nameOf?: (id: string) => string | undefined }) {
+  const [all, setAll] = useState(false);
+  const hidden = all ? 0 : Math.max(0, tools.length - STEPS_SHOWN);
   return (
     <div className="not-prose flex flex-col gap-3.5">
       <div className="text-mu2 flex items-center gap-2 text-xs">
@@ -256,7 +269,12 @@ export function StepGroup({ tools, actor, nameOf }: { tools: ToolView[]; actor: 
         <span className="bg-ln h-px flex-1" />
         <ShowCommandsToggle />
       </div>
-      {tools.map((t) => (
+      {hidden > 0 && (
+        <button type="button" onClick={() => setAll(true)} className="text-mu hover:text-fg self-start pl-9 text-xs underline-offset-2 hover:underline">
+          Show {hidden} earlier step{hidden === 1 ? '' : 's'}
+        </button>
+      )}
+      {tools.slice(hidden).map((t) => (
         <StepRow key={t.callId} tool={t} nameOf={nameOf} />
       ))}
     </div>

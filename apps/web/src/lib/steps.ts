@@ -3,7 +3,7 @@ import { firstLine } from '@kelpie/protocol';
 import type { ToolView } from './chat.js';
 
 /** What a step was, for its icon and tint (the design's activity kinds). */
-export type StepKind = 'read' | 'search' | 'edit' | 'run' | 'web' | 'agent' | 'spawn' | 'check' | 'message' | 'pause' | 'think' | 'tool';
+export type StepKind = 'read' | 'search' | 'edit' | 'run' | 'web' | 'agent' | 'spawn' | 'merge' | 'check' | 'tasks' | 'message' | 'pause' | 'think' | 'tool';
 
 export interface Chip {
   text: string;
@@ -38,9 +38,11 @@ const host = (url: string) => {
 };
 
 /** Kelpie's own tools, by name, as the orchestrator uses them. `nameOf` turns an agent id into its title. */
-function kelpieStep(tool: ToolView, nameOf: (id: string) => string | undefined): Pick<Step, 'kind' | 'title'> | undefined {
+function kelpieStep(tool: ToolView, nameOf: (id: string) => string | undefined): (Pick<Step, 'kind' | 'title'> & { chips?: Chip[] }) | undefined {
   const agent = str(tool.input, 'agentId');
   const who = (agent && nameOf(agent)) ?? 'an agent';
+  const items = (tool.input as { items?: unknown } | undefined)?.items;
+  const tasks: Chip[] = Array.isArray(items) && items.length ? [{ text: `${items.length} task${items.length === 1 ? '' : 's'}`, tone: 'muted' }] : [];
   switch (tool.name.replace(/^mcp__kelpie__/, '')) {
     case 'list_agents':
       return { kind: 'check', title: 'Checked on the agents' };
@@ -52,6 +54,16 @@ function kelpieStep(tool: ToolView, nameOf: (id: string) => string | undefined):
       return { kind: 'pause', title: `Paused ${who}` };
     case 'spawn_agent':
       return { kind: 'spawn', title: `Started ${str(tool.input, 'title') ?? 'an agent'}` };
+    case 'muster_agents':
+      return { kind: 'merge', title: 'Mustered the agents’ branches' };
+    case 'create_card':
+      return { kind: 'tasks', title: `Split the work into a feature: ${quote(str(tool.input, 'title') ?? 'untitled')}`, chips: tasks };
+    case 'update_card':
+      return { kind: 'tasks', title: 'Updated the feature’s card', chips: tasks };
+    case 'workbench_read':
+      return { kind: 'read', title: 'Read the Workbench' };
+    case 'workbench_post':
+      return { kind: 'message', title: str(tool.input, 'to') ? `Left a note for ${str(tool.input, 'to')}` : 'Left a note on the Workbench' };
     default:
       return undefined;
   }
@@ -102,7 +114,10 @@ export function stepOf(tool: ToolView, nameOf: (id: string) => string | undefine
       break;
     case 'mcp': {
       const k = tool.name.startsWith('mcp__kelpie__') ? kelpieStep(tool, nameOf) : undefined;
-      if (k) ({ kind, title } = k);
+      if (k) {
+        ({ kind, title } = k);
+        chips.push(...(k.chips ?? []));
+      }
       else title = `Used ${tool.name.replace(/^mcp__/, '').replace(/__/g, '/')}`;
       raw = tool.name.replace(/^mcp__/, '').replace(/__/g, '/');
       break;

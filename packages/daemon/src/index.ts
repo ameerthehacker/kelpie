@@ -22,9 +22,10 @@ export {
 } from './sessions.js';
 export { createApp, localOnly, type AppOptions } from './server.js';
 export { canStart, checkHarnesses, claudeCodeStatus, installDirs, parseVersion, type CheckOptions, type HarnessStatus } from './harness-status.js';
-export { McpServers, askRule, blockedReason, fingerprint, mcpToolPrefix, RESERVED_MCP, type McpGrant, type McpScope, type McpServerInfo, type McpServerList, type McpServersOptions, type McpStatus } from './mcp-servers.js';
+export { McpServers, askRule, blockedReason, fingerprint, KNOWN_WRITES, mcpToolName, mcpToolPrefix, RESERVED_MCP, type McpGrant, type McpScope, type McpServerInfo, type McpServerList, type McpServersOptions, type McpStatus } from './mcp-servers.js';
 export { Orchestrator, ToolError, BaseFixedError, HALTED, capReason, capRefusal, limitNotice, ORCHESTRATOR_TOOLS, READ_ONLY_TOOLS, type AgentInfo, type AgentList, type OrchestratorOptions } from './orchestrator/orchestrator.js';
 export { Workbench, WorkbenchError, claimsOverlap, quoteNote, repoFromRemote, onBoard, NOTE_WINDOW_MS, PAIR_LIMIT, SENDER_LIMIT, WORKBENCH_TAG, type ToolCard } from './workbench.js';
+export { Artifacts, ArtifactError, titleOf as documentTitle } from './artifacts.js';
 export { Worktrees, GitError, runGit, slug, type Branch, type Git, type GitOptions, type LandResult, type WorktreesOptions, localBranch } from './worktrees.js';
 export { ReviewError } from './errors.js';
 export { Changes, NoSuchRound, excerpt, findLine, type View } from './review/changes.js';
@@ -39,3 +40,4 @@ export { Connections, ConnectError, type Connector, type ConnectionAccount, type
 export { GitHubConnector, githubEnv, type GitHubOptions, type RunGh } from './connectors/github.js';
 export { SavedSettings, SettingsError } from './settings.js';
 export { Titler, claudeTitles, conversationPart, sanitizeTitle, saysEnough, titlePrompt, TITLE_SYSTEM, REFRESH_AT, MAX_RUNNING, type Conversation, type Part, type TitleGenerator, type TitleInput, type Titled } from './titles.js';
+export { Suggestions, cliCommands, projectCommands, frontmatter, EXCLUDED_COMMANDS, MAX_FILE_MATCHES, type SuggestionsOptions } from './suggestions.js';

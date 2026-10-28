@@ -6,7 +6,8 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE, type SSEMessage } from 'hono/streaming';
 import { getMimeType } from 'hono/utils/mime';
-import { Answers, CardArchive, Effort, Mode, NotePost } from '@kelpie/protocol';
+import { Answers, ArtifactAccept, CardArchive, type ArtifactsChanged, Effort, Mode, NotePost } from '@kelpie/protocol';
+import { ArtifactError } from './artifacts.js';
 import { checkHarnesses, shared, type HarnessStatus } from './harness-status.js';
 import type { Connections } from './connectors/connector.js';
 import { connectionRoutes } from './connectors/routes.js';
@@ -19,6 +20,7 @@ import type { NewAnchor } from './review/reviews.js';
 import type { SessionManager } from './sessions.js';
 import { SettingsError } from './settings.js';
 import type { McpServers } from './mcp-servers.js';
+import { MAX_FILE_MATCHES, type Suggestions } from './suggestions.js';
 import { WorkbenchError } from './workbench.js';
 
 
@@ -45,6 +47,8 @@ export interface AppOptions {
   connections?: Connections;
   /** The person's own MCP servers, listed at `/api/mcp/servers`. */
   mcpServers?: Pick<McpServers, 'list' | 'refresh'>;
+  /** The composer's `/` commands and `@` files, at `/api/suggestions/*`. None without it. */
+  suggestions?: Pick<Suggestions, 'commands' | 'files'>;
 }
 
 /**
@@ -156,6 +160,7 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
         else if (u.type === 'usage') send({ event: 'usage', data: JSON.stringify(u.usage) });
         else if (u.type === 'review') send({ event: 'review', data: JSON.stringify({ roundUpId: u.roundUpId, state: u.state }) });
         else if (u.type === 'changes') send({ event: 'changes', data: JSON.stringify({ roundUpId: u.roundUpId, sessionId: u.sessionId }) });
+        else if (u.type === 'artifacts') send({ event: 'artifacts', data: JSON.stringify({ roundUpId: u.roundUpId, path: u.path } satisfies ArtifactsChanged) });
         else if (u.type === 'settings') send({ event: 'settings', data: JSON.stringify(u.settings) });
         else if (u.type === 'card') send({ event: 'card', data: JSON.stringify(u.card) });
         else if (u.type === 'card-removed') send({ event: 'card-removed', data: JSON.stringify({ id: u.id }) });
@@ -201,6 +206,26 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     if (!repo) return c.json({ error: "repo must be Kelpie's repo or a round-up's" }, 400);
     const list = opts.mcpServers ? await opts.mcpServers.refresh(repo) : { repo, servers: [] };
     return c.json({ ...list, repos: mcpRepos() });
+  });
+
+  // What the composer suggests: slash commands the session's CLI runs, and the repo's files to
+  // mention. For a session's own directory (an agent's worktree), or Kelpie's repo before a round-up exists.
+  const suggestCwd = (c: Context): string | undefined => {
+    const id = c.req.query('session');
+    return id ? sessions.get(id)?.cwd : sessions.defaultCwd;
+  };
+  app.get('/api/suggestions/commands', async (c) => {
+    const cwd = suggestCwd(c);
+    if (!cwd) return c.json({ error: 'no such session' }, 404);
+    return c.json({ commands: opts.suggestions ? await opts.suggestions.commands(cwd) : [] });
+  });
+  app.get('/api/suggestions/files', async (c) => {
+    const cwd = suggestCwd(c);
+    if (!cwd) return c.json({ error: 'no such session' }, 404);
+    const limit = Number(c.req.query('limit') ?? MAX_FILE_MATCHES);
+    if (!Number.isInteger(limit) || limit < 1) return c.json({ error: 'limit must be a positive whole number' }, 400);
+    const q = (c.req.query('q') ?? '').slice(0, 200);
+    return c.json(opts.suggestions ? await opts.suggestions.files(cwd, q, limit) : { files: [], total: 0 });
   });
 
   // ── the Workbench ───────────────────────────────────────────────────
@@ -648,6 +673,49 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     } catch (err) {
       return reviewError(c, err);
     }
+  });
+
+  // ── artifacts ───────────────────────────────────────────────────────
+  // What the round-up's agents produced for the person (see artifacts.ts in @kelpie/protocol). An
+  // agent's id is taken as its round-up's.
+
+  const artifactsOf = (c: Context) => {
+    const id = roundUpOf(c);
+    const roundUp = id ? sessions.get(id) : undefined;
+    return roundUp && orch ? { roundUp, agents: sessions.children(roundUp.id), artifacts: orch.artifacts } : undefined;
+  };
+
+  app.get('/api/sessions/:id/artifacts', async (c) => {
+    const a = artifactsOf(c);
+    if (!a) return c.json({ error: 'no such session' }, 404);
+    return c.json(await a.artifacts.list(a.roundUp, a.agents));
+  });
+
+  app.get('/api/sessions/:id/artifacts/document', async (c) => {
+    const a = artifactsOf(c);
+    if (!a) return c.json({ error: 'no such session' }, 404);
+    const path = c.req.query('path');
+    if (!path || path.length > 4096) return c.json({ error: 'path is required' }, 400);
+    try {
+      return c.json(await a.artifacts.document(a.roundUp, a.agents, path));
+    } catch (err) {
+      if (err instanceof ArtifactError) return c.json({ error: err.message }, err.status);
+      throw err;
+    }
+  });
+
+  app.post('/api/sessions/:id/artifacts/accept', async (c) => {
+    const a = artifactsOf(c);
+    if (!a) return c.json({ error: 'no such session' }, 404);
+    const body = ArtifactAccept.safeParse(await jsonBody(c));
+    if (!body.success) return c.json({ error: 'key must be doc:<path> (with seen: the updatedAt you saw) or changes:<agentId>@<commit>' }, 400);
+    try {
+      await a.artifacts.accept(a.roundUp, a.agents, body.data.key, body.data.seen);
+    } catch (err) {
+      if (err instanceof ArtifactError) return c.json({ error: err.message }, err.status);
+      throw err;
+    }
+    return c.json(await a.artifacts.list(a.roundUp, a.agents));
   });
 
   if (opts.connections) app.route('/api/connections', connectionRoutes(opts.connections));

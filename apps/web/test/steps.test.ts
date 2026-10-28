@@ -52,6 +52,13 @@ describe('stepOf', () => {
     expect(stepOf(read, (id) => (id === 'a1' ? 'Checkout API' : undefined)).title).toBe('Read the report from Checkout API');
     expect(stepOf(read).title).toBe('Read the report from an agent');
     expect(stepOf(tool({ name: 'mcp__kelpie__list_agents', category: 'mcp' })).title).toBe('Checked on the agents');
+  });
+
+  it('says how Kelpie organised the work, with the tasks it made', () => {
+    const card = stepOf(tool({ name: 'mcp__kelpie__create_card', category: 'mcp', input: { title: 'Guest checkout', items: [{ key: 'a' }, { key: 'b' }] } }));
+    expect(card).toMatchObject({ kind: 'tasks', title: 'Split the work into a feature: “Guest checkout”', chips: [{ text: '2 tasks', tone: 'muted' }] });
+    expect(stepOf(tool({ name: 'mcp__kelpie__muster_agents', category: 'mcp' })).kind).toBe('merge');
+    expect(stepOf(tool({ name: 'mcp__kelpie__workbench_post', category: 'mcp', input: { to: 'Docs' } })).title).toBe('Left a note for Docs');
     expect(stepOf(tool({ name: 'mcp__github__get_issue', category: 'mcp' })).title).toBe('Used github/get_issue');
   });
 });

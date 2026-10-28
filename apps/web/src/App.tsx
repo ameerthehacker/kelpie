@@ -11,6 +11,7 @@ import { ConversationContent, ConversationScrollButton } from '@/components/ai-e
 import { AssistantParts } from '@/components/chat/assistant-part';
 import { ApprovalTray } from '@/components/approvals/approval-tray';
 import { ApprovalsPage } from '@/components/approvals/approvals-page';
+import { ArtifactsTab } from '@/components/artifacts/artifacts-tab';
 import { ChangesTab } from '@/components/changes/changes-tab';
 import { FullScreen } from '@/components/changes/full-screen';
 import { TabStrip } from '@/components/changes/tab-strip';
@@ -32,6 +33,7 @@ import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useAgents } from '@/hooks/use-agents';
 import { useApprovals } from '@/hooks/use-approvals';
+import { useArtifacts } from '@/hooks/use-artifacts';
 import { useAttention } from '@/hooks/use-attention';
 import { useBranches } from '@/hooks/use-branches';
 import { useChanges } from '@/hooks/use-changes';
@@ -40,11 +42,14 @@ import { useHarnesses } from '@/hooks/use-harnesses';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useNow } from '@/hooks/use-now';
 import { useRoundUps } from '@/hooks/use-round-ups';
+import { useWorkbench } from '@/hooks/use-workbench';
 import { useSession } from '@/hooks/use-session';
 import type { AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
+import { artifactCount, pullRequestsOf } from '@/lib/artifacts';
 import { isRequestKind } from '@/lib/attention';
 import { effortPatch } from '@/lib/effort';
+import { chatProgress } from '@/lib/progress';
 import { RoundUpTitle } from '@/components/shell/round-up-title';
 import { ROUND_UP_ROUTE, roundUpPath, roundUpSummary, shortPath, titleOf, type RoundUp } from '@/lib/round-ups';
 import { WORKBENCH_ROUTE } from '@/lib/workbench';
@@ -116,8 +121,8 @@ function TitleBlock({
 }
 
 /**
- * An orchestrator round-up's two views: the conversation, and the feature branch's changes under
- * review. Pinned to the top as either scrolls, with the round-up's name once its title is gone.
+ * An orchestrator round-up's views: the conversation, the feature branch's changes under review,
+ * and what its agents produced (documents, pull requests). Pinned to the top as either scrolls, with the round-up's name once its title is gone.
  */
 function RoundUpTabs({
   roundUpId,
@@ -136,6 +141,7 @@ function RoundUpTabs({
   wide?: boolean;
 }) {
   const files = useChanges(roundUpId, { patches: false }).data;
+  const artifacts = artifactCount(useArtifacts(roundUpId).data?.documents, pullRequestsOf(useWorkbench().cards, roundUpId));
   return (
     <StickyHead className="-mt-3">
       <TabStrip
@@ -144,6 +150,7 @@ function RoundUpTabs({
         tabs={[
           { id: 'conversation', label: 'Conversation' },
           { id: 'changes', label: 'Changes', ...(files?.state === 'ready' ? { count: files.stats.files } : {}) },
+          { id: 'artifacts', label: 'Artifacts', ...(artifacts ? { count: artifacts } : {}) },
         ]}
         value={value}
         onChange={onChange}
@@ -209,6 +216,8 @@ export function App() {
   // opened directly is not known to be one until its own fetch answers.
   const agents = useAgents(current?.role === 'orchestrator' ? roundUpId : undefined);
   const last = items.at(-1);
+  // Where the Progress card sits: in one reply only, whatever the agents report later.
+  const progress = useMemo(() => chatProgress(items), [items]);
   // Steps on a sub-agent's own page are its own; everywhere else they are Kelpie's.
   const actor = current?.role === 'agent' ? titleOf(current) : 'Kelpie';
   const model = roundUpId ? (current?.model ?? '') : draftModel;
@@ -226,6 +235,7 @@ export function App() {
   // The Changes tab (and full screen) are an orchestrator's: its feature branch, under review.
   const reviewable = !!roundUpId && current?.role === 'orchestrator';
   const onChanges = reviewable && nav.tab === 'changes';
+  const onArtifacts = reviewable && nav.tab === 'artifacts';
   // The big title, for the tabs to show it small once it has scrolled away.
   const [titleEl, setTitleEl] = useState<HTMLHeadingElement | null>(null);
   const tabs = reviewable ? { roundUpId, title: titleOf(current), titleEl, value: nav.tab, onChange: nav.setTab } : null;
@@ -307,7 +317,7 @@ export function App() {
   return (
     <TooltipProvider>
       {/* Keyed: each round-up opens with its pane closed and no tabs. */}
-      <AgentPaneProvider key={roundUpId ?? 'new'} agents={agents ?? NO_AGENTS}>
+      <AgentPaneProvider key={roundUpId ?? 'new'} roundUpId={reviewable ? roundUpId : undefined} agents={agents ?? NO_AGENTS}>
         <div className="bg-canvas flex h-dvh gap-2.5 p-2.5 max-sm:p-0">
           {!isMobile && navOpen && sidebar()}
           {isMobile && (
@@ -359,6 +369,20 @@ export function App() {
                     {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
                   </div>
                 </>
+              ) : onArtifacts ? (
+                <>
+                  <div className="min-h-0 flex-1 scroll-pt-12 overflow-y-auto">
+                    <div className="mx-auto flex w-full max-w-[760px] flex-col gap-7 px-7 pt-1 pb-8 max-sm:px-4">
+                      {current && <TitleBlock roundUp={current} agents={agents ?? NO_AGENTS} titleRef={setTitleEl} onRename={renameQuietly} />}
+                      {tabs && <RoundUpTabs {...tabs} />}
+                      <ArtifactsTab roundUpId={roundUpId} />
+                    </div>
+                  </div>
+                  <div className="mx-auto w-full max-w-[760px] px-7 max-sm:px-3">
+                    <ApprovalTray approvals={approvals} roundUpId={roundUpId} docked />
+                    {problem && <p className="text-fail mb-2 text-sm">{problem}</p>}
+                  </div>
+                </>
               ) : onWorkbench ? (
                 <WorkbenchPage cardId={linkedCard} />
               ) : onSettings ? (
@@ -381,7 +405,13 @@ export function App() {
                           </div>
                         ) : (
                           <div key={item.id} className="flex min-w-0 flex-col gap-3.5">
-                            <AssistantParts parts={item.parts} streaming={busy && item === last} actor={actor} sessionId={roundUpId} />
+                            <AssistantParts
+                              parts={item.parts}
+                              streaming={busy && item === last}
+                              actor={actor}
+                              sessionId={roundUpId}
+                              progress={item.id === progress.anchor ? progress.updates : undefined}
+                            />
                           </div>
                         ),
                       )}
@@ -419,6 +449,9 @@ export function App() {
                       mode={mode}
                       modes={current?.role === 'agent' ? [] : modes}
                       onMode={changeMode}
+                      // `/` and `@` offer what this session can be sent; `@` its round-up's agents.
+                      sessionId={roundUpId}
+                      mentionRoundUpId={current?.role === 'agent' ? current.parentId : roundUpId}
                     />
                   </div>
                 </>
