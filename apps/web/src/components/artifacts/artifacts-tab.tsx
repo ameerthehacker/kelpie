@@ -5,11 +5,12 @@ import { useAgentPane, useArtifactOpen, useOpenArtifact } from '@/components/age
 import { Totals } from '@/components/changes/changes-tab';
 import { quietButton } from '@/components/changes/thread';
 import { HarnessMark } from '@/components/harness-mark';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { useArtifacts } from '@/hooks/use-artifacts';
 import { useChanges } from '@/hooks/use-changes';
 import { useCardActions, useWorkbench } from '@/hooks/use-workbench';
 import { approveTurn, linkLabel, prSummary, pullRequestsOf, type PullRequest } from '@/lib/artifacts';
-import { filesLabel } from '@/lib/changes';
+import { filesLabel, vscodeUrl } from '@/lib/changes';
 import { pillOf } from '@/lib/workbench';
 import { cn } from '@/lib/utils';
 import { ArtifactIcon, ReviewPill } from './artifact-detail';
@@ -23,9 +24,7 @@ const card = 'bg-surf border-ln rounded-xl border';
  * requests on its Workbench cards. A document opens in the side panel.
  */
 export function ArtifactsTab({ roundUpId }: { roundUpId: string }) {
-  const agents = useAgentPane()?.agents;
-  const working = !!agents?.some((a) => a.status === 'working');
-  const artifacts = useArtifacts(roundUpId, { working });
+  const artifacts = useArtifacts(roundUpId);
   const prs = pullRequestsOf(useWorkbench().cards, roundUpId);
   const documents = artifacts.data?.documents ?? [];
 
@@ -104,7 +103,10 @@ function PullRequests({ prs }: { prs: PullRequest[] }) {
   );
 }
 
-/** One deliverable: where it stands, whose it is and what it changed; opened, who reviews it and what the person can do. */
+/**
+ * One deliverable: where it stands, whose it is and what it changed; opened, who reviews it and
+ * what the person can do. Its diff is only fetched once it is opened: a round-up may have hundreds.
+ */
 function PullRequestRow({ pr }: { pr: PullRequest }) {
   const { item, card: c } = pr;
   const [open, setOpen] = useState(false);
@@ -113,7 +115,8 @@ function PullRequestRow({ pr }: { pr: PullRequest }) {
   const { say } = useCardActions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
-  const changes = useChanges(item.agentId, { patches: false }).data;
+  const changes = useChanges(item.agentId, { patches: false, enabled: open }).data;
+  const code = vscodeUrl(changes?.checkoutPath);
   const stats = changes?.state === 'ready' ? changes.stats : undefined;
   const status = pillOf(item.status);
   const where = [c.repo, item.branch].filter(Boolean).join(' › ');
@@ -133,34 +136,34 @@ function PullRequestRow({ pr }: { pr: PullRequest }) {
   };
 
   return (
-    <li className={cn(card, 'overflow-hidden')}>
-      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className={cn('flex w-full items-center gap-3 px-3.5 py-3 text-left', open ? 'bg-raise' : 'hover:bg-hov')}>
-        <span className="flex min-w-0 flex-1 flex-col gap-1">
-          <span className="flex min-w-0 items-center gap-2">
-            <span className={cn('inline-flex h-5 shrink-0 items-center rounded-full px-2 text-[11px] font-medium', status.className)}>{status.label}</span>
-            <span className="text-fg truncate text-sm font-medium">{item.title}</span>
-            {item.ref && <span className="text-mu2 shrink-0 font-mono text-xs">{item.ref}</span>}
+    <Collapsible asChild open={open} onOpenChange={setOpen}>
+      <li className={cn(card, 'overflow-hidden')}>
+        <CollapsibleTrigger className={cn('flex w-full items-center gap-3 px-3.5 py-3 text-left', open ? 'bg-raise' : 'hover:bg-hov')}>
+          <span className="flex min-w-0 flex-1 flex-col gap-1">
+            <span className="flex min-w-0 items-center gap-2">
+              <span className={cn('inline-flex h-5 shrink-0 items-center rounded-full px-2 text-[11px] font-medium', status.className)}>{status.label}</span>
+              <span className="text-fg truncate text-sm font-medium">{item.title}</span>
+              {item.ref && <span className="text-mu2 shrink-0 font-mono text-xs">{item.ref}</span>}
+            </span>
+            <span className="text-mu flex min-w-0 items-center gap-1.5 text-xs">
+              {item.harness && <HarnessMark harness={item.harness} className="size-4" />}
+              {item.agentTitle && <span className="shrink-0">{item.agentTitle}</span>}
+              {where && (
+                <>
+                  {item.agentTitle && <span aria-hidden="true">·</span>}
+                  <span className="truncate font-mono text-[11px]">{where}</span>
+                </>
+              )}
+              {stats && (
+                <span className="shrink-0">
+                  · <Totals additions={stats.additions} deletions={stats.deletions} className="text-[11px]" /> · {filesLabel(stats.files)}
+                </span>
+              )}
+            </span>
           </span>
-          <span className="text-mu flex min-w-0 items-center gap-1.5 text-xs">
-            {item.harness && <HarnessMark harness={item.harness} className="size-4" />}
-            {item.agentTitle && <span className="shrink-0">{item.agentTitle}</span>}
-            {where && (
-              <>
-                {item.agentTitle && <span aria-hidden="true">·</span>}
-                <span className="truncate font-mono text-[11px]">{where}</span>
-              </>
-            )}
-            {stats && (
-              <span className="shrink-0">
-                · <Totals additions={stats.additions} deletions={stats.deletions} className="text-[11px]" /> · {filesLabel(stats.files)}
-              </span>
-            )}
-          </span>
-        </span>
-        <ChevronDownIcon aria-hidden="true" className={cn('text-mu2 size-4 shrink-0 transition-transform', open && 'rotate-180')} />
-      </button>
-      {open && (
-        <div className="border-ln flex flex-col gap-3 border-t px-3.5 py-3">
+          <ChevronDownIcon aria-hidden="true" className={cn('text-mu2 size-4 shrink-0 transition-transform', open && 'rotate-180')} />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="border-ln flex flex-col gap-3 border-t px-3.5 py-3">
           {you && (
             <div className="flex flex-wrap gap-1.5">
               <span className="bg-chip text-fg2 inline-flex h-6 items-center gap-1.5 rounded-full pr-2.5 pl-1 text-xs">
@@ -191,8 +194,8 @@ function PullRequestRow({ pr }: { pr: PullRequest }) {
                 View changes
               </button>
             )}
-            {changes?.checkoutPath && (
-              <a href={`vscode://file/${changes.checkoutPath.replace(/^\/+/, '')}`} className="text-mu hover:text-fg inline-flex items-center gap-1 text-xs">
+            {code && (
+              <a href={code} className="text-mu hover:text-fg inline-flex items-center gap-1 text-xs">
                 <CodeXmlIcon className="size-3" />
                 Open in VS Code
               </a>
@@ -205,8 +208,8 @@ function PullRequestRow({ pr }: { pr: PullRequest }) {
             )}
           </div>
           {error && <p className="text-fail text-xs">{error}</p>}
-        </div>
-      )}
-    </li>
+        </CollapsibleContent>
+      </li>
+    </Collapsible>
   );
 }

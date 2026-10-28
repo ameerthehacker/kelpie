@@ -72,6 +72,9 @@ describe('small labels', () => {
   it('opens a file in VS Code only when the branch is checked out', () => {
     expect(vscodeUrl('/Users/me/wt/abc/', 'src/a.ts')).toBe('vscode://file/Users/me/wt/abc/src/a.ts');
     expect(vscodeUrl(undefined, 'src/a.ts')).toBeUndefined();
+    // The checkout itself, and a path with spaces, # and ? in it.
+    expect(vscodeUrl('/Users/me/wt/abc')).toBe('vscode://file/Users/me/wt/abc');
+    expect(vscodeUrl('/Users/me/My Notes', 'a #1?.md')).toBe('vscode://file/Users/me/My%20Notes/a%20%231%3F.md');
   });
 });
 
