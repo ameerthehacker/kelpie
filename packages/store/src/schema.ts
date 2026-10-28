@@ -44,6 +44,8 @@ export const sessions = sqliteTable('sessions', {
   baseCommit: text('base_commit'),
   /** A top-level round-up's mode, as the person picked it; its agents follow it. */
   mode: text('mode', { enum: ['auto', 'acceptEdits', 'plan'] }).notNull().default('auto'),
+  /** How much a top-level round-up's orchestrator does itself (a protocol `Delegation`). */
+  delegation: text('delegation', { enum: ['solo', 'balanced', 'delegate'] }).notNull().default('balanced'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });

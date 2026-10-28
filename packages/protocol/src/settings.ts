@@ -31,6 +31,16 @@ export const McpAllow = z
   .max(200, { error: 'mcpAllow can name at most 200 servers' })
   .transform((grants) => grants.filter((g, i) => grants.findIndex((o) => grantKey(o) === grantKey(g)) === i));
 
+/**
+ * How much a round-up's orchestrator does itself rather than hands to sub-agents: `solo` does the
+ * work itself, `balanced` delegates only big or parallel work, `delegate` only coordinates.
+ */
+export const DELEGATIONS = ['solo', 'balanced', 'delegate'] as const;
+export const Delegation = z.enum(DELEGATIONS, { error: `delegation must be one of ${DELEGATIONS.join(', ')}` });
+export type Delegation = (typeof DELEGATIONS)[number];
+/** The level a new round-up gets while the person has never chosen a default. */
+export const DEFAULT_DELEGATION: Delegation = 'balanced';
+
 export const Settings = z.object({
   /** Agents one round-up may have working at once. */
   maxAgents: MaxAgents,
@@ -43,12 +53,14 @@ export const Settings = z.object({
   useUserMcp: UseUserMcp,
   /** The servers agents get while `useUserMcp` is on: each by where it is configured and what it runs. */
   mcpAllow: McpAllow,
+  /** The delegation level a new round-up starts with; each round-up can change its own. */
+  delegation: Delegation,
 });
 export type Settings = z.infer<typeof Settings>;
 
 /** What `PUT /api/settings` takes: only the fields given change, and null puts a setting's default back. */
 export const SettingsPatch = z
-  .object({ maxAgents: MaxAgents.nullable(), autoResume: AutoResume.nullable(), useUserMcp: UseUserMcp.nullable(), mcpAllow: McpAllow.nullable() })
+  .object({ maxAgents: MaxAgents.nullable(), autoResume: AutoResume.nullable(), useUserMcp: UseUserMcp.nullable(), mcpAllow: McpAllow.nullable(), delegation: Delegation.nullable() })
   .partial()
   .strict();
 export type SettingsPatch = z.infer<typeof SettingsPatch>;
@@ -62,7 +74,7 @@ export interface SettingsWithLimits extends Settings {
 }
 
 /** Settings' defaults, for a setting never saved. */
-export const DEFAULT_SETTINGS: Settings = { maxAgents: MAX_AGENTS.default, autoResume: true, useUserMcp: false, mcpAllow: [] };
+export const DEFAULT_SETTINGS: Settings = { maxAgents: MAX_AGENTS.default, autoResume: true, useUserMcp: false, mcpAllow: [], delegation: DEFAULT_DELEGATION };
 
 /** A number clamped into the agent limit's range, rounded down; the default for anything else. */
 export const clampMaxAgents = (n: unknown): number =>

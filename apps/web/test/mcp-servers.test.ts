@@ -48,7 +48,7 @@ describe('MCP servers in Settings', () => {
   });
 
   it('shows a change to the switch or the list at once, and null as its default', () => {
-    const s: SettingsWithLimits = { maxAgents: 6, autoResume: false, useUserMcp: true, mcpAllow: [grant(servers[1]!)], limits: { maxAgents: { min: 1, max: 16, default: 5 } } };
+    const s: SettingsWithLimits = { maxAgents: 6, autoResume: false, useUserMcp: true, mcpAllow: [grant(servers[1]!)], delegation: 'balanced', limits: { maxAgents: { min: 1, max: 16, default: 5 } } };
     expect(withPatch(s, { useUserMcp: false })).toMatchObject({ useUserMcp: false, mcpAllow: [grant(servers[1]!)] });
     expect(withPatch(s, { mcpAllow: [] }).mcpAllow).toEqual([]);
     expect(withPatch(s, { useUserMcp: null, mcpAllow: null, maxAgents: null, autoResume: null })).toMatchObject({ useUserMcp: false, mcpAllow: [], maxAgents: 5, autoResume: true });
