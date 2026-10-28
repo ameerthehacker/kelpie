@@ -1,10 +1,12 @@
-import { FileDiffIcon, FileTextIcon } from 'lucide-react';
+import { FileTextIcon } from 'lucide-react';
 import { useMemo } from 'react';
 import type { AgentUpdate } from '@kelpie/protocol';
-import { useAgentPane } from '@/components/agents/pane-state';
+import { ArtifactIcon, ReviewPill } from '@/components/artifacts/artifact-detail';
+import { useAgentPane, useOpenArtifact } from '@/components/agents/pane-state';
 import { KelpieLogo } from '@/components/shell/brand';
-import { useChangesNav } from '@/hooks/use-changes-nav';
+import { useArtifacts } from '@/hooks/use-artifacts';
 import { useNow } from '@/hooks/use-now';
+import { paneKey } from '@/lib/artifacts';
 import { DELIVERABLE_STATE, PROGRESS_LABEL, PROGRESS_ORDER, progressOf, progressState, type Deliverable, type ProgressState, type Segment } from '@/lib/progress';
 import { chatWhen } from '@/lib/workbench';
 import { cn } from '@/lib/utils';
@@ -27,14 +29,15 @@ const SEGMENT: Record<ProgressState, string> = {
 /**
  * The round-up's agents in one card, kept up to date in place as they move (from their live
  * state, not the updates piled up in the chat): how many are done, a bar with a segment each,
- * what has finished and is ready for the person, and who is still at it. Nothing without agents.
- * `updates`: each agent's latest report, for what its work was.
+ * what has finished and is ready for the person (with the documents left for them), and who is
+ * still at it. Nothing without agents. `updates`: each agent's latest report, for what its work was.
  */
 export function ProgressCard({ updates }: { updates?: ReadonlyMap<string, AgentUpdate> }) {
   const pane = useAgentPane();
   const agents = pane?.agents;
   const now = useNow();
-  const p = useMemo(() => progressOf(agents ?? [], updates), [agents, updates]);
+  const artifacts = useArtifacts(pane?.roundUpId, { working: !!agents?.some((a) => a.status === 'working') }).data;
+  const p = useMemo(() => progressOf(agents ?? [], updates, artifacts), [agents, updates, artifacts]);
   const attention = useMemo(() => (agents ?? []).filter((a) => {
     const s = progressState(a);
     return s === 'needs-you' || s === 'failed';
@@ -87,7 +90,7 @@ function Ready({ ready, onMore }: { ready: Deliverable[]; onMore: () => void }) 
       <span className="text-mu2 text-xs">Ready for you · {ready.length}</span>
       <ul className="flex flex-col gap-1.5">
         {ready.slice(0, READY_SHOWN).map((d) => (
-          <ReadyRow key={d.agentId} item={d} />
+          <ReadyRow key={d.key} item={d} />
         ))}
       </ul>
       {more > 0 && (
@@ -99,27 +102,42 @@ function Ready({ ready, onMore }: { ready: Deliverable[]; onMore: () => void }) 
   );
 }
 
+const KIND: Record<Deliverable['kind'], string> = { changes: 'Code changes', report: 'Report', document: 'Document' };
+
+/** A row: an artifact opens in the side panel (selected while it shows there), a report opens its agent. */
 function ReadyRow({ item }: { item: Deliverable }) {
   const pane = useAgentPane();
-  const nav = useChangesNav();
-  const changes = item.kind === 'changes';
-  // Until artifacts have a panel of their own: a writer's changes full screen, a report in the agent's tab.
-  const open = () => (changes ? nav.openFull(item.agentId) : pane?.openAgent(item.agentId));
-  const Icon = changes ? FileDiffIcon : FileTextIcon;
+  const openArtifact = useOpenArtifact();
+  const { ref, agentId } = item;
+  const open = () => (ref ? openArtifact(ref) : agentId && pane?.openAgent(agentId));
+  const selected = !!ref && !!pane?.open && pane.active === paneKey(ref);
   return (
     <li>
-      <button type="button" onClick={open} className="bg-chip/60 hover:bg-chip flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left">
-        <span aria-hidden="true" className={cn('bg-surf flex size-7 shrink-0 items-center justify-center rounded-lg', changes ? 'text-run' : 'text-acc')}>
-          <Icon className="size-3.5" strokeWidth={2.2} />
-        </span>
+      <button
+        type="button"
+        onClick={open}
+        aria-current={selected || undefined}
+        className={cn('flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left', selected ? 'bg-raise' : 'bg-chip/60 hover:bg-chip')}
+      >
+        {ref ? (
+          <ArtifactIcon kind={ref.kind} className="bg-surf size-7" />
+        ) : (
+          <span aria-hidden="true" className="bg-surf text-acc flex size-7 shrink-0 items-center justify-center rounded-lg">
+            <FileTextIcon className="size-3.5" strokeWidth={2.2} />
+          </span>
+        )}
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="text-fg truncate text-[13px] font-medium">{item.title}</span>
           <span className="text-mu2 truncate text-xs">
-            {changes ? 'Code changes' : 'Report'}
+            {KIND[item.kind]}
             {item.detail && ` · ${item.detail}`}
           </span>
         </span>
-        <span className={cn('bg-chip shrink-0 rounded-full px-2 py-0.5 text-[11px]', item.state === 'review' ? 'text-acc' : 'text-mu')}>{DELIVERABLE_STATE[item.state]}</span>
+        {item.state === 'review' ? (
+          <ReviewPill accepted={false} />
+        ) : (
+          <span className="bg-chip text-mu shrink-0 rounded-full px-2 py-0.5 text-[11px]">{DELIVERABLE_STATE[item.state]}</span>
+        )}
       </button>
     </li>
   );

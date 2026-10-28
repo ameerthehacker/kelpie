@@ -3,8 +3,11 @@ import { Link } from 'react-router';
 import { workbenchPath, type WorkbenchAgentStatus, type WorkbenchItem } from '@kelpie/protocol';
 import { HarnessMark } from '@/components/harness-mark';
 import { TicketChips } from '@/components/shell/tickets';
+import { useArtifacts } from '@/hooks/use-artifacts';
+import { useChangesNav } from '@/hooks/use-changes-nav';
 import { useNow } from '@/hooks/use-now';
 import { useWorkbench } from '@/hooks/use-workbench';
+import { artifactCount, pullRequestsOf } from '@/lib/artifacts';
 import type { ProgressState } from '@/lib/progress';
 import { chatWhen, pillOf, STAGES, tally, topItems } from '@/lib/workbench';
 import { cn } from '@/lib/utils';
@@ -32,12 +35,15 @@ const markOf = (item: WorkbenchItem): ProgressState => (item.status === 'merged'
 /**
  * The feature Kelpie organised the work into, where it did (its `create_card` step), live from the
  * Workbench: its tickets and stage, a row per task with its agent and where its work stands, and
- * the way to the board. Nothing until the board has the card, or once it is gone.
+ * the way to the round-up's artifacts (counted as its Artifacts tab counts them) and to the board.
+ * Nothing until the board has the card, or once it is gone.
  */
 export function FeatureCard({ cardId }: { cardId: string }) {
   const { cards } = useWorkbench();
   const now = useNow();
+  const nav = useChangesNav();
   const card = cards?.find((c) => c.id === cardId);
+  const artifacts = artifactCount(useArtifacts(card?.roundUpId).data?.documents, card ? pullRequestsOf(cards, card.roundUpId) : []);
   if (!card) return null;
   const stage = STAGES.find((s) => s.stage === card.stage);
   const rest = tally(card.items, SHOWN);
@@ -64,9 +70,16 @@ export function FeatureCard({ cardId }: { cardId: string }) {
       {rest && card.items.length > SHOWN && <p className="text-mu2 text-xs">{rest}</p>}
       <footer className="text-mu2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
         <span>Organized by Kelpie from your message · {chatWhen(card.createdAt, now)}</span>
-        <Link to={workbenchPath(card.id)} className="text-fg2 hover:text-fg ml-auto font-medium">
-          Open in Workbench →
-        </Link>
+        <span className="ml-auto flex items-center gap-3">
+          {artifacts && (
+            <button type="button" onClick={() => nav.setTab('artifacts')} className="text-fg2 hover:text-fg font-medium">
+              Artifacts · {artifacts}
+            </button>
+          )}
+          <Link to={workbenchPath(card.id)} className="text-fg2 hover:text-fg font-medium">
+            Open in Workbench →
+          </Link>
+        </span>
       </footer>
     </section>
   );
