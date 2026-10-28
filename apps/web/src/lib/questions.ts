@@ -43,6 +43,29 @@ export function pick(q: Question, d: Draft, i: number): Draft {
   return { ...d, picked: d.picked.includes(i) ? d.picked.filter((x) => x !== i) : [...d.picked, i].sort((a, b) => a - b) };
 }
 
+const ASKS = ' asks: ';
+
+/**
+ * Whose call it is when the orchestrator passes an agent's question on: it starts each such
+ * question with the agent's title, "Checkout API asks: …". Only `titles` (the round-up's agents)
+ * count, longest first, so an ordinary question that happens to say "asks:" is left alone.
+ */
+export function relayedFrom(questions: readonly Pick<Question, 'question'>[], titles: readonly string[]): string | undefined {
+  const first = questions[0]?.question.toLowerCase();
+  if (!first) return undefined;
+  return [...titles].sort((a, b) => b.length - a.length).find((t) => first.startsWith(`${t.toLowerCase()}${ASKS}`));
+}
+
+/** A question's words without the "<agent> asks: " it was passed on with. */
+export const unrelayed = (text: string, from: string | undefined) =>
+  from && text.toLowerCase().startsWith(`${from.toLowerCase()}${ASKS}`) ? text.slice(from.length + ASKS.length) : text;
+
+/** The answer that leaves the call to whoever asked. */
+export const YOU_DECIDE = 'You decide';
+
+/** Leaving it to the asker: "You decide", as the question's own answer. */
+export const decide = (d: Draft): Draft => ({ ...d, picked: [], other: true, text: YOU_DECIDE });
+
 /** Whether row `i` is chosen. */
 export const isPicked = (q: Question, d: Draft, i: number) => (i === otherIndex(q) ? d.other : d.picked.includes(i));
 

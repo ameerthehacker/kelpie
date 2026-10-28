@@ -217,3 +217,11 @@ export function noteTargets(card: Pick<WorkbenchCard, 'items'>): { id: string; t
 export function landing(card: Pick<WorkbenchCard, 'branch' | 'base' | 'landsOn'>): { from?: string; into: string } {
   return { ...(card.branch ? { from: card.branch } : {}), into: card.landsOn ?? card.base ?? 'base' };
 }
+
+/**
+ * The card a `create_card` call made, from its output (`{ "card": "<id>", … }`). Read with a
+ * pattern, not parsed: a long output comes cut.
+ */
+export function createdCard(output: string | undefined): string | undefined {
+  return output && /"card":\s*"([^"]+)"/.exec(output)?.[1];
+}

@@ -521,7 +521,7 @@ function AgentTimeline({
                     </p>
                   );
                 case 'question':
-                  return <QuestionCard key={key} questions={p.questions} state={p.state} answers={p.answers} sessionId={a.id} requestId={p.requestId} />;
+                  return <QuestionCard key={key} questions={p.questions} state={p.state} answers={p.answers} sessionId={a.id} requestId={p.requestId} who={a.title} />;
                 case 'limit':
                   return <LimitLine key={key} limit={p.limit} message={p.message} ts={p.ts} />;
                 case 'resumed':
