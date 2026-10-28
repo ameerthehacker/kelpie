@@ -50,6 +50,8 @@ export class ClaudeCodeParser {
   private todos: TodoItem[] = [];
   /** Turns sent on stdin that the CLI has not yet taken in (it replays each one as it does). */
   private unconsumed = 0;
+  /** This turn took in one of our turns: replayed it, or ran it as a local command. */
+  private tookTurn = false;
   private inTurn = false;
   private lastBusy = false;
   /** The latest assistant text: what a plan put to the person says, when ExitPlanMode carries none. */
@@ -100,6 +102,7 @@ export class ClaudeCodeParser {
   /** The process is gone: nothing is running or queued any more, and nothing still asking will be answered. */
   noteExited(): KelpieEvent[] {
     this.unconsumed = 0;
+    this.tookTurn = false;
     this.inTurn = false;
     const expired = [...this.permissions.keys()].map((requestId) => this.emit('permission.resolved', { requestId, decision: 'deny', by: 'expired' }));
     this.permissions.clear();
@@ -237,7 +240,8 @@ export class ClaudeCodeParser {
       if (limit) this.limitHit = limitInfo(info);
       else this.throttled = true;
     }
-    const out: KelpieEvent[] = [];
+    // A local command (/context, /usage) prints this without replaying the turn that asked for it.
+    const out: KelpieEvent[] = x.parentCallId ? [] : this.localCommand(o.local_command_run?.command, o.local_command_run?.args, x);
     for (const block of blocks(o.message?.content)) {
       switch (block.type) {
         case 'text':
@@ -272,9 +276,24 @@ export class ClaudeCodeParser {
     return out;
   }
 
+  /**
+   * The CLI ran one of our turns as a local command (`/context`), which it never replays: it has
+   * taken that turn in all the same, so it is reported as sent, as a replay would be. Once a turn.
+   */
+  private localCommand(command: unknown, args: unknown, x: EmitExtra): KelpieEvent[] {
+    if (typeof command !== 'string' || !command || this.tookTurn || this.unconsumed === 0) return [];
+    this.tookTurn = true;
+    this.unconsumed--;
+    const text = `/${command}${typeof args === 'string' && args.trim() ? ` ${args.trim()}` : ''}`;
+    return [this.emit('message', { role: 'user', text, sent: true }, x)];
+  }
+
   private user(o: Obj, x: EmitExtra): KelpieEvent[] {
     // A replay is one of our stdin turns being taken in; other user text is a sub-agent's prompt.
-    if (o.isReplay) this.unconsumed = Math.max(0, this.unconsumed - 1);
+    if (o.isReplay) {
+      this.unconsumed = Math.max(0, this.unconsumed - 1);
+      this.tookTurn = true;
+    }
     const out: KelpieEvent[] = [];
     for (const block of blocks(o.message?.content)) {
       if (block.type === 'tool_result') {
@@ -317,6 +336,9 @@ export class ClaudeCodeParser {
   }
 
   private result(o: Obj, x: EmitExtra): KelpieEvent[] {
+    // A local command that printed nothing (or nothing we saw) still took its turn in.
+    const local = x.parentCallId ? [] : this.localCommand(o.local_command, '', x);
+    this.tookTurn = false;
     this.inTurn = false;
     // A plan put to the person next turn must not fall back on this turn's words.
     this.lastText = '';
@@ -364,7 +386,7 @@ export class ClaudeCodeParser {
       },
       x,
     );
-    return [...(interrupted ? this.expireTurnRequests(x) : []), usage, ended];
+    return [...local, ...(interrupted ? this.expireTurnRequests(x) : []), usage, ended];
   }
 
   /**

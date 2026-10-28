@@ -121,6 +121,40 @@ describe('claude-code mapping', () => {
     expect(states).toEqual(['ended:false', 'sub:true', 'ended:false']);
   });
 
+  it('takes a local command the CLI never replays (/context) as sent, so the turn ends idle', () => {
+    const parser = newParser();
+    for (let i = 0; i < 3; i++) parser.noteSent();
+    const seen: string[] = [];
+    lines('local-commands').forEach((o, i) => {
+      for (const e of parser.parse(o, i + 1)) {
+        if (e.kind === 'message') seen.push(`${e.data.role}${e.data.sent ? ' sent' : ''}: ${e.data.text.split('\n')[0]}`);
+        if (e.kind === 'turn.ended') seen.push(`ended, busy ${parser.busy}`);
+      }
+    });
+    expect(seen).toEqual([
+      // Before its output, as a replay would be.
+      'user sent: /context',
+      'assistant: ## Context Usage',
+      'ended, busy true',
+      'user sent: <command-message>proj-hello</command-message>',
+      expect.stringMatching(/^assistant: /),
+      'ended, busy true',
+      'user: This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.',
+      // /compact is replayed (as its output): it is not taken in twice.
+      'user sent: <local-command-stdout>Compacted </local-command-stdout>',
+      'ended, busy false',
+    ]);
+  });
+
+  it('takes a local command in at its result when it printed nothing, and never more than was sent', () => {
+    const parser = newParser();
+    parser.noteSent();
+    const evs = parser.parse({ type: 'result', subtype: 'success', local_command: 'reload-skills', usage: {} });
+    expect(of(evs, 'message').map((e) => e.data)).toEqual([{ role: 'user', text: '/reload-skills', sent: true }]);
+    expect(parser.busy).toBe(false);
+    expect(of(parser.parse({ type: 'result', subtype: 'success', local_command: 'usage', usage: {} }), 'message')).toEqual([]);
+  });
+
   it('reads an aborted turn as interrupted', () => {
     expect(of(replay('interrupt'), 'turn.ended')[0]!.data.status).toBe('interrupted');
   });
