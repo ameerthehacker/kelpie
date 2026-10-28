@@ -6,7 +6,8 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE, type SSEMessage } from 'hono/streaming';
 import { getMimeType } from 'hono/utils/mime';
-import { Answers, CardArchive, Effort, Mode, NotePost } from '@kelpie/protocol';
+import { Answers, ArtifactAccept, CardArchive, Effort, Mode, NotePost } from '@kelpie/protocol';
+import { ArtifactError } from './artifacts.js';
 import { checkHarnesses, shared, type HarnessStatus } from './harness-status.js';
 import type { Connections } from './connectors/connector.js';
 import { connectionRoutes } from './connectors/routes.js';
@@ -648,6 +649,44 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     } catch (err) {
       return reviewError(c, err);
     }
+  });
+
+  // ── artifacts ───────────────────────────────────────────────────────
+  // What the round-up's agents produced for the person (see artifacts.ts in @kelpie/protocol). An
+  // agent's id is taken as its round-up's.
+
+  const artifactsOf = (c: Context) => {
+    const id = roundUpOf(c);
+    const roundUp = id ? sessions.get(id) : undefined;
+    return roundUp && orch ? { roundUp, agents: sessions.children(roundUp.id), artifacts: orch.artifacts } : undefined;
+  };
+
+  app.get('/api/sessions/:id/artifacts', async (c) => {
+    const a = artifactsOf(c);
+    if (!a) return c.json({ error: 'no such session' }, 404);
+    return c.json(await a.artifacts.list(a.roundUp, a.agents));
+  });
+
+  app.get('/api/sessions/:id/artifacts/document', async (c) => {
+    const a = artifactsOf(c);
+    if (!a) return c.json({ error: 'no such session' }, 404);
+    const path = c.req.query('path');
+    if (!path || path.length > 4096) return c.json({ error: 'path is required' }, 400);
+    try {
+      return c.json(await a.artifacts.document(a.roundUp, a.agents, path));
+    } catch (err) {
+      if (err instanceof ArtifactError) return c.json({ error: err.message }, err.status);
+      throw err;
+    }
+  });
+
+  app.post('/api/sessions/:id/artifacts/accept', async (c) => {
+    const a = artifactsOf(c);
+    if (!a) return c.json({ error: 'no such session' }, 404);
+    const body = ArtifactAccept.safeParse(await jsonBody(c));
+    if (!body.success) return c.json({ error: 'key must be doc:<path> or changes:<agentId>@<commit>' }, 400);
+    a.artifacts.accept(a.roundUp, body.data.key);
+    return c.json(await a.artifacts.list(a.roundUp, a.agents));
   });
 
   if (opts.connections) app.route('/api/connections', connectionRoutes(opts.connections));

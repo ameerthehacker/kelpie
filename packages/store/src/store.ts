@@ -825,6 +825,46 @@ export class Store {
     return this.db.delete(schema.halts).where(eq(schema.halts.sessionId, sessionId)).run().changes > 0;
   }
 
+  // ── artifacts ────────────────────────────────────────────────────────
+
+  /** The person accepted an artifact (see `artifactReviews`); accepting it again moves the time on. */
+  acceptArtifact(roundUpId: string, key: string, now = Date.now()): number {
+    this.db
+      .insert(schema.artifactReviews)
+      .values({ roundUpId, key, acceptedAt: now })
+      .onConflictDoUpdate({ target: [schema.artifactReviews.roundUpId, schema.artifactReviews.key], set: { acceptedAt: now } })
+      .run();
+    return now;
+  }
+
+  /** Every artifact of the round-up the person accepted, by key, with when (epoch ms). */
+  acceptedArtifacts(roundUpId: string): Map<string, number> {
+    const rows = this.db.select().from(schema.artifactReviews).where(eq(schema.artifactReviews.roundUpId, roundUpId)).all();
+    return new Map(rows.map((r) => [r.key, r.acceptedAt]));
+  }
+
+  /**
+   * The latest successful edit or write (`file.changed`) of each file under `dir` by any of these
+   * sessions: who last wrote it, and when (the event's ISO time).
+   */
+  lastWritesUnder(sessionIds: string[], dir: string): { path: string; sessionId: string; ts: string }[] {
+    if (!sessionIds.length) return [];
+    const path = sql<string>`json_extract(${schema.events.event}, '$.data.path')`;
+    const prefix = `${dir.replace(/\/+$/, '')}/`;
+    const rows = this.db
+      .select({ sessionId: schema.events.sessionId, path, event: schema.events.event })
+      .from(schema.events)
+      .where(and(inArray(schema.events.sessionId, sessionIds), eq(schema.events.kind, 'file.changed'), sql`substr(${path}, 1, ${prefix.length}) = ${prefix}`))
+      .all();
+    const latest = new Map<string, { path: string; sessionId: string; ts: string }>();
+    for (const r of rows) {
+      const ts = (JSON.parse(r.event) as KelpieEvent).ts;
+      const seen = latest.get(r.path);
+      if (!seen || seen.ts <= ts) latest.set(r.path, { path: r.path, sessionId: r.sessionId, ts });
+    }
+    return [...latest.values()];
+  }
+
   close(): void {
     this.sqlite.close();
   }

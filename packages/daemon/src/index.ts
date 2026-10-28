@@ -25,6 +25,7 @@ export { canStart, checkHarnesses, claudeCodeStatus, installDirs, parseVersion, 
 export { McpServers, askRule, blockedReason, fingerprint, mcpToolPrefix, RESERVED_MCP, type McpGrant, type McpScope, type McpServerInfo, type McpServerList, type McpServersOptions, type McpStatus } from './mcp-servers.js';
 export { Orchestrator, ToolError, BaseFixedError, HALTED, capReason, capRefusal, limitNotice, ORCHESTRATOR_TOOLS, READ_ONLY_TOOLS, type AgentInfo, type AgentList, type OrchestratorOptions } from './orchestrator/orchestrator.js';
 export { Workbench, WorkbenchError, claimsOverlap, quoteNote, repoFromRemote, onBoard, NOTE_WINDOW_MS, PAIR_LIMIT, SENDER_LIMIT, WORKBENCH_TAG, type ToolCard } from './workbench.js';
+export { Artifacts, ArtifactError, titleOf as documentTitle } from './artifacts.js';
 export { Worktrees, GitError, runGit, slug, type Branch, type Git, type GitOptions, type LandResult, type WorktreesOptions, localBranch } from './worktrees.js';
 export { ReviewError } from './errors.js';
 export { Changes, NoSuchRound, excerpt, findLine, type View } from './review/changes.js';

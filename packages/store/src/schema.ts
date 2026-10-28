@@ -458,3 +458,21 @@ export const halts = sqliteTable('halts', {
   /** Epoch ms the person stopped it. */
   createdAt: integer('created_at').notNull(),
 });
+
+/**
+ * Artifacts the person accepted from the round-up's Artifacts tab, by key: `doc:<path>` for a
+ * document in its scratch folder, `changes:<agentId>@<headSha>` for an agent's code changes.
+ * A document changed after it was accepted is ready for review again.
+ */
+export const artifactReviews = sqliteTable(
+  'artifact_reviews',
+  {
+    roundUpId: text('round_up_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    /** Epoch ms the person accepted it. */
+    acceptedAt: integer('accepted_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.roundUpId, t.key] })],
+);
