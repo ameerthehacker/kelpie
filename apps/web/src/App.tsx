@@ -449,6 +449,9 @@ export function App() {
                       mode={mode}
                       modes={current?.role === 'agent' ? [] : modes}
                       onMode={changeMode}
+                      // `/` and `@` offer what this session can be sent; `@` its round-up's agents.
+                      sessionId={roundUpId}
+                      mentionRoundUpId={current?.role === 'agent' ? current.parentId : roundUpId}
                     />
                   </div>
                 </>

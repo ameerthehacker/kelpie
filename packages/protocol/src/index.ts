@@ -9,3 +9,4 @@ export * from './titles.js';
 export * from './mcp-servers.js';
 export * from './artifacts.js';
 export * from './relay.js';
+export * from './suggestions.js';

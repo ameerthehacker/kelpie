@@ -12,6 +12,7 @@ import { McpServers } from './mcp-servers.js';
 import { Orchestrator } from './orchestrator/orchestrator.js';
 import { createApp } from './server.js';
 import { SessionManager } from './sessions.js';
+import { Suggestions } from './suggestions.js';
 import { claudeTitles, type TitleGenerator } from './titles.js';
 import { Worktrees } from './worktrees.js';
 
@@ -95,6 +96,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   });
   const connections = new Connections([new GitHubConnector({ store })]);
   const mcpServers = new McpServers({ neutralDir: mcpCwd });
+  const suggestions = new Suggestions({ neutralDir: mcpCwd });
   const orchestrator = new Orchestrator({
     store,
     mcpUrl: `http://127.0.0.1:${opts.port}/mcp`,
@@ -137,6 +139,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     checkHarnesses: harnessStatus,
     connections,
     mcpServers,
+    suggestions,
     ...(opts.staticDir ? { staticDir: opts.staticDir } : {}),
     ...(opts.maxUploadBytes ? { maxUploadBytes: opts.maxUploadBytes } : {}),
   });

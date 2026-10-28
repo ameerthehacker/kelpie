@@ -40,3 +40,4 @@ export { Connections, ConnectError, type Connector, type ConnectionAccount, type
 export { GitHubConnector, githubEnv, type GitHubOptions, type RunGh } from './connectors/github.js';
 export { SavedSettings, SettingsError } from './settings.js';
 export { Titler, claudeTitles, conversationPart, sanitizeTitle, saysEnough, titlePrompt, TITLE_SYSTEM, REFRESH_AT, MAX_RUNNING, type Conversation, type Part, type TitleGenerator, type TitleInput, type Titled } from './titles.js';
+export { Suggestions, cliCommands, projectCommands, frontmatter, EXCLUDED_COMMANDS, MAX_FILE_MATCHES, type SuggestionsOptions } from './suggestions.js';

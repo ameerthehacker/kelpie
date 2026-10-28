@@ -1181,7 +1181,9 @@ export class Session {
           const row = this.ctx.store.undelivered(this.id)[0];
           if (row) {
             deliveredId = row.id;
-            event = { ...event, data: { ...event.data, ...(row.meta ? JSON.parse(row.meta) : {}), source: row.source } };
+            // A slash command shows as the person typed it, not as the CLI echoes it (`<command-name>…`, or its output).
+            const typed = row.source === 'user' && /^\s*\//.test(row.text) ? { text: row.text } : {};
+            event = { ...event, data: { ...event.data, ...typed, ...(row.meta ? JSON.parse(row.meta) : {}), source: row.source } };
           }
         }
 
