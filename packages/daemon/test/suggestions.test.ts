@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openStore } from '@kelpie/store';
 import { cliCommands, createApp, frontmatter, projectCommands, SessionManager, Suggestions } from '../src/index.js';
+import { orchestratorPrompt } from '../src/orchestrator/prompt.js';
 import { git, jsonLines } from './review-fixtures.js';
 
 const FAKE = join(import.meta.dirname, 'fake-claude-commands.mjs');
@@ -169,5 +170,13 @@ describe('suggestions API', () => {
     expect((await app.request('/api/suggestions/commands?session=nope', { headers: host })).status).toBe(404);
     expect((await app.request('/api/suggestions/files?session=nope', { headers: host })).status).toBe(404);
     expect((await app.request('/api/suggestions/files?limit=0', { headers: host })).status).toBe(400);
+  });
+});
+
+describe('the orchestrator prompt', () => {
+  it("says what an @ mention in the person's message means", () => {
+    const prompt = orchestratorPrompt();
+    expect(prompt).toContain('`@path/to/file`');
+    expect(prompt).toContain("@ followed by one of your agents' titles");
   });
 });
