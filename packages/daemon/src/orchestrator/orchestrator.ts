@@ -1,8 +1,9 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
-import { ARTIFACT_TOOLS, ARTIFACT_WRITE_RULES, CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
+import { ARTIFACT_TOOLS, ARTIFACT_WRITE_RULES, CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type CommandCall, type CommandVerdict, type PermissionAnswer } from '@kelpie/adapters';
 import { AGENT_HALT_RESUMED, Harness, haltNote, haltResumed, hasHaltNote, parseTicketUrl, type Settings, type AgentUpdate, type Effort, type LinkedTicket, type EventData, type KelpieEvent, type Mode, type Delegation } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import type { Connections } from '../connectors/connector.js';
@@ -77,6 +78,34 @@ const real = (path: string): string | undefined => {
 const within = (path: string, dir: string) => path === dir || path.startsWith(dir + sep);
 /** A `..` segment: refused, not folded, since the OS follows a link before it goes up while `resolve` folds first. */
 const goesUp = (path: string) => path.split(/[\\/]/).includes('..');
+/** A path as a shell word. */
+const quote = (path: string) => `'${path.replaceAll("'", `'\\''`)}'`;
+/**
+ * A command run from `dir` first. Its own list, before the command, whatever the command's operators
+ * (`a & b` would leave `b` behind in a `cd dir && a & b`); never the command where `dir` is not.
+ */
+export const inDir = (dir: string, command: string) => `cd ${quote(dir)} || exit 1; ${command}`;
+/** The ways a command can name `dir`: as given, through links, and from the home directory (`~/`, `$HOME/`). */
+const spellings = (dir: string) => {
+  const forms = new Set([dir, real(dir) ?? dir]);
+  const home = homedir();
+  for (const form of [...forms]) {
+    if (!within(form, home) || form === home) continue;
+    const rest = form.slice(home.length);
+    for (const h of ['~', '$HOME', '${HOME}']) forms.add(h + rest);
+  }
+  return [...forms];
+};
+const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/**
+ * Whether a command names `dir` (by an absolute path, or from home), leaving out where it names one of
+ * `besides` (a place under `dir`, like Kelpie's folder when KELPIE_HOME is in the repo). A path that
+ * merely starts the same (`/repo-two` for `/repo`) is another directory.
+ */
+export const namesDir = (command: string, dir: string, besides: string[] = []) => {
+  const rest = besides.flatMap(spellings).sort((a, b) => b.length - a.length).reduce((text, other) => text.replaceAll(other, ' '), command);
+  return spellings(dir).some((form) => new RegExp(`${escape(form)}(?![\\w.@+-])`).test(rest));
+};
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 export const READ_ONLY_TOOLS = DEFAULT_TOOLS.filter((t) => !EDIT_TOOLS.has(t));
 
@@ -128,6 +157,8 @@ export const HALTED =
 
 const NO_BASE =
   'No base branch is set for this round-up. Ask the person which branch to start from (list_branches shows the options), call set_base_branch with their answer, then spawn the writer.';
+const NO_FEATURE_CHECKOUT =
+  'Your commands run in your feature checkout, which is not open: call open_feature_checkout first, then run the command again.';
 const NO_BASE_CHECKOUT =
   'No base branch is set for this round-up. Ask the person which branch to start from (list_branches shows the options), call set_base_branch with their answer, then open the feature checkout.';
 const MUSTER_BRIEF_CHARS = 1500;
@@ -377,6 +408,8 @@ export class Orchestrator implements SessionHooks {
       // its own: an ask rule beats that, so every edit still goes to `decide`, which holds them to its
       // feature checkout and scratch folder. Its commands go by auto mode's checks, as an agent's do.
       ...(works ? { askTools: SCRATCH_TOOLS } : {}),
+      // Its commands run in its feature checkout, not its cwd: Kelpie sees each one first (see guardCommand).
+      ...(works ? { commandGuard: (call: CommandCall) => this.guardCommand(session, call) } : {}),
       ...(scratch || feature ? { addDirs: [scratch, feature].filter((dir): dir is string => !!dir) } : {}),
       // A backstop for edit rules in the project's or the person's own settings, which would settle
       // a request before `decide` sees it: never in the repo, nor in a worktree but its own.
@@ -562,7 +595,8 @@ export class Orchestrator implements SessionHooks {
    * repo checkout, feature branch worktree and scratch folder, and its edit tools in its scratch
    * folder, are always fine; anything else is refused. Its plan and its questions go to the person.
    * Working itself (solo, balanced), it may also edit in its feature checkout, but not in plan mode
-   * nor while Muster merges there; its commands go to the person, as an agent's do. An agent's
+   * nor while Muster merges there; its commands, held to its feature checkout by `guardCommand`
+   * first, go to the person (never a saved rule). An agent's
    * requests all go to the person.
    */
   decide(session: Session, req: EventData<'permission.requested'>): PermissionAnswer | undefined {
@@ -617,6 +651,36 @@ export class Orchestrator implements SessionHooks {
   }
 
   /**
+   * Kelpie's word on each command an orchestrator that works itself runs, before its harness's own
+   * checks and any rule: commands run in its feature checkout, never in the person's checkout (its
+   * harness's cwd, which it keeps so --resume finds its conversation). One whose shell is elsewhere,
+   * as each process's first is, is started in the feature checkout instead (the shell stays there
+   * after). Refused: any that names the person's checkout, any without a feature checkout, and any
+   * while Muster merges there (as edits are).
+   */
+  guardCommand(parent: Session, call: CommandCall): CommandVerdict {
+    const home = this.store.worktreeOf(parent.id);
+    const dir = home?.state === 'active' && existsSync(home.path) ? real(home.path) : undefined;
+    if (!home || !dir) return { deny: NO_FEATURE_CHECKOUT };
+    const muster = this.musterIn(parent, home);
+    if (muster) return { deny: `Muster ("${muster.title}") is merging in the feature checkout right now: no commands there until it is done. End your turn; you will be notified when it finishes.` };
+    const root = this.worktrees?.root;
+    const besides = [home.path, ...(root ? [root] : []), ...(parent.scratch ? [parent.scratch] : [])];
+    if (namesDir(call.command, parent.cwd, besides)) {
+      return {
+        deny: `Your commands run in your feature checkout (${home.path}), never in the person's checkout (${parent.cwd}), which this command names. Read the person's checkout with Read, Grep and Glob; run the command in the feature checkout instead.`,
+      };
+    }
+    const at = call.cwd ? real(call.cwd) : undefined;
+    return at && within(at, dir) ? undefined : { command: inDir(home.path, call.command) };
+  }
+
+  /** The Muster agent working in a round-up's feature checkout right now, if one is. */
+  private musterIn(parent: Session, home: WorktreeRow): Session | undefined {
+    return this.manager.children(parent.id).find((c) => c.kind === 'muster' && c.cwd === home.path && this.isWorking(c));
+  }
+
+  /**
    * Whether the orchestrator may edit `path` (resolved) as in its feature checkout: true, or why not
    * if it is there; undefined if it is not (its checkout made and on disk).
    */
@@ -627,7 +691,7 @@ export class Orchestrator implements SessionHooks {
     // Its git metadata is Kelpie's to keep, not part of the feature's files.
     if (within(path, join(dir, '.git'))) return 'The feature checkout\'s .git is Kelpie\'s to keep: edit only the feature\'s files.';
     if (parent.mode === 'plan') return PLANNING_EDITS;
-    const muster = this.manager.children(parent.id).find((c) => c.kind === 'muster' && c.cwd === home.path && this.isWorking(c));
+    const muster = this.musterIn(parent, home);
     if (muster) return `Muster ("${muster.title}") is merging in the feature checkout right now: no edits there until it is done. End your turn; you will be notified when it finishes.`;
     return true;
   }
@@ -1481,7 +1545,7 @@ export class Orchestrator implements SessionHooks {
   private async commitOwn(parent: Session, home = this.store.worktreeOf(parent.id)): Promise<boolean> {
     if (!home || !this.worktrees || home.state !== 'active') return false;
     if (!worksItself(parent) && !this.levelNotes.has(parent.id)) return false;
-    if (this.manager.children(parent.id).some((c) => c.kind === 'muster' && c.cwd === home.path && this.isWorking(c))) return false;
+    if (this.musterIn(parent, home)) return false;
     return this.worktrees.commitEdits(home, 'orchestrator');
   }
 

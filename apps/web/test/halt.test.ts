@@ -7,7 +7,7 @@ import { planBar, planLabel } from '../src/lib/plan.js';
 import { roundUpSummary, statusLine, type RoundUp } from '../src/lib/round-ups.js';
 import { GROUP_LABEL, planGroup, roundUpStatus, sessionStatus } from '../src/lib/status.js';
 
-const r = (over: Partial<RoundUp>): RoundUp => ({ id: 'top', title: '', cwd: '/r', createdAt: 0, updatedAt: 100, busy: false, mode: 'auto', ...over });
+const r = (over: Partial<RoundUp>): RoundUp => ({ id: 'top', title: '', cwd: '/r', createdAt: 0, updatedAt: 100, busy: false, mode: 'auto', delegation: 'balanced', ...over });
 const agent = (over: Partial<AgentSummary>): AgentSummary => ({
   id: 'a',
   parentId: 'top',

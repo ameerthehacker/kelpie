@@ -80,7 +80,7 @@ describe('the paused state', () => {
     updatedAt: NOW,
     ...over,
   });
-  const roundUp = (over: Partial<RoundUp> = {}): RoundUp => ({ id: 'r1', title: 'Checkout', cwd: '/r', createdAt: 1, updatedAt: NOW, busy: false, mode: 'auto', ...over });
+  const roundUp = (over: Partial<RoundUp> = {}): RoundUp => ({ id: 'r1', title: 'Checkout', cwd: '/r', createdAt: 1, updatedAt: NOW, busy: false, mode: 'auto', delegation: 'balanced', ...over });
 
   it('is its own group: not failed, and calmer than working', () => {
     expect(sessionStatus({ busy: false, lastTurn: 'failed', limited: pause() }, false)).toBe('paused');

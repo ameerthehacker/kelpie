@@ -1,24 +1,9 @@
 import type { EventSourceMessage } from '@microsoft/fetch-event-source';
 import type { MutationOptions, QueryClient } from '@tanstack/react-query';
-import {
-  DEFAULT_SETTINGS,
-  MAX_AGENTS,
-  MaxAgents,
-  type Settings as ProtocolSettings,
-  type SettingsPatch as ProtocolSettingsPatch,
-  type SettingsWithLimits as ProtocolSettingsWithLimits,
-} from '@kelpie/protocol';
+import { DEFAULT_SETTINGS, MAX_AGENTS, MaxAgents, type Settings, type SettingsPatch, type SettingsWithLimits } from '@kelpie/protocol';
 import { api } from './api.js';
-import { DEFAULT_DELEGATION, type Delegation } from './delegation.js';
 
-export { MAX_AGENTS };
-
-// The default delegation level, until @kelpie/protocol's Settings carry it (see lib/delegation).
-export type Settings = ProtocolSettings & { delegation?: Delegation };
-export type SettingsPatch = ProtocolSettingsPatch & { delegation?: Delegation | null };
-export type SettingsWithLimits = ProtocolSettingsWithLimits & { delegation?: Delegation };
-
-const DEFAULTS: Required<Settings> = { ...DEFAULT_SETTINGS, delegation: DEFAULT_DELEGATION };
+export { MAX_AGENTS, type Settings, type SettingsPatch, type SettingsWithLimits };
 
 /** How far Page Up and Page Down move the limit. */
 export const PAGE_STEP = 4;
@@ -49,7 +34,7 @@ export const defaultAgents = (s: Partial<SettingsWithLimits> | undefined): numbe
 /** The settings with a change in, as shown before the daemon answers: null is the setting's default. */
 export function withPatch<S extends Partial<SettingsWithLimits>>(s: S, patch: SettingsPatch): S {
   const next: Record<string, unknown> = { ...s };
-  for (const [key, v] of Object.entries(patch) as [keyof Settings, unknown][]) next[key] = v ?? (key === 'maxAgents' ? defaultAgents(s) : DEFAULTS[key]);
+  for (const [key, v] of Object.entries(patch) as [keyof Settings, unknown][]) next[key] = v ?? (key === 'maxAgents' ? defaultAgents(s) : DEFAULT_SETTINGS[key]);
   return next as S;
 }
 

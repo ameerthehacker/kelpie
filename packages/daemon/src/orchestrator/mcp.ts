@@ -275,7 +275,7 @@ function orchestratorServer(orch: Orchestrator, parent: Session): McpServer {
     {
       description:
         'Make your feature branch\'s checkout if it does not exist yet (from the base branch; see set_base_branch), or bring it back if it was cleaned up, and return its path. ' +
-        'Edit there by absolute path, and run commands there (cd into it first). Kelpie commits what you leave uncommitted when your turn ends, and before it starts a writer or musters. ' +
+        'Edit there by absolute path; your commands run there (Kelpie starts each one there unless your shell is already inside it). Kelpie commits what you leave uncommitted when your turn ends, and before it starts a writer or musters. ' +
         'Writers fork from the feature branch, so their work starts from yours.',
     },
     () => result(() => orch.openFeatureCheckout(parent)),

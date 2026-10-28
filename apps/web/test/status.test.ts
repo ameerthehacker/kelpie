@@ -4,7 +4,7 @@ import { planBar } from '../src/lib/plan.js';
 import type { RoundUp } from '../src/lib/round-ups.js';
 import { groupCounts, roundUpStatus, sessionStatus } from '../src/lib/status.js';
 
-const r = (over: Partial<RoundUp>): RoundUp => ({ id: 'x', title: '', cwd: '/r', createdAt: 0, updatedAt: 100, busy: false, mode: 'auto', ...over });
+const r = (over: Partial<RoundUp>): RoundUp => ({ id: 'x', title: '', cwd: '/r', createdAt: 0, updatedAt: 100, busy: false, mode: 'auto', delegation: 'balanced', ...over });
 
 describe('round-up status', () => {
   const top = r({ id: 'top', lastTurn: 'completed' });
