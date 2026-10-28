@@ -1,5 +1,5 @@
 import { FileTextIcon } from 'lucide-react';
-import { useMemo } from 'react';
+import { useId, useMemo, useState } from 'react';
 import type { AgentUpdate } from '@kelpie/protocol';
 import { ArtifactIcon, ReviewPill } from '@/components/artifacts/artifact-detail';
 import { useAgentPane, useOpenArtifact } from '@/components/agents/pane-state';
@@ -36,7 +36,7 @@ export function ProgressCard({ updates }: { updates?: ReadonlyMap<string, AgentU
   const pane = useAgentPane();
   const agents = pane?.agents;
   const now = useNow();
-  const artifacts = useArtifacts(pane?.roundUpId, { working: !!agents?.some((a) => a.status === 'working') }).data;
+  const artifacts = useArtifacts(pane?.roundUpId).data;
   const p = useMemo(() => progressOf(agents ?? [], updates, artifacts), [agents, updates, artifacts]);
   const attention = useMemo(() => (agents ?? []).filter((a) => {
     const s = progressState(a);
@@ -58,7 +58,7 @@ export function ProgressCard({ updates }: { updates?: ReadonlyMap<string, AgentU
       </header>
       <Bar segments={p.segments} counts={p.counts} />
       {attention.length > 0 && <AgentChips agents={attention} max={CALLED_OUT} />}
-      {p.ready.length > 0 && <Ready ready={p.ready} onMore={pane.showList} />}
+      {p.ready.length > 0 && <Ready ready={p.ready} />}
       <p className="text-mu flex items-center gap-2 text-[13px]">
         <ProgressMark state={p.footer.tone} />
         <span className="min-w-0">
@@ -82,20 +82,27 @@ function Bar({ segments, counts }: { segments: Segment[]; counts: Record<Progres
   );
 }
 
-/** "Ready for you · n": the newest finished work, each opening it; the rest in the pane's list. */
-function Ready({ ready, onMore }: { ready: Deliverable[]; onMore: () => void }) {
+/**
+ * "Ready for you · n": the newest finished work, each opening it; "+N more" shows the rest in
+ * place (documents among them, which the pane's agent list doesn't have).
+ */
+function Ready({ ready }: { ready: Deliverable[] }) {
+  const [all, setAll] = useState(false);
+  const id = useId();
   const more = ready.length - READY_SHOWN;
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-mu2 text-xs">Ready for you · {ready.length}</span>
-      <ul className="flex flex-col gap-1.5">
-        {ready.slice(0, READY_SHOWN).map((d) => (
+      <span id={id} className="text-mu2 text-xs">
+        Ready for you · {ready.length}
+      </span>
+      <ul aria-labelledby={id} className="flex flex-col gap-1.5">
+        {(all ? ready : ready.slice(0, READY_SHOWN)).map((d) => (
           <ReadyRow key={d.key} item={d} />
         ))}
       </ul>
       {more > 0 && (
-        <button type="button" onClick={onMore} className="text-mu hover:text-fg self-start text-xs underline-offset-2 hover:underline">
-          +{more} more
+        <button type="button" aria-expanded={all} onClick={() => setAll((v) => !v)} className="text-mu hover:text-fg self-start text-xs underline-offset-2 hover:underline">
+          {all ? 'Show fewer' : `+${more} more`}
         </button>
       )}
     </div>

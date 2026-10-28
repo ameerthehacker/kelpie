@@ -1,8 +1,4 @@
-import { format } from 'date-fns';
 import type { ReactNode } from 'react';
-import { firstLine, type AgentUpdate } from '@kelpie/protocol';
-import { useAgentPane } from '@/components/agents/pane-state';
-import { useOpenSession } from '@/hooks/use-open-session';
 import { cn } from '@/lib/utils';
 
 export type EventTone = 'done' | 'fail' | 'muted';
@@ -24,39 +20,5 @@ export function EventLine({ tone, children, onClick, title }: { tone: EventTone;
     </button>
   ) : (
     <div className={cls}>{body}</div>
-  );
-}
-
-const SAID: Record<string, { verb: string; tone: EventTone }> = {
-  completed: { verb: 'finished', tone: 'done' },
-  failed: { verb: 'failed', tone: 'fail' },
-  interrupted: { verb: 'stopped', tone: 'muted' },
-};
-
-/** Agents Kelpie reported to the orchestrator: one event line each, opening the agent. */
-export function AgentEvents({ agents, ts }: { agents: AgentUpdate[]; ts: string }) {
-  const pane = useAgentPane();
-  const openSession = useOpenSession();
-  const time = format(new Date(ts), 'HH:mm');
-  return (
-    <div className="flex flex-col gap-2">
-      {agents.map((a) => {
-        const said = SAID[a.status] ?? { verb: 'is idle', tone: 'muted' as const };
-        const detail = a.error ? firstLine(a.error, 90) : firstLine(a.report ?? '', 90);
-        // The pane shows only agents it has loaded; any other opens on its own page.
-        const inPane = pane?.agents.some((x) => x.id === a.agentId);
-        return (
-          <EventLine
-            key={a.agentId}
-            tone={said.tone}
-            title={`Open ${a.title}`}
-            onClick={() => (pane && inPane ? pane.openAgent(a.agentId) : openSession(a.agentId))}
-          >
-            {a.title} {said.verb}
-            {detail && ` · ${detail}`} · {time}
-          </EventLine>
-        );
-      })}
-    </div>
   );
 }

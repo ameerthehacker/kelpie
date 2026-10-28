@@ -102,9 +102,18 @@ export function agentsOf(files: readonly Pick<ChangedFile, 'agents'>[]): AgentRe
   return [...seen.values()];
 }
 
-/** A link that opens a file in VS Code, when the branch is checked out somewhere. */
-export const vscodeUrl = (checkoutPath: string | undefined, path: string) =>
-  checkoutPath ? `vscode://file/${checkoutPath.replace(/^\/+|\/+$/g, '')}/${path}` : undefined;
+/**
+ * A link that opens a file (or, without `path`, the folder itself) in VS Code, when the branch is
+ * checked out somewhere. Each part of the path is encoded: spaces, `#` and `?` survive.
+ */
+export const vscodeUrl = (checkoutPath: string | undefined, path = '') =>
+  checkoutPath
+    ? `vscode://file/${`${checkoutPath}/${path}`
+        .split('/')
+        .filter(Boolean)
+        .map(encodeURIComponent)
+        .join('/')}`
+    : undefined;
 
 /**
  * A unified diff's gutter label, old and new line numbers side by side as GitHub shows them: a

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { artifactKey, type ArtifactDocument, type WorkbenchCard, type WorkbenchItem } from '@kelpie/protocol';
-import { approveTurn, artifactCount, askTurn, fileName, linkLabel, paneKey, prSummary, pullRequestsOf, refOfKey } from '../src/lib/artifacts.js';
+import { approveTurn, artifactCount, changesAccepted, askTurn, fileName, linkLabel, paneKey, prSummary, pullRequestsOf, refOfKey } from '../src/lib/artifacts.js';
+import { tabOf } from '../src/hooks/use-changes-nav.js';
 
 const NOW = new Date('2026-10-28T10:00:00').getTime();
 const item = (over: Partial<WorkbenchItem>): WorkbenchItem => ({ key: 'k', title: 'Item', status: 'draft', waiting: 0, updatedAt: NOW, ...over });
@@ -36,14 +37,44 @@ describe('artifact refs', () => {
   });
 });
 
+describe('the Artifacts tab in the address', () => {
+  it('reads ?tab=artifacts, and the conversation for no tab or one it does not know', () => {
+    expect(tabOf('artifacts')).toBe('artifacts');
+    expect(tabOf('changes')).toBe('changes');
+    expect(tabOf(null)).toBe('conversation');
+    expect(tabOf('Artifacts')).toBe('conversation');
+    expect(tabOf('conversation')).toBe('conversation');
+  });
+});
+
+describe('changesAccepted', () => {
+  it("holds at the agent's commit now, and only there", () => {
+    const accepted = { 'changes:a1@abc1234': 1 };
+    expect(changesAccepted({ accepted, heads: { a1: 'abc1234' } }, 'a1')).toBe(true);
+    // New commits since: ready for review again.
+    expect(changesAccepted({ accepted, heads: { a1: 'def5678' } }, 'a1')).toBe(false);
+    // No commit known (its branch is gone): an Accept at any commit counts.
+    expect(changesAccepted({ accepted, heads: {} }, 'a1')).toBe(true);
+    expect(changesAccepted({ accepted, heads: {} }, 'a2')).toBe(false);
+  });
+});
+
 describe('pull requests', () => {
   const cards = [
     card({ items: [item({ key: 'm', status: 'merged', ref: '#481' }), item({ key: 'r', status: 'review', ref: '#484' })] }),
-    card({ id: 'c2', items: [item({ key: 'd', status: 'draft', updatedAt: NOW - 1 }), item({ key: 'd2', status: 'draft' })] }),
-    card({ id: 'other', roundUpId: 'r2', items: [item({ key: 'x' })] }),
+    card({
+      id: 'c2',
+      items: [
+        item({ key: 'd', status: 'draft', updatedAt: NOW - 1, url: 'https://github.com/acme/shop/pull/490' }),
+        item({ key: 'd2', status: 'draft', ref: '#491' }),
+        // A writer Kelpie put on the card: no link, no ref, so no pull request.
+        item({ key: 'agent-1', status: 'draft', agentId: 'agent-1', agentTitle: 'Guest form' }),
+      ],
+    }),
+    card({ id: 'other', roundUpId: 'r2', items: [item({ key: 'x', ref: '#1' })] }),
   ];
 
-  it("takes the round-up's cards' items, what needs the person first, then the newest", () => {
+  it("takes the round-up's cards' pull requests (items with a link or a ref), what needs the person first, then the newest", () => {
     expect(pullRequestsOf(cards, 'r1').map((p) => p.item.key)).toEqual(['r', 'd2', 'd', 'm']);
     expect(pullRequestsOf(undefined, 'r1')).toEqual([]);
   });

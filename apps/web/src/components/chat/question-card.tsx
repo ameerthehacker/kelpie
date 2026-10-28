@@ -1,11 +1,11 @@
 import { CheckIcon } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
-import type { Answers, Question } from '@kelpie/protocol';
+import { unrelayed, type Answers, type Question } from '@kelpie/protocol';
 import { useAnswerApprovals } from '@/hooks/use-approvals';
 import { useQuestionDrafts } from '@/hooks/use-question-drafts';
 import type { QuestionView } from '@/lib/chat';
 import { clearDrafts, draftKey, getPlace, setPlace } from '@/lib/question-drafts';
-import { answered, answersOf, canSubmit, chosen, decide, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, relayedFrom, tabLabel, unrelayed, YOU_DECIDE, type Draft } from '@/lib/questions';
+import { answered, answersOf, canSubmit, chosen, decide, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, relayedFrom, sendersOf, tabLabel, YOU_DECIDE, type Draft } from '@/lib/questions';
 import { cn } from '@/lib/utils';
 
 const STATE: Record<QuestionView['state'], string> = {
@@ -65,6 +65,8 @@ export interface QuestionCardProps {
  */
 export function QuestionCard({ questions, state, answers, sessionId, requestId, who: asker, relayFrom, autoFocus, takeFocus, variant = 'card', scroll = true, className }: QuestionCardProps) {
   const answer = useAnswerApprovals();
+  // Each question's own sender: the orchestrator may pass on several agents' questions at once.
+  const senders = relayFrom ? sendersOf(questions, relayFrom) : [];
   const relayed = relayFrom && relayedFrom(questions, relayFrom);
   const who = relayed ?? asker;
   const key = sessionId && requestId ? draftKey(sessionId, requestId) : undefined;
@@ -137,8 +139,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
     return ds;
   };
   const choose = (i: number) => {
-    // Out of "You decide": the person makes the call after all.
-    const next = pick(q, draft.other && draft.text === YOU_DECIDE ? { ...draft, other: false, text: '' } : draft, i);
+    const next = pick(q, draft, i);
     setRow(i);
     // Picking "Other" means typing it: the box takes the keyboard as it appears.
     focusTo.current = i === otherIndex(q) && next.other ? 'other' : 'current';
@@ -222,7 +223,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
             ◆
           </span>
           <span className="truncate">
-            {who ?? 'Kelpie'} {waiting ? 'needs a call' : 'asked'}
+            {who ?? 'Kelpie'} {waiting ? (new Set(senders.filter(Boolean)).size > 1 ? 'need a call' : 'needs a call') : 'asked'}
             {questions.length > 1 && ` · ${questions.length} questions`}
           </span>
           {!waiting && <span className="text-mu2 shrink-0 font-normal">· {STATE[state]}</span>}
@@ -268,7 +269,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
           >
             <p id={`${id}-q`} className="text-[15px] leading-snug font-medium">
               {questions.length === 1 && q.header && <span className="text-mu mr-1.5 text-xs font-medium tracking-wide uppercase">{q.header}</span>}
-              {unrelayed(q.question, relayed)}
+              {unrelayed(q.question, senders[tab])}
             </p>
             {q.description && <p className="text-mu -mt-1 text-xs">{q.description}</p>}
             {q.kind === 'text' ? (
@@ -311,7 +312,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
                 <div role={q.multiSelect ? 'group' : 'radiogroup'} aria-labelledby={`${id}-q`} className="flex flex-wrap items-center gap-1.5">
                   {[...q.options, { label: 'Other', description: 'Write your own answer' }].map((opt, i) => {
                     const isOther = i === otherIndex(q);
-                    const on = isPicked(q, draft, i) && !(isOther && draft.text === YOU_DECIDE);
+                    const on = isPicked(q, draft, i);
                     return (
                       <button
                         key={`${i}:${opt.label}`}
@@ -336,7 +337,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
                   })}
                   <button
                     type="button"
-                    aria-pressed={draft.other && draft.text === YOU_DECIDE}
+                    aria-pressed={!!draft.decided}
                     disabled={busy}
                     onClick={() => advance(update(decide(draft)))}
                     title="Leave the call to whoever asked"
@@ -347,7 +348,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
                 </div>
                 {/* What the option in reach means: pills have no room for it. */}
                 {q.options[row]?.description && <p className="text-mu -mt-0.5 text-xs leading-snug">{q.options[row].description}</p>}
-                {draft.other && draft.text !== YOU_DECIDE && (
+                {draft.other && (
                   <input value={draft.text} onChange={(e) => update({ ...draft, text: e.target.value })} placeholder="Your answer" aria-label="Your own answer" className={field} />
                 )}
                 {preview && <pre className="bg-chip text-fg2 max-h-60 overflow-auto rounded-xl p-3 font-mono text-xs leading-snug">{preview}</pre>}
@@ -386,7 +387,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
               <li key={i} className="flex flex-col gap-0.5">
                 <span className="text-fg font-medium">
                   {questions.length > 1 && <span className="text-mu mr-1.5 text-xs font-normal">{x.header || tabLabel(x, i)}</span>}
-                  {unrelayed(x.question, relayed)}
+                  {unrelayed(x.question, senders[i])}
                 </span>
                 <span className={cn('text-mu', !picked.length && 'text-mu2 italic')}>
                   {picked.length ? `${picked.join(', ')}${state === 'answered' ? ' — resumed.' : ''}` : state === 'answered' ? 'Not answered' : state === 'asking' ? 'Putting it to you…' : '—'}

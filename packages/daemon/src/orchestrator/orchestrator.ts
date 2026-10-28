@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
 import { CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
 import { AGENT_HALT_RESUMED, Harness, haltNote, haltResumed, hasHaltNote, parseTicketUrl, type Settings, type AgentUpdate, type Effort, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
@@ -15,7 +15,7 @@ import { Reviews, type ReviewClaim } from '../review/reviews.js';
 import { SavedSettings } from '../settings.js';
 import { askRule, mcpToolPrefix, type McpServers } from '../mcp-servers.js';
 import { Workbench } from '../workbench.js';
-import { Artifacts } from '../artifacts.js';
+import { Artifacts, isDocument } from '../artifacts.js';
 import { AGENT_RESTARTED, NOTIFICATION_TAG, ORCHESTRATOR_RESTARTED, agentPrompt, freshPreface, limitResumed, musterPrompt, orchestratorPrompt, reviewBrief, type WorkPlace } from './prompt.js';
 import { LIMIT_RESUMED } from '../usage-limits.js';
 
@@ -349,6 +349,11 @@ export class Orchestrator implements SessionHooks {
       const token = this.tokenOfRun.get(event.runId);
       if (token) this.tokens.delete(token);
       this.tokenOfRun.delete(event.runId);
+    }
+    // A document left in the scratch folder: the round-up's Artifacts tab lists it.
+    if (event.kind === 'file.changed' && session.scratch) {
+      const rel = relative(session.scratch, event.data.path);
+      if (!rel.startsWith('..') && !isAbsolute(rel) && isDocument(rel)) this.sessions?.publish({ type: 'artifacts', roundUpId: session.parentId ?? session.id, path: rel });
     }
     if (event.kind === 'activity' && !event.data.busy && session.role === 'agent') {
       if (session.parentId) {

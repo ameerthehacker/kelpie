@@ -95,6 +95,7 @@ describe('progressOf', () => {
         { path: 'old.md', title: 'Old', size: 1, updatedAt: 70, acceptedAt: 71 },
       ],
       accepted: { [`changes:${accepted.id}@abc123`]: 45, 'doc:old.md': 71 },
+      heads: { [accepted.id]: 'abc123' },
     };
     const p = progressOf([writer, accepted], new Map(), artifacts);
     expect(p.ready.map((d) => [d.key, d.kind, d.detail])).toEqual([
@@ -105,6 +106,10 @@ describe('progressOf', () => {
     expect(p.ready[0]).toMatchObject({ ref: { kind: 'document', path: 'plan.md' }, state: 'review' });
     expect(p.ready[2]?.agentId).toBe('x');
     expect(p.done).toBe(2);
+
+    // The accepted agent committed again: its changes are ready for the person once more.
+    const moved = progressOf([writer, accepted], new Map(), { ...artifacts, heads: { [accepted.id]: 'def456' } });
+    expect(moved.ready.map((d) => d.key)).toContain(`changes:${accepted.id}`);
   });
 });
 

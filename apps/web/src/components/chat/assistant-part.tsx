@@ -4,7 +4,7 @@ import type { AgentUpdate } from '@kelpie/protocol';
 import { AgentPills } from '@/components/agents/agent-pills';
 import { useAgentPane } from '@/components/agents/pane-state';
 import { MessageResponse } from '@/components/ai-elements/message';
-import { AgentEvents, EventLine } from '@/components/chat/events';
+import { EventLine } from '@/components/chat/events';
 import { FeatureCard } from '@/components/chat/feature-card';
 import { PlanCard } from '@/components/chat/plan-card';
 import { ProgressCard } from '@/components/chat/progress-card';
@@ -106,8 +106,8 @@ function BlockView({
     case 'spawns':
       return <AgentPills spawns={part.spawns} />;
     case 'agents':
-      // The Progress card has them; a line each only where there is no card (no agents loaded).
-      return pane?.agents.length ? null : <AgentEvents agents={part.agents} ts={part.ts} />;
+      // What agents reported doesn't pile up as lines: the Progress card keeps it, in one place.
+      return null;
     case 'plan':
       return <PlanCard plan={part} sessionId={sessionId} />;
     case 'question':

@@ -12,10 +12,11 @@ import { APPROVALS } from './use-approvals';
 import type { PendingApproval } from '@/lib/approvals';
 import { attention } from './use-attention';
 import { dropSession, SUB_AGENTS, upsertSubAgent } from './use-round-up-status';
+import type { ArtifactsChanged } from '@kelpie/protocol';
 import type { ReviewState } from '@/lib/review';
 import { reviewKey } from './use-review';
 import { CHANGES } from './use-changes';
-import { ARTIFACTS } from '@/lib/artifacts';
+import { ARTIFACTS, artifactsKey, documentKey } from '@/lib/artifacts';
 import { workbenchStream } from '@/lib/workbench';
 
 const ROUND_UPS = ['round-ups'] as const;
@@ -100,8 +101,12 @@ export function useRoundUps() {
             const { roundUpId, sessionId } = JSON.parse(msg.data) as { roundUpId: string; sessionId: string };
             void queryClient.invalidateQueries({ queryKey: [CHANGES, sessionId] });
             if (roundUpId !== sessionId) void queryClient.invalidateQueries({ queryKey: [CHANGES, roundUpId] });
-            // Agents leave documents in the scratch folder as they work.
-            void queryClient.invalidateQueries({ queryKey: [ARTIFACTS, roundUpId] });
+          },
+          // A file in a round-up's scratch folder was written: its documents, and that one if it is open.
+          artifacts: (msg) => {
+            const { roundUpId, path } = JSON.parse(msg.data) as ArtifactsChanged;
+            void queryClient.invalidateQueries({ queryKey: artifactsKey(roundUpId), exact: true });
+            void queryClient.invalidateQueries({ queryKey: documentKey(roundUpId, path), exact: true });
           },
           // The Workbench: every card on the board as the stream connects, then each card as it changes.
           ...workbenchStream(queryClient),

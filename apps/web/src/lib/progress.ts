@@ -1,6 +1,6 @@
 import { firstLine, type AgentUpdate, type ArtifactDocument, type ArtifactRef, type Artifacts } from '@kelpie/protocol';
 import type { AgentSummary } from './agents.js';
-import { paneKey } from './artifacts.js';
+import { changesAccepted, paneKey } from './artifacts.js';
 import type { ChatItem } from './chat.js';
 import { planGroup } from './status.js';
 
@@ -11,7 +11,7 @@ import { planGroup } from './status.js';
  */
 export type ProgressState = 'needs-you' | 'failed' | 'working' | 'queued' | 'stopped' | 'done';
 
-/** Most urgent first: the footer's counts, and the bar's segments past the cap. */
+/** The order the bar's label counts states in, and its segments past the cap go: done, then the most urgent. */
 export const PROGRESS_ORDER: ProgressState[] = ['done', 'needs-you', 'failed', 'working', 'queued', 'stopped'];
 
 export const PROGRESS_LABEL: Record<ProgressState, string> = {
@@ -137,13 +137,6 @@ function documentDeliverable(d: ArtifactDocument): Deliverable {
 }
 
 /**
- * Whether the person accepted an agent's changes. Accepts are kept by the commit they were made at,
- * which the agent list doesn't carry, so an Accept at any commit counts: a done agent's work only
- * moves on when it is resumed.
- */
-const changesAccepted = (accepted: Artifacts['accepted'], agentId: string) => Object.keys(accepted).some((k) => k.startsWith(`changes:${agentId}@`));
-
-/**
  * The round-up's progress, from its agents as they are now (not from the updates piled up in the
  * chat); `updates`, each agent's latest report, only fills in what its work was. `artifacts`: its
  * documents join "Ready for you", and what the person accepted leaves it. Pure.
@@ -164,9 +157,9 @@ export function progressOf(
       ? ordered.map((a, i) => ({ state: states[i]!, size: 1, title: a.title }))
       : PROGRESS_ORDER.flatMap((state) => (counts[state] ? [{ state, size: counts[state] }] : []));
 
-  const accepted = artifacts?.accepted ?? {};
   const ready = [
-    ...ordered.filter((a, i) => states[i] === 'done' && !changesAccepted(accepted, a.id)).map((a) => deliverable(a, updates.get(a.id))),
+    // Changes accepted at the agent's commit now (`heads`) are done with; new commits bring them back.
+    ...ordered.filter((a, i) => states[i] === 'done' && !(artifacts && changesAccepted(artifacts, a.id))).map((a) => deliverable(a, updates.get(a.id))),
     ...(artifacts?.documents ?? []).filter((d) => !d.acceptedAt).map(documentDeliverable),
   ].sort((a, b) => b.at - a.at);
 

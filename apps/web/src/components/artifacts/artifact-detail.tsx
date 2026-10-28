@@ -1,5 +1,5 @@
 import { CheckIcon, CodeXmlIcon, DiffIcon, FileTextIcon, Maximize2Icon } from 'lucide-react';
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useId, useState, type FormEvent, type ReactNode } from 'react';
 import { artifactKey, type ArtifactAuthor, type ArtifactRef } from '@kelpie/protocol';
 import { MessageResponse } from '@/components/ai-elements/message';
 import { StatusDot } from '@/components/agents/agent-bits';
@@ -15,6 +15,7 @@ import { useNow } from '@/hooks/use-now';
 import type { AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
 import { askTurn, fileName } from '@/lib/artifacts';
+import { vscodeUrl } from '@/lib/changes';
 import { chatWhen } from '@/lib/workbench';
 import { cn } from '@/lib/utils';
 
@@ -114,7 +115,7 @@ function DocumentDetail({ roundUpId, path }: { roundUpId: string; path: string }
           <div className="flex flex-wrap items-center gap-1.5">
             <ReviewPill accepted={accepted} />
             {d && (
-              <a href={`vscode://file/${d.file.replace(/^\/+/, '')}`} className={pill}>
+              <a href={vscodeUrl(d.file)} className={pill}>
                 <CodeXmlIcon className="size-3" />
                 Open in VS Code
               </a>
@@ -129,7 +130,16 @@ function DocumentDetail({ roundUpId, path }: { roundUpId: string; path: string }
           </div>
         </>
       }
-      footer={<AskFooter roundUpId={roundUpId} author={author} about={d && { kind: 'document', file: d.file }} acceptKey={artifactKey({ kind: 'document', path })} accepted={accepted} />}
+      footer={
+        <AskFooter
+          roundUpId={roundUpId}
+          author={author}
+          about={d && { kind: 'document', file: d.file }}
+          // Accepted as shown: the version on screen, which the daemon refuses once it is rewritten.
+          accept={d && { key: artifactKey({ kind: 'document', path }), seen: d.updatedAt }}
+          accepted={accepted}
+        />
+      }
     >
       <div className="min-h-0 flex-1 overflow-y-auto px-[22px] pt-1 pb-5 text-sm">
         {doc.error && <p className="text-fail text-sm">Couldn't load the document: {doc.error.message}</p>}
@@ -154,9 +164,12 @@ function ChangesDetail({ roundUpId, agentId }: { roundUpId: string; agentId: str
   const accepted = useArtifacts(roundUpId).data?.accepted;
   const head = changes?.headSha;
   const key = head ? artifactKey({ kind: 'changes', agentId }, head) : undefined;
-  const checkout = changes?.checkoutPath;
+  const code = vscodeUrl(changes?.checkoutPath);
   if (!a) return <p className="text-mu px-[22px] pt-4 text-sm">{listed ? 'This agent is gone.' : 'Loading…'}</p>;
   const author: Author = { title: a.title, harness: a.harness, sessionId: a.id };
+  // Accepted by commit: while the agent works, or has edits it hasn't committed, they are still moving.
+  const moving = a.status === 'working' ? `${a.title} is still working on them` : changes?.dirty ? `${a.title} has changes it hasn't committed yet` : undefined;
+  const isAccepted = !moving && !!key && !!accepted?.[key];
 
   return (
     <DetailFrame
@@ -165,9 +178,9 @@ function ChangesDetail({ roundUpId, agentId }: { roundUpId: string; agentId: str
           <TypeLine type="Code changes" author={author} at={a.updatedAt} />
           <h2 className="text-fg text-[22px] leading-tight font-semibold tracking-[-0.01em] break-words">{a.title}</h2>
           <div className="flex flex-wrap items-center gap-1.5">
-            <ReviewPill accepted={!!key && !!accepted?.[key]} />
-            {checkout && (
-              <a href={`vscode://file/${checkout.replace(/^\/+/, '')}`} className={pill}>
+            <ReviewPill accepted={isAccepted} />
+            {code && (
+              <a href={code} className={pill}>
                 <CodeXmlIcon className="size-3" />
                 Open in VS Code
               </a>
@@ -177,7 +190,7 @@ function ChangesDetail({ roundUpId, agentId }: { roundUpId: string; agentId: str
           <p className="text-mu2 text-xs">Click any line to leave {a.title} a comment on it.</p>
         </>
       }
-      footer={<AskFooter roundUpId={roundUpId} author={author} about={{ kind: 'changes' }} acceptKey={key} accepted={!!key && !!accepted?.[key]} />}
+      footer={<AskFooter roundUpId={roundUpId} author={author} about={{ kind: 'changes' }} accept={key && !moving ? { key } : undefined} notYet={moving} accepted={isAccepted} />}
     >
       <AgentChanges agent={a} />
     </DetailFrame>
@@ -202,17 +215,21 @@ function AskFooter({
   roundUpId,
   author,
   about,
-  acceptKey,
+  accept: acceptable,
+  notYet,
   accepted,
 }: {
   roundUpId: string;
   author: Author;
   about: Parameters<typeof askTurn>[0] | undefined;
-  /** Undefined while it can't be accepted yet (the diff is loading). */
-  acceptKey: string | undefined;
+  /** What Accept records (see `useAcceptArtifact`); undefined while it can't be accepted (loading, or `notYet`). */
+  accept: { key: string; seen?: number } | undefined;
+  /** Why it can't be accepted yet, if it can't. */
+  notYet?: string | undefined;
   accepted: boolean;
 }) {
   const accept = useAcceptArtifact(roundUpId);
+  const id = useId();
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ error?: boolean; text: string } | undefined>();
@@ -245,25 +262,28 @@ function AskFooter({
 
   return (
     <form onSubmit={ask} className="border-ln flex shrink-0 flex-col gap-2 border-t px-3.5 pt-2.5 pb-3.5">
-      <label htmlFor="artifact-ask" className="sr-only">
+      <label htmlFor={id} className="sr-only">
         Ask {author.title} for changes
       </label>
       <input
-        id="artifact-ask"
+        id={id}
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder={`Ask ${author.title} for changes`}
         className="bg-chip text-fg h-[38px] min-w-0 rounded-full px-4 text-sm outline-none"
       />
       <div className="flex items-center gap-2">
-        <p className={cn('min-w-0 flex-1 truncate px-2 text-xs', note?.error ? 'text-fail' : 'text-mu2')}>{note?.text ?? `Goes straight to ${author.title}.`}</p>
+        <p className={cn('min-w-0 flex-1 truncate px-2 text-xs', note?.error ? 'text-fail' : 'text-mu2')}>
+          {note?.text ?? (notYet && !accepted ? `Accept once they settle: ${notYet}.` : `Goes straight to ${author.title}.`)}
+        </p>
         <button type="submit" disabled={busy || !text.trim() || !about} className={cn(quietButton, 'bg-background border-ln hover:bg-hov border')}>
           Ask for changes
         </button>
         <button
           type="button"
-          disabled={busy || !acceptKey || accepted}
-          onClick={() => acceptKey && void run(() => accept(acceptKey), 'Accepted.', 'accept it')}
+          disabled={busy || !acceptable || accepted}
+          onClick={() => acceptable && void run(() => accept(acceptable.key, acceptable.seen), 'Accepted.', 'accept it')}
+          title={accepted ? undefined : notYet}
           className={primaryButton}
         >
           {accepted ? 'Accepted' : 'Accept'}

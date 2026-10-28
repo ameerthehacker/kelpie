@@ -1,8 +1,10 @@
-import type { ArtifactDocument, ArtifactRef, ItemStatus, WorkbenchCard, WorkbenchItem } from '@kelpie/protocol';
+import { artifactKey, type ArtifactDocument, type ArtifactRef, type Artifacts, type ItemStatus, type WorkbenchCard, type WorkbenchItem } from '@kelpie/protocol';
 
 /** `['artifacts', roundUpId]`: a round-up's documents and Accepts; the event stream invalidates it. */
 export const ARTIFACTS = 'artifacts';
 export const artifactsKey = (roundUpId: string | undefined) => [ARTIFACTS, roundUpId] as const;
+/** `['artifacts', roundUpId, 'document', path]`: one document's text. */
+export const documentKey = (roundUpId: string, path: string) => [ARTIFACTS, roundUpId, 'document', path] as const;
 
 /** An open artifact's tab in the agent pane. Agents' tabs are their ids (uuids), so these never clash. */
 export const paneKey = (ref: ArtifactRef) => (ref.kind === 'document' ? `doc:${ref.path}` : `changes:${ref.agentId}`);
@@ -26,10 +28,13 @@ export interface PullRequest {
 /** What the person should look at first: their reviews, then what is stuck, then what is moving. */
 const RANK: Record<ItemStatus, number> = { review: 0, blocked: 1, checks: 2, draft: 3, approved: 4, merged: 5, closed: 6 };
 
-/** The round-up's pull requests across its cards, by `RANK`, then the newest. */
+/**
+ * The round-up's pull requests across its cards, by `RANK`, then the newest. Only items with a link
+ * or a ref (`#482`): Kelpie puts each writer on its card as an item too, which is no pull request.
+ */
 export function pullRequestsOf(cards: readonly WorkbenchCard[] | undefined, roundUpId: string): PullRequest[] {
   const out: PullRequest[] = [];
-  for (const card of cards ?? []) if (card.roundUpId === roundUpId) for (const item of card.items) out.push({ item, card });
+  for (const card of cards ?? []) if (card.roundUpId === roundUpId) for (const item of card.items) if (item.url || item.ref) out.push({ item, card });
   return out.sort((a, b) => RANK[a.item.status] - RANK[b.item.status] || b.item.updatedAt - a.item.updatedAt);
 }
 
@@ -65,6 +70,15 @@ export const artifactCount = (documents: readonly ArtifactDocument[] | undefined
   const n = (documents?.length ?? 0) + prs.length;
   return n || undefined;
 };
+
+/**
+ * Whether the person accepted an agent's changes as they are now: at its current commit (`heads`).
+ * Without one (its branch is gone), an Accept at any commit counts.
+ */
+export function changesAccepted({ accepted, heads }: Pick<Artifacts, 'accepted' | 'heads'>, agentId: string): boolean {
+  const head = heads[agentId];
+  return head ? accepted[artifactKey({ kind: 'changes', agentId }, head)] !== undefined : Object.keys(accepted).some((k) => k.startsWith(`changes:${agentId}@`));
+}
 
 /** "Open on GitHub" for a GitHub link, else "Open link". */
 export const linkLabel = (url: string) => {

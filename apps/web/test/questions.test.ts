@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { Question } from '@kelpie/protocol';
+import { relayQuestion, unrelayed, type Question } from '@kelpie/protocol';
 import { clearDrafts, draftKey, getDrafts, setDrafts, subscribeDrafts } from '../src/lib/question-drafts.js';
-import { answered, answerOf, answersOf, canSubmit, chosen, decide, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, questionsLine, relayedFrom, unrelayed } from '../src/lib/questions.js';
+import { answered, answerOf, answersOf, canSubmit, chosen, decide, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, questionsLine, relayedFrom, sendersOf, YOU_DECIDE } from '../src/lib/questions.js';
 
 const color: Question = { question: 'Which color?', header: 'Color', options: [{ label: 'Red' }, { label: 'Blue' }] };
 const extras: Question = { question: 'Which extras?', options: [{ label: 'Tests' }, { label: 'Docs' }, { label: 'Lint' }], multiSelect: true };
@@ -15,6 +15,13 @@ describe('relayed questions', () => {
     expect(relayedFrom([{ question: 'Checkout API asks: Where should guest orders live?' }], titles)).toBe('Checkout API');
     expect(relayedFrom([{ question: 'checkout api asks: Which table?' }], titles)).toBe('Checkout API');
     expect(relayedFrom([{ question: 'API asks: Which version?' }], titles)).toBe('API');
+    expect(relayedFrom([{ question: relayQuestion('Docs', 'Which tone?') }], titles)).toBe('Docs');
+  });
+
+  it("names each question's own agent, not only the first's", () => {
+    const qs = [{ question: 'Which branch?' }, { question: 'Docs asks: Which tone?' }, { question: 'Checkout API asks: Which table?' }, { question: 'Docs asks: How long?' }];
+    expect(sendersOf(qs, titles)).toEqual([undefined, 'Docs', 'Checkout API', 'Docs']);
+    expect(relayedFrom(qs, titles)).toBe('Docs and Checkout API');
   });
 
   it('leaves Kelpie’s own questions alone', () => {
@@ -35,6 +42,15 @@ describe('answering questions', () => {
     const d = decide(pick(extras, emptyDraft(), 1));
     expect(answerOf(extras, d)).toEqual(['You decide']);
     expect(answerOf(color, decide(emptyDraft()))).toEqual(['You decide']);
+    // Picking anything after is the person's own call.
+    expect(pick(color, decide(emptyDraft()), 0)).toEqual({ picked: [0], other: false, text: '' });
+  });
+
+  it('takes "You decide" written as their own answer as their words, not the button', () => {
+    const d = { ...pick(color, emptyDraft(), otherIndex(color)), text: YOU_DECIDE };
+    expect(d.decided).toBeUndefined();
+    expect(isPicked(color, d, otherIndex(color))).toBe(true);
+    expect(answerOf(color, d)).toEqual([YOU_DECIDE]);
   });
 
   it('picks one option at a time, or "Other" in its place', () => {

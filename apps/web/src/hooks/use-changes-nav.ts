@@ -5,13 +5,16 @@ export type RoundUpTab = 'conversation' | 'changes' | 'artifacts';
 
 const TABS: RoundUpTab[] = ['changes', 'artifacts'];
 
+/** The tab `?tab=` names; the conversation for none, or for anything it doesn't know. */
+export const tabOf = (param: string | null): RoundUpTab => TABS.find((t) => t === param) ?? 'conversation';
+
 /**
  * Where the person is in a round-up's changes, kept in the query string so it survives a reload
  * and the back button: `?tab=changes` (or `artifacts`), and full screen as `?full=feature|<agentId>&file=<path>`.
  */
 export function useChangesNav() {
   const [params, setParams] = useSearchParams();
-  const tab: RoundUpTab = TABS.find((t) => t === params.get('tab')) ?? 'conversation';
+  const tab = tabOf(params.get('tab'));
   const full = params.get('full') ?? undefined;
   const file = params.get('file') ?? undefined;
   const roundParam = params.get('round');
