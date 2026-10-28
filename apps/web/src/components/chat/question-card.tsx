@@ -5,7 +5,7 @@ import { useAnswerApprovals } from '@/hooks/use-approvals';
 import { useQuestionDrafts } from '@/hooks/use-question-drafts';
 import type { QuestionView } from '@/lib/chat';
 import { clearDrafts, draftKey, getPlace, setPlace } from '@/lib/question-drafts';
-import { answered, answersOf, canSubmit, chosen, decide, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, tabLabel, YOU_DECIDE, type Draft } from '@/lib/questions';
+import { answered, answersOf, canSubmit, chosen, decide, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, relayedFrom, tabLabel, unrelayed, YOU_DECIDE, type Draft } from '@/lib/questions';
 import { cn } from '@/lib/utils';
 
 const STATE: Record<QuestionView['state'], string> = {
@@ -34,8 +34,13 @@ export interface QuestionCardProps {
   /** Where to send the answers; without both, the card only shows the questions. */
   sessionId: string | undefined;
   requestId: string | undefined;
-  /** Who asks, when it isn't plain from where the card is (the approvals queue). */
+  /** Who asks: the agent whose card it is ("Kelpie" for an orchestrator). */
   who?: string;
+  /**
+   * The round-up's agents, where the asker is its orchestrator: a question it passes on from one
+   * of them ("Checkout API asks: …") is that agent's call (see `relayedFrom`).
+   */
+  relayFrom?: readonly string[];
   /** Take the keyboard as it opens, unless something else (the composer) has it. */
   autoFocus?: boolean;
   /** Take the keyboard as it opens, whatever has it: the person asked to answer. */
@@ -58,8 +63,10 @@ export interface QuestionCardProps {
  * submit. Escape stays in the card. What is picked is kept per question, so the agent's chat and
  * the queue show the same. Answered, it folds to what was chosen.
  */
-export function QuestionCard({ questions, state, answers, sessionId, requestId, who, autoFocus, takeFocus, variant = 'card', scroll = true, className }: QuestionCardProps) {
+export function QuestionCard({ questions, state, answers, sessionId, requestId, who: asker, relayFrom, autoFocus, takeFocus, variant = 'card', scroll = true, className }: QuestionCardProps) {
   const answer = useAnswerApprovals();
+  const relayed = relayFrom && relayedFrom(questions, relayFrom);
+  const who = relayed ?? asker;
   const key = sessionId && requestId ? draftKey(sessionId, requestId) : undefined;
   const [drafts, setDrafts] = useQuestionDrafts(key, questions);
   // Where the person left this question, if they paged away from it in the queue.
@@ -261,7 +268,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
           >
             <p id={`${id}-q`} className="text-[15px] leading-snug font-medium">
               {questions.length === 1 && q.header && <span className="text-mu mr-1.5 text-xs font-medium tracking-wide uppercase">{q.header}</span>}
-              {q.question}
+              {unrelayed(q.question, relayed)}
             </p>
             {q.description && <p className="text-mu -mt-1 text-xs">{q.description}</p>}
             {q.kind === 'text' ? (
@@ -379,7 +386,7 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
               <li key={i} className="flex flex-col gap-0.5">
                 <span className="text-fg font-medium">
                   {questions.length > 1 && <span className="text-mu mr-1.5 text-xs font-normal">{x.header || tabLabel(x, i)}</span>}
-                  {x.question}
+                  {unrelayed(x.question, relayed)}
                 </span>
                 <span className={cn('text-mu', !picked.length && 'text-mu2 italic')}>
                   {picked.length ? `${picked.join(', ')}${state === 'answered' ? ' — resumed.' : ''}` : state === 'answered' ? 'Not answered' : state === 'asking' ? 'Putting it to you…' : '—'}

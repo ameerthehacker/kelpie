@@ -111,7 +111,18 @@ function BlockView({
     case 'plan':
       return <PlanCard plan={part} sessionId={sessionId} />;
     case 'question':
-      return <QuestionCard questions={part.questions} state={part.state} answers={part.answers} sessionId={sessionId} requestId={part.requestId} autoFocus />;
+      return (
+        <QuestionCard
+          questions={part.questions}
+          state={part.state}
+          answers={part.answers}
+          sessionId={sessionId}
+          requestId={part.requestId}
+          who={actor}
+          relayFrom={pane?.agents.map((a) => a.title)}
+          autoFocus
+        />
+      );
     case 'limit':
       return <LimitLine limit={part.limit} message={part.message} ts={part.ts} />;
     case 'resumed':

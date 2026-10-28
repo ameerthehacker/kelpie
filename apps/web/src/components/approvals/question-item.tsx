@@ -1,7 +1,9 @@
 import { ChevronLeftIcon, ChevronRightIcon, MessageCircleQuestionIcon } from 'lucide-react';
 import { QuestionCard } from '@/components/chat/question-card';
 import { HarnessMark } from '@/components/harness-mark';
+import { useAgents } from '@/hooks/use-agents';
 import type { PendingApproval } from '@/lib/approvals';
+import { relayedFrom } from '@/lib/questions';
 
 const nav = 'text-mu2 hover:bg-raise hover:text-fg flex size-6 items-center justify-center rounded-md disabled:pointer-events-none disabled:opacity-40';
 
@@ -23,14 +25,21 @@ export function QuestionItem({ item, harness, index, count, onMove, takeFocus, s
   scroll: boolean;
 }) {
   const questions = item.questions ?? [];
-  const who = item.sessionId === item.roundUpId ? 'Kelpie' : item.agentTitle;
+  const fromKelpie = item.sessionId === item.roundUpId;
+  // Kelpie passing one of its agents' questions on: it is that agent's call.
+  const titles = useAgents(fromKelpie ? item.roundUpId : undefined)?.map((a) => a.title);
+  const relayed = titles && relayedFrom(questions, titles);
+  const who = relayed ?? (fromKelpie ? 'Kelpie' : item.agentTitle);
   return (
     // All of it is the question card's, as far as Escape goes (‹ › too): it never leaves the page from here.
     <div data-question-card="" className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-2.5">
         {harness ? <HarnessMark harness={harness} /> : <MessageCircleQuestionIcon className="text-mu2 size-4 shrink-0" strokeWidth={1.9} />}
-        <span className="text-mu min-w-0 flex-1 truncate text-xs" title={`${who} asks`}>
-          <span className="text-fg2 font-medium">{who}</span> asks
+        <span className="text-wait min-w-0 flex-1 truncate text-xs font-medium" title={`${who} needs a call`}>
+          <span aria-hidden="true" className="text-[10px]">
+            ◆{' '}
+          </span>
+          {who} needs a call
         </span>
         {count > 1 && (
           <span className="text-mu2 flex shrink-0 items-center gap-0.5 text-xs tabular-nums">
@@ -51,7 +60,8 @@ export function QuestionItem({ item, harness, index, count, onMove, takeFocus, s
         variant="bare"
         questions={questions}
         state="open"
-        who={who}
+        who={fromKelpie ? 'Kelpie' : item.agentTitle}
+        relayFrom={titles}
         sessionId={item.sessionId}
         requestId={item.requestId}
         takeFocus={takeFocus}
