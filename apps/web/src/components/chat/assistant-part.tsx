@@ -1,10 +1,12 @@
 import { format } from 'date-fns';
-import { useMemo } from 'react';
+import { Fragment, useMemo } from 'react';
+import type { AgentUpdate } from '@kelpie/protocol';
 import { AgentPills } from '@/components/agents/agent-pills';
 import { useAgentPane } from '@/components/agents/pane-state';
 import { MessageResponse } from '@/components/ai-elements/message';
 import { AgentEvents, EventLine } from '@/components/chat/events';
 import { PlanCard } from '@/components/chat/plan-card';
+import { ProgressCard } from '@/components/chat/progress-card';
 import { QuestionCard } from '@/components/chat/question-card';
 import { StepGroup } from '@/components/chat/steps';
 import { useChangesNav } from '@/hooks/use-changes-nav';
@@ -36,10 +38,18 @@ interface Props {
   actor: string;
   /** The round-up these are from, to answer a plan or questions put to the person. */
   sessionId?: string | undefined;
+  /**
+   * Given to the one reply the round-up's Progress card sits in (see `chatProgress`): each agent's
+   * latest report. The card goes after its last agents started or reported on.
+   */
+  progress?: ReadonlyMap<string, AgentUpdate> | undefined;
 }
 
-/** An assistant reply: text, steps, agents started and reported on, and notices, in order. */
-export function AssistantParts({ parts, streaming, actor, sessionId }: Props) {
+/**
+ * An assistant reply: text, steps, agents started, and notices, in order. What agents report
+ * doesn't pile up as lines: the Progress card keeps it, in one place.
+ */
+export function AssistantParts({ parts, streaming, actor, sessionId, progress }: Props) {
   const pane = useAgentPane();
   // Kelpie's tools name agents by id; steps say their titles.
   const nameOf = useMemo(() => {
@@ -47,7 +57,14 @@ export function AssistantParts({ parts, streaming, actor, sessionId }: Props) {
     return (id: string) => titles.get(id);
   }, [pane?.agents]);
   const list = blocks(parts);
-  return list.map((block, i) => <BlockView key={i} block={block} streaming={streaming && i === list.length - 1} actor={actor} nameOf={nameOf} sessionId={sessionId} />);
+  let cardAt = -1;
+  if (progress) list.forEach((b, i) => (b.type === 'agents' || b.type === 'spawns') && (cardAt = i));
+  return list.map((block, i) => (
+    <Fragment key={i}>
+      <BlockView block={block} streaming={streaming && i === list.length - 1} actor={actor} nameOf={nameOf} sessionId={sessionId} />
+      {i === cardAt && <ProgressCard updates={progress} />}
+    </Fragment>
+  ));
 }
 
 function BlockView({
@@ -63,6 +80,7 @@ function BlockView({
   nameOf: (id: string) => string | undefined;
   sessionId: string | undefined;
 }) {
+  const pane = useAgentPane();
   switch (part.type) {
     case 'text':
       return <MessageResponse isAnimating={streaming}>{part.text}</MessageResponse>;
@@ -74,7 +92,8 @@ function BlockView({
     case 'spawns':
       return <AgentPills spawns={part.spawns} />;
     case 'agents':
-      return <AgentEvents agents={part.agents} ts={part.ts} />;
+      // The Progress card has them; a line each only where there is no card (no agents loaded).
+      return pane?.agents.length ? null : <AgentEvents agents={part.agents} ts={part.ts} />;
     case 'plan':
       return <PlanCard plan={part} sessionId={sessionId} />;
     case 'question':

@@ -45,6 +45,7 @@ import type { AgentSummary } from '@/lib/agents';
 import { api } from '@/lib/api';
 import { isRequestKind } from '@/lib/attention';
 import { effortPatch } from '@/lib/effort';
+import { chatProgress } from '@/lib/progress';
 import { RoundUpTitle } from '@/components/shell/round-up-title';
 import { ROUND_UP_ROUTE, roundUpPath, roundUpSummary, shortPath, titleOf, type RoundUp } from '@/lib/round-ups';
 import { WORKBENCH_ROUTE } from '@/lib/workbench';
@@ -209,6 +210,8 @@ export function App() {
   // opened directly is not known to be one until its own fetch answers.
   const agents = useAgents(current?.role === 'orchestrator' ? roundUpId : undefined);
   const last = items.at(-1);
+  // Where the Progress card sits: in one reply only, whatever the agents report later.
+  const progress = useMemo(() => chatProgress(items), [items]);
   // Steps on a sub-agent's own page are its own; everywhere else they are Kelpie's.
   const actor = current?.role === 'agent' ? titleOf(current) : 'Kelpie';
   const model = roundUpId ? (current?.model ?? '') : draftModel;
@@ -381,7 +384,13 @@ export function App() {
                           </div>
                         ) : (
                           <div key={item.id} className="flex min-w-0 flex-col gap-3.5">
-                            <AssistantParts parts={item.parts} streaming={busy && item === last} actor={actor} sessionId={roundUpId} />
+                            <AssistantParts
+                              parts={item.parts}
+                              streaming={busy && item === last}
+                              actor={actor}
+                              sessionId={roundUpId}
+                              progress={item.id === progress.anchor ? progress.updates : undefined}
+                            />
                           </div>
                         ),
                       )}
