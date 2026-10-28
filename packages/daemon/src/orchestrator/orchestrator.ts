@@ -3,7 +3,7 @@ import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getMimeType } from 'hono/utils/mime';
 import { ARTIFACT_TOOLS, ARTIFACT_WRITE_RULES, CLAUDE_DEFAULT_TOOLS as DEFAULT_TOOLS, type PermissionAnswer } from '@kelpie/adapters';
-import { AGENT_HALT_RESUMED, Harness, haltNote, haltResumed, hasHaltNote, parseTicketUrl, type Settings, type AgentUpdate, type Effort, type LinkedTicket, type EventData, type KelpieEvent, type Mode } from '@kelpie/protocol';
+import { AGENT_HALT_RESUMED, Harness, haltNote, haltResumed, hasHaltNote, parseTicketUrl, type Settings, type AgentUpdate, type Effort, type LinkedTicket, type EventData, type KelpieEvent, type Mode, type Delegation } from '@kelpie/protocol';
 import type { Store, WorktreeRow } from '@kelpie/store';
 import type { Connections } from '../connectors/connector.js';
 import type { RunContext, SentFile, Session, SessionDefaults, SessionHooks, SessionManager } from '../sessions.js';
@@ -486,6 +486,12 @@ export class Orchestrator implements SessionHooks {
       );
     }
   }
+
+  /**
+   * The person changed a round-up's delegation level (already saved on the round-up).
+   * Stub: "Delegation orchestrator core" restarts the orchestrator with the level's tools and prompt.
+   */
+  setDelegation(_sessionId: string, _level: Delegation): void {}
 
   /**
    * Answers what the orchestrator's harness asks by policy: its kelpie tools, its read tools in its
