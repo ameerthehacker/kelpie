@@ -20,6 +20,7 @@ import type { NewAnchor } from './review/reviews.js';
 import type { SessionManager } from './sessions.js';
 import { SettingsError } from './settings.js';
 import type { McpServers } from './mcp-servers.js';
+import { MAX_FILE_MATCHES, type Suggestions } from './suggestions.js';
 import { WorkbenchError } from './workbench.js';
 
 
@@ -46,6 +47,8 @@ export interface AppOptions {
   connections?: Connections;
   /** The person's own MCP servers, listed at `/api/mcp/servers`. */
   mcpServers?: Pick<McpServers, 'list' | 'refresh'>;
+  /** The composer's `/` commands and `@` files, at `/api/suggestions/*`. None without it. */
+  suggestions?: Pick<Suggestions, 'commands' | 'files'>;
 }
 
 /**
@@ -202,6 +205,26 @@ export function createApp(sessions: SessionManager, opts: AppOptions = {}): Hono
     if (!repo) return c.json({ error: "repo must be Kelpie's repo or a round-up's" }, 400);
     const list = opts.mcpServers ? await opts.mcpServers.refresh(repo) : { repo, servers: [] };
     return c.json({ ...list, repos: mcpRepos() });
+  });
+
+  // What the composer suggests: slash commands the session's CLI runs, and the repo's files to
+  // mention. For a session's own directory (an agent's worktree), or Kelpie's repo before a round-up exists.
+  const suggestCwd = (c: Context): string | undefined => {
+    const id = c.req.query('session');
+    return id ? sessions.get(id)?.cwd : sessions.defaultCwd;
+  };
+  app.get('/api/suggestions/commands', async (c) => {
+    const cwd = suggestCwd(c);
+    if (!cwd) return c.json({ error: 'no such session' }, 404);
+    return c.json({ commands: opts.suggestions ? await opts.suggestions.commands(cwd) : [] });
+  });
+  app.get('/api/suggestions/files', async (c) => {
+    const cwd = suggestCwd(c);
+    if (!cwd) return c.json({ error: 'no such session' }, 404);
+    const limit = Number(c.req.query('limit') ?? MAX_FILE_MATCHES);
+    if (!Number.isInteger(limit) || limit < 1) return c.json({ error: 'limit must be a positive whole number' }, 400);
+    const q = (c.req.query('q') ?? '').slice(0, 200);
+    return c.json(opts.suggestions ? await opts.suggestions.files(cwd, q, limit) : { files: [], total: 0 });
   });
 
   // ── the Workbench ───────────────────────────────────────────────────
