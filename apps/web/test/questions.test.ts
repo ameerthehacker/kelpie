@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Question } from '@kelpie/protocol';
 import { clearDrafts, draftKey, getDrafts, setDrafts, subscribeDrafts } from '../src/lib/question-drafts.js';
-import { answered, answersOf, canSubmit, chosen, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, questionsLine } from '../src/lib/questions.js';
+import { answered, answerOf, answersOf, canSubmit, chosen, decide, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, questionsLine } from '../src/lib/questions.js';
 
 const color: Question = { question: 'Which color?', header: 'Color', options: [{ label: 'Red' }, { label: 'Blue' }] };
 const extras: Question = { question: 'Which extras?', options: [{ label: 'Tests' }, { label: 'Docs' }, { label: 'Lint' }], multiSelect: true };
@@ -9,6 +9,12 @@ const name: Question = { question: 'Name?', kind: 'text', options: [] };
 const slides: Question = { question: 'Slides?', kind: 'number', min: 3, max: 20, defaultValue: 8, unit: 'slides', options: [] };
 
 describe('answering questions', () => {
+  it('leaves the call to the asker with "You decide", in place of anything picked', () => {
+    const d = decide(pick(extras, emptyDraft(), 1));
+    expect(answerOf(extras, d)).toEqual(['You decide']);
+    expect(answerOf(color, decide(emptyDraft()))).toEqual(['You decide']);
+  });
+
   it('picks one option at a time, or "Other" in its place', () => {
     let d = pick(color, emptyDraft(), 0);
     expect(d.picked).toEqual([0]);

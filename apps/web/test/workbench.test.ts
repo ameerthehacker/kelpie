@@ -9,6 +9,7 @@ import {
   cardApprovals,
   chatWhen,
   columns,
+  createdCard,
   dropCard,
   entryOf,
   landing,
@@ -313,5 +314,14 @@ describe('landing', () => {
     expect(landing({ branch: 'kelpie/checkout', base: 'origin/main', landsOn: 'main' })).toEqual({ from: 'kelpie/checkout', into: 'main' });
     expect(landing({ base: 'develop' })).toEqual({ into: 'develop' });
     expect(landing({})).toEqual({ into: 'base' });
+  });
+});
+
+describe('createdCard', () => {
+  it('finds the card a create_card call made, even in a cut output', () => {
+    expect(createdCard('{\n  "card": "c-1",\n  "link": "/workbench/c-1"\n}')).toBe('c-1');
+    expect(createdCard('{ "card": "c-2", "items": [{ "key": "a", "ti')).toBe('c-2');
+    expect(createdCard('Unknown round-up')).toBeUndefined();
+    expect(createdCard(undefined)).toBeUndefined();
   });
 });

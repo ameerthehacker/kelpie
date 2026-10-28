@@ -1,12 +1,11 @@
-import { CheckIcon, MessageCircleQuestionIcon } from 'lucide-react';
+import { CheckIcon } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import type { Answers, Question } from '@kelpie/protocol';
-import { Kbd } from '@/components/ui/kbd';
 import { useAnswerApprovals } from '@/hooks/use-approvals';
 import { useQuestionDrafts } from '@/hooks/use-question-drafts';
 import type { QuestionView } from '@/lib/chat';
 import { clearDrafts, draftKey, getPlace, setPlace } from '@/lib/question-drafts';
-import { answered, answersOf, canSubmit, chosen, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, tabLabel, type Draft } from '@/lib/questions';
+import { answered, answersOf, canSubmit, chosen, decide, emptyDraft, isPicked, nextUnanswered, numberProblem, otherIndex, pick, tabLabel, YOU_DECIDE, type Draft } from '@/lib/questions';
 import { cn } from '@/lib/utils';
 
 const STATE: Record<QuestionView['state'], string> = {
@@ -131,7 +130,8 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
     return ds;
   };
   const choose = (i: number) => {
-    const next = pick(q, draft, i);
+    // Out of "You decide": the person makes the call after all.
+    const next = pick(q, draft.other && draft.text === YOU_DECIDE ? { ...draft, other: false, text: '' } : draft, i);
     setRow(i);
     // Picking "Other" means typing it: the box takes the keyboard as it appears.
     focusTo.current = i === otherIndex(q) && next.other ? 'other' : 'current';
@@ -200,20 +200,25 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
   const title = questions.length === 1 ? 'Question' : `${questions.length} questions`;
   const tabId = (i: number) => `${id}-tab-${i}`;
   const bare = variant === 'bare';
+  const waiting = state === 'open' || state === 'asking';
   return (
     <section
       onKeyDown={onKey}
       data-question-card=""
       aria-label={who ? `${title} from ${who}` : title}
-      className={cn('group/q flex flex-col', bare ? 'min-h-0' : 'bg-surf border-ln rounded-2xl border', className)}
+      // The design's "needs a call" card: pale amber while it waits on the person, quiet once settled.
+      className={cn('group/q flex flex-col', bare ? 'min-h-0' : cn('rounded-xl', waiting ? 'bg-wbg' : 'bg-well'), className)}
     >
       {!bare && (
-        <header className="flex items-center gap-2 px-4 pt-3.5 text-sm">
-          <MessageCircleQuestionIcon className={cn('size-4 shrink-0', open ? 'text-wait' : 'text-mu2')} strokeWidth={2} />
-          <span className="font-medium">{title}</span>
-          <span className="text-mu truncate text-xs">
-            {who && `· ${who} `}· {STATE[state]}
+        <header className={cn('flex items-center gap-1.5 px-4 pt-3.5 text-[13px] font-medium', waiting ? 'text-wait' : 'text-mu')}>
+          <span aria-hidden="true" className="text-[10px]">
+            ◆
           </span>
+          <span className="truncate">
+            {who ?? 'Kelpie'} {waiting ? 'needs a call' : 'asked'}
+            {questions.length > 1 && ` · ${questions.length} questions`}
+          </span>
+          {!waiting && <span className="text-mu2 shrink-0 font-normal">· {STATE[state]}</span>}
         </header>
       )}
 
@@ -295,59 +300,49 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
             ) : (
               <>
                 {q.multiSelect && <p className="text-mu -mt-1 text-xs">Pick any that apply.</p>}
-                <div role={q.multiSelect ? 'group' : 'radiogroup'} aria-labelledby={`${id}-q`} className="-mx-1.5 flex flex-col gap-0.5">
-                  {[...q.options, { label: 'Other', description: undefined }].map((opt, i) => {
+                {/* The design's pills: one per option, then "Other" to write their own, and "You decide" to leave it to the asker. */}
+                <div role={q.multiSelect ? 'group' : 'radiogroup'} aria-labelledby={`${id}-q`} className="flex flex-wrap items-center gap-1.5">
+                  {[...q.options, { label: 'Other', description: 'Write your own answer' }].map((opt, i) => {
                     const isOther = i === otherIndex(q);
-                    const on = isPicked(q, draft, i);
+                    const on = isPicked(q, draft, i) && !(isOther && draft.text === YOU_DECIDE);
                     return (
-                      <div key={`${i}:${opt.label}`} className="flex flex-col">
-                        <button
-                          type="button"
-                          role={q.multiSelect ? 'checkbox' : 'radio'}
-                          aria-checked={on}
-                          data-row={i}
-                          tabIndex={i === row ? 0 : -1}
-                          onClick={() => void choose(i)}
-                          onMouseEnter={() => setRow(i)}
-                          className={cn(
-                            'flex items-start gap-3 rounded-xl px-3 py-2 text-left outline-none',
-                            // The keyboard's row shows while the questions have it (on a picked one, its tint taken, as a ring); the mouse's, under it.
-                            on ? 'bg-acc/10 focus-visible:ring-acc/60 focus-visible:ring-2' : cn('hover:bg-raise/50', i === row && 'group-focus-within/q:bg-raise/70'),
-                          )}
-                        >
-                          <span
-                            aria-hidden="true"
-                            className={cn(
-                              'mt-0.5 flex size-4 shrink-0 items-center justify-center border-[1.5px]',
-                              q.multiSelect ? 'rounded-[4px]' : 'rounded-full',
-                              on ? 'border-acc bg-acc text-accfg' : 'border-mu2',
-                            )}
-                          >
-                            {on && (q.multiSelect ? <CheckIcon className="size-3" strokeWidth={3} /> : <span className="bg-accfg size-1.5 rounded-full" />)}
-                          </span>
-                          <span className="flex min-w-0 flex-1 flex-col">
-                            <span className="text-fg text-sm font-medium">{isOther ? 'Other' : opt.label}</span>
-                            <span className="text-mu text-xs leading-snug">{isOther ? 'Write your own answer' : opt.description}</span>
-                          </span>
-                          {i < 9 && (
-                            <Kbd aria-hidden="true" className="text-mu2 mt-0.5 h-4 min-w-4 bg-transparent text-[11px]">
-                              {i + 1}
-                            </Kbd>
-                          )}
-                        </button>
-                        {isOther && draft.other && (
-                          <input
-                            value={draft.text}
-                            onChange={(e) => update({ ...draft, text: e.target.value })}
-                            placeholder="Your answer"
-                            aria-label="Your own answer"
-                            className={cn(field, 'mt-1 ml-10')}
-                          />
+                      <button
+                        key={`${i}:${opt.label}`}
+                        type="button"
+                        role={q.multiSelect ? 'checkbox' : 'radio'}
+                        aria-checked={on}
+                        aria-description={opt.description}
+                        title={opt.description}
+                        data-row={i}
+                        tabIndex={i === row ? 0 : -1}
+                        onClick={() => void choose(i)}
+                        onMouseEnter={() => setRow(i)}
+                        className={cn(
+                          'focus-visible:ring-acc/50 flex h-8 max-w-full items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-medium outline-none focus-visible:ring-2',
+                          on ? 'border-acc bg-acc text-accfg' : cn('bg-surf border-ln hover:border-ln2', isOther ? 'text-mu' : 'text-fg'),
                         )}
-                      </div>
+                      >
+                        {on && q.multiSelect && <CheckIcon aria-hidden="true" className="size-3.5" strokeWidth={2.6} />}
+                        <span className="truncate">{isOther ? 'Other…' : opt.label}</span>
+                      </button>
                     );
                   })}
+                  <button
+                    type="button"
+                    aria-pressed={draft.other && draft.text === YOU_DECIDE}
+                    disabled={busy}
+                    onClick={() => advance(update(decide(draft)))}
+                    title="Leave the call to whoever asked"
+                    className="text-mu hover:text-fg aria-pressed:text-acc px-2 text-[13px] font-medium underline-offset-2 hover:underline"
+                  >
+                    {YOU_DECIDE}
+                  </button>
                 </div>
+                {/* What the option in reach means: pills have no room for it. */}
+                {q.options[row]?.description && <p className="text-mu -mt-0.5 text-xs leading-snug">{q.options[row].description}</p>}
+                {draft.other && draft.text !== YOU_DECIDE && (
+                  <input value={draft.text} onChange={(e) => update({ ...draft, text: e.target.value })} placeholder="Your answer" aria-label="Your own answer" className={field} />
+                )}
                 {preview && <pre className="bg-chip text-fg2 max-h-60 overflow-auto rounded-xl p-3 font-mono text-xs leading-snug">{preview}</pre>}
               </>
             )}
@@ -381,13 +376,13 @@ export function QuestionCard({ questions, state, answers, sessionId, requestId, 
           {questions.map((x, i) => {
             const picked = chosen(answers, x);
             return (
-              <li key={i} className="flex flex-col">
-                <span className="text-mu text-xs">
-                  {x.header ? `${x.header} · ` : questions.length > 1 ? `${tabLabel(x, i)} · ` : ''}
+              <li key={i} className="flex flex-col gap-0.5">
+                <span className="text-fg font-medium">
+                  {questions.length > 1 && <span className="text-mu mr-1.5 text-xs font-normal">{x.header || tabLabel(x, i)}</span>}
                   {x.question}
                 </span>
-                <span className={cn('text-fg', !picked.length && 'text-mu2 italic')}>
-                  {picked.length ? picked.join(', ') : state === 'answered' ? 'Not answered' : state === 'asking' ? 'Putting it to you…' : '—'}
+                <span className={cn('text-mu', !picked.length && 'text-mu2 italic')}>
+                  {picked.length ? `${picked.join(', ')}${state === 'answered' ? ' — resumed.' : ''}` : state === 'answered' ? 'Not answered' : state === 'asking' ? 'Putting it to you…' : '—'}
                 </span>
               </li>
             );

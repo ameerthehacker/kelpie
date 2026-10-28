@@ -5,13 +5,17 @@ import { AgentPills } from '@/components/agents/agent-pills';
 import { useAgentPane } from '@/components/agents/pane-state';
 import { MessageResponse } from '@/components/ai-elements/message';
 import { AgentEvents, EventLine } from '@/components/chat/events';
+import { FeatureCard } from '@/components/chat/feature-card';
 import { PlanCard } from '@/components/chat/plan-card';
 import { ProgressCard } from '@/components/chat/progress-card';
 import { QuestionCard } from '@/components/chat/question-card';
 import { StepGroup } from '@/components/chat/steps';
 import { useChangesNav } from '@/hooks/use-changes-nav';
 import type { AssistantPart, SpawnView, ToolView } from '@/lib/chat';
+import { createdCard } from '@/lib/workbench';
 import { HaltLine, LimitLine, ResumedLine } from './limit-banner';
+
+const CREATE_CARD = 'mcp__kelpie__create_card';
 
 type Block = Exclude<AssistantPart, ToolView | SpawnView> | { type: 'tools'; tools: ToolView[] } | { type: 'spawns'; spawns: SpawnView[] };
 
@@ -87,8 +91,18 @@ function BlockView({
     case 'reasoning':
       // Claude Code rarely shows its thinking; when it does, it reads as an aside.
       return <p className="text-mu text-sm whitespace-pre-wrap italic">{part.text}</p>;
-    case 'tools':
-      return <StepGroup tools={part.tools} actor={actor} nameOf={nameOf} />;
+    case 'tools': {
+      // A feature Kelpie organised the work into shows as its card, where it did.
+      const cards = part.tools.flatMap((t) => (t.name === CREATE_CARD && t.state === 'done' ? [createdCard(t.output)].filter((c) => c !== undefined) : []));
+      return (
+        <>
+          <StepGroup tools={part.tools} actor={actor} nameOf={nameOf} />
+          {cards.map((id) => (
+            <FeatureCard key={id} cardId={id} />
+          ))}
+        </>
+      );
+    }
     case 'spawns':
       return <AgentPills spawns={part.spawns} />;
     case 'agents':
