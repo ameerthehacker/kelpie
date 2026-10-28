@@ -105,6 +105,7 @@ export function ChangesTab({ roundUpId, repo }: { roundUpId: string; repo?: stri
           <h3 className="text-[15px] font-semibold">Code changes</h3>
           <span className="text-mu font-mono text-xs">
             {filesLabel(data.stats.files)} <Totals additions={data.stats.additions} deletions={data.stats.deletions} />
+            {data.dirty && <span title="Includes the orchestrator's edits, not yet committed"> · uncommitted</span>}
           </span>
           <span className="flex-1" />
           <WrapToggle wrap={wrap} onToggle={toggleWrap} />

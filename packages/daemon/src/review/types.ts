@@ -47,7 +47,7 @@ export interface Changes {
   /** The old and new side's commits. */
   baseSha?: string;
   headSha?: string;
-  /** Agent: the diff includes uncommitted and untracked work in its worktree. */
+  /** The diff includes uncommitted and untracked work: in an agent's worktree, or (feature, only when true) in the feature checkout. */
   dirty?: boolean;
   /** Agent scope: a merge, rebase, cherry-pick or revert under way in its worktree; the files are its branch's committed work. */
   inProgress?: 'merge' | 'rebase' | 'cherry-pick' | 'revert';

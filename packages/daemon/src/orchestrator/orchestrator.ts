@@ -30,6 +30,23 @@ export const ORCHESTRATOR_TOOLS = ['Read', 'Grep', 'Glob'];
 export const SCRATCH_TOOLS = ['Edit', 'Write'];
 /** How the orchestrator asks the person something only they can settle: Kelpie puts the questions to them. */
 export const ASK_TOOL = 'AskUserQuestion';
+const TODO_TOOLS = ['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'];
+/**
+ * What else the orchestrator gets when its round-up's delegation level has it do work itself (solo,
+ * balanced): commands, asked about as an agent's are, and a todo list. Its Edit and Write then reach
+ * its feature checkout too (see `decide`).
+ */
+export const WORK_TOOLS = ['Bash', ...TODO_TOOLS];
+/** Whether a round-up's orchestrator works itself (solo, balanced), rather than only coordinating (delegate). */
+export const worksItself = (session: Session) => session.delegation !== 'delegate';
+const LEVELS: Record<Delegation, string> = {
+  solo: 'solo: do the work yourself, and spawn agents only if the person asks',
+  balanced: 'balanced: do small, quick things yourself, and spawn agents only for big, long or parallel units',
+  delegate: 'delegate: coordinate only, and give every change and command to an agent',
+};
+/** What an orchestrator hears with its next turn when the person changed its round-up's delegation level. */
+export const delegationNote = (level: Delegation) =>
+  `<${NOTIFICATION_TAG}>\nThe person set this round-up's delegation level to ${LEVELS[level]}. Your tools and instructions now follow it.\n\nThis message is from Kelpie, not the person.\n</${NOTIFICATION_TAG}>`;
 const FILE_TOOLS = ['Read', 'Edit', 'Write'];
 /** A permission rule's pattern for everything under an absolute path (Claude Code writes those with a leading `//`). */
 const under = (dir: string) => `/${dir}/**`;
@@ -98,6 +115,9 @@ export interface OrchestratorOptions {
 const agentMode = (mode: Mode) => (mode === 'acceptEdits' ? 'acceptEdits' : 'auto');
 const PLANNING =
   'The person has this round-up in plan mode: no agent may change files. Investigate with read-only agents, then write your plan to your plan file and put it to the person with ExitPlanMode; once they approve it, writers can start.';
+/** The orchestrator's own edits, at solo and balanced, refused in plan mode. */
+const PLANNING_EDITS =
+  'The person has this round-up in plan mode: no files may change, yours included. Investigate, then write your plan to your plan file and put it to the person with ExitPlanMode; once they approve it, you can edit.';
 /** Agents run in auto mode: one in the person's browser could change things on the sites they are signed in to. */
 const PLANNING_BROWSER =
   'The person has this round-up in plan mode: no agent may drive their browser, where it could change things on sites they are signed in to. Investigate with read-only agents without browser (WebFetch reads public pages), then put your plan to the person with ExitPlanMode; once they approve it, browser agents can start.';
@@ -108,6 +128,8 @@ export const HALTED =
 
 const NO_BASE =
   'No base branch is set for this round-up. Ask the person which branch to start from (list_branches shows the options), call set_base_branch with their answer, then spawn the writer.';
+const NO_BASE_CHECKOUT =
+  'No base branch is set for this round-up. Ask the person which branch to start from (list_branches shows the options), call set_base_branch with their answer, then open the feature checkout.';
 const MUSTER_BRIEF_CHARS = 1500;
 
 export interface AgentInfo {
@@ -206,6 +228,8 @@ export class Orchestrator implements SessionHooks {
    * goes with the turn that picks it up after the reset, rather than one the limit would refuse.
    */
   private readonly resumedNotes = new Map<string, string>();
+  /** Orchestrators whose round-up's delegation level the person changed, not told yet: the level they set. */
+  private readonly levelNotes = new Map<string, Delegation>();
   /** Each round-up's Stop all and Resume all, one at a time: the last one still going. */
   private readonly haltOps = new Map<string, Promise<unknown>>();
   /**
@@ -320,35 +344,57 @@ export class Orchestrator implements SessionHooks {
           (session.kind === 'muster' && place ? musterPrompt(place) : agentPrompt(session.writes, place, scratch, session.browser, artifacts)) + preface,
       };
     }
-    // Deny beats allow, so a scratch folder inside the repo (KELPIE_HOME under it) would be denied
-    // along with it: then `decide` alone keeps the orchestrator from editing the repo.
     const cwd = real(session.cwd) ?? session.cwd;
-    const fenced = !!scratch && !within(scratch, cwd);
-    if (scratch && !fenced && !this.warnedUnfenced) {
-      this.warnedUnfenced = true;
-      console.warn(`kelpie: the scratch folder ${scratch} is inside ${cwd}; only Kelpie's own checks keep orchestrators from editing that directory. Set KELPIE_HOME outside it.`);
-    }
+    // At solo and balanced it works itself, in its feature checkout (under Kelpie's worktree root),
+    // which it reaches like its scratch folder. It keeps its cwd, the person's checkout: the harness
+    // keeps a conversation by its directory, and --resume must find it.
+    const works = worksItself(session);
     // Every worktree, the feature branch's included (it may not exist yet), is under Kelpie's root.
     const root = this.worktrees && (real(this.worktrees.root) ?? this.worktrees.root);
-    const denied = [...(fenced ? [cwd] : []), ...(root && !(scratch && within(scratch, root)) ? [root] : [])];
+    const home = works ? this.store.worktreeOf(session.id) : undefined;
+    const feature = home?.state === 'active' && existsSync(home.path) ? real(home.path) : undefined;
+    const writes = works || !!scratch;
+    // Deny beats allow, so a scratch folder (or worktree root) inside the repo (KELPIE_HOME under it)
+    // would be denied along with it: then `decide` alone keeps the orchestrator from editing the repo.
+    const writable = [...(scratch ? [scratch] : []), ...(works && root ? [root] : [])];
+    const inside = writable.find((dir) => within(dir, cwd));
+    const fenced = writes && !inside;
+    if (inside && !this.warnedUnfenced) {
+      this.warnedUnfenced = true;
+      console.warn(`kelpie: ${inside === scratch ? 'the scratch folder' : "Kelpie's worktrees folder"} ${inside} is inside ${cwd}; only Kelpie's own checks keep orchestrators from editing that directory. Set KELPIE_HOME outside it.`);
+    }
+    // Working itself, it edits in its feature checkout, under the root: then only the repo is denied.
+    const denied = [...(fenced ? [cwd] : []), ...(root && !works && !(scratch && within(scratch, root)) ? [root] : [])];
     const planning = session.mode === 'plan';
     return {
       // In plan mode it puts its plan to the person with ExitPlanMode, which only works in the harness's own plan mode.
-      tools: [...ORCHESTRATOR_TOOLS, ASK_TOOL, ...(scratch ? SCRATCH_TOOLS : []), ...(planning ? ['ExitPlanMode'] : [])],
-      // Default mode, never accept-edits: then every edit asks, and `decide` lets through only those
-      // in the scratch folder. The round-up's mode is for its agents (and its prompt).
-      permissionMode: planning ? 'plan' : 'default',
+      tools: [...ORCHESTRATOR_TOOLS, ASK_TOOL, ...(writes ? SCRATCH_TOOLS : []), ...(works ? WORK_TOOLS : []), ...(planning ? ['ExitPlanMode'] : [])],
+      permissionMode: this.orchestratorMode(session),
       // It reads its repo checkout (its cwd) and scratch folder without asking. Reads anywhere else,
       // the feature branch's worktree included, and all edits go to `decide`.
       allowedTools: ['mcp__kelpie', ...(scratch ? [`Read(${under(scratch)})`] : [])],
-      ...(scratch ? { addDirs: [scratch] } : {}),
+      // Working itself, in auto mode (or accept-edits), the harness would let its edits through on
+      // its own: an ask rule beats that, so every edit still goes to `decide`, which holds them to its
+      // feature checkout and scratch folder. Its commands go by auto mode's checks, as an agent's do.
+      ...(works ? { askTools: SCRATCH_TOOLS } : {}),
+      ...(scratch || feature ? { addDirs: [scratch, feature].filter((dir): dir is string => !!dir) } : {}),
       // A backstop for edit rules in the project's or the person's own settings, which would settle
-      // a request before `decide` sees it: never in the repo or in a worktree.
-      ...(denied.length && scratch ? { disallowedTools: denied.flatMap((dir) => SCRATCH_TOOLS.map((t) => `${t}(${under(dir)})`)) } : {}),
+      // a request before `decide` sees it: never in the repo, nor in a worktree but its own.
+      ...(denied.length && writes ? { disallowedTools: denied.flatMap((dir) => SCRATCH_TOOLS.map((t) => `${t}(${under(dir)})`)) } : {}),
       mcpConfig,
       ...connected,
-      appendSystemPrompt: orchestratorPrompt(scratch, session.mode, this.maxAgents) + preface,
+      appendSystemPrompt: orchestratorPrompt(scratch, session.mode, this.maxAgents, session.delegation) + preface,
     };
+  }
+
+  /**
+   * The harness mode an orchestrator runs in. Coordinating only (delegate), default, never accept-edits:
+   * every edit asks, and `decide` lets through only those in the scratch folder. Working itself (solo,
+   * balanced), its agents' mode, so its commands go by the same checks. Plan mode in plan mode.
+   */
+  private orchestratorMode(session: Session): string {
+    if (session.mode === 'plan') return 'plan';
+    return worksItself(session) ? agentMode(session.mode) : 'default';
   }
 
   observe(session: Session, _index: number, event: KelpieEvent): void {
@@ -361,6 +407,14 @@ export class Orchestrator implements SessionHooks {
     if (event.kind === 'file.changed' && session.scratch) {
       const rel = relative(session.scratch, event.data.path);
       if (!rel.startsWith('..') && !isAbsolute(rel) && isDocument(rel)) this.sessions?.publish({ type: 'artifacts', roundUpId: session.parentId ?? session.id, path: rel });
+    }
+    // Its turn over, the orchestrator's own edits are committed, and the feature's Changes show them
+    // (and any commits it made itself).
+    if (event.kind === 'activity' && !event.data.busy && session.role === 'orchestrator' && this.store.worktreeOf(session.id)) {
+      void this.commitOwn(session).then(
+        (committed) => (committed || worksItself(session)) && this.changesIn(session.id),
+        (err) => console.error(`orchestrator ${session.id}: could not commit its edits`, err),
+      );
     }
     if (event.kind === 'activity' && !event.data.busy && session.role === 'agent') {
       if (session.parentId) {
@@ -473,8 +527,9 @@ export class Orchestrator implements SessionHooks {
     // harness leaves it at once; entering it waits for the restart, which brings ExitPlanMode (until
     // then Kelpie's own refusals keep writers out).
     session.restartWhenIdle();
-    if (session.mode !== 'plan') {
-      void session.switchMode('default').catch((err) => console.error(`orchestrator ${session.id}: could not switch mode`, err));
+    // Working itself, it enters plan mode at once too: its harness then stops its own edits and commands.
+    if (session.mode !== 'plan' || worksItself(session)) {
+      void session.switchMode(this.orchestratorMode(session)).catch((err) => console.error(`orchestrator ${session.id}: could not switch mode`, err));
     }
     const mode = agentMode(session.mode);
     // Not awaited: a wedged harness must not hold up the person's change. One that misses it keeps
@@ -488,16 +543,27 @@ export class Orchestrator implements SessionHooks {
   }
 
   /**
-   * The person changed a round-up's delegation level (already saved on the round-up).
-   * Stub: "Delegation orchestrator core" restarts the orchestrator with the level's tools and prompt.
+   * The person changed a round-up's delegation level (saved on the round-up already). Its orchestrator,
+   * whose tools and prompt follow the level, starts afresh (same conversation) once it is idle, and
+   * hears of it with its next turn.
    */
-  setDelegation(_sessionId: string, _level: Delegation): void {}
+  setDelegation(sessionId: string, level: Delegation): void {
+    const session = this.sessions?.get(sessionId);
+    if (!session || session.role !== 'orchestrator') return;
+    session.restartWhenIdle();
+    this.levelNotes.set(session.id, level);
+    // Leaving the work to agents: what it left uncommitted goes in now (or as its turn ends), not with
+    // a writer's checkpoint later.
+    if (!session.working) void this.commitOwn(session).catch((err) => console.error(`orchestrator ${session.id}: could not commit its edits`, err));
+  }
 
   /**
    * Answers what the orchestrator's harness asks by policy: its kelpie tools, its read tools in its
    * repo checkout, feature branch worktree and scratch folder, and its edit tools in its scratch
    * folder, are always fine; anything else is refused. Its plan and its questions go to the person.
-   * An agent's requests all go to the person.
+   * Working itself (solo, balanced), it may also edit in its feature checkout, but not in plan mode
+   * nor while Muster merges there; its commands go to the person, as an agent's do. An agent's
+   * requests all go to the person.
    */
   decide(session: Session, req: EventData<'permission.requested'>): PermissionAnswer | undefined {
     if (session.role !== 'orchestrator') return undefined;
@@ -506,6 +572,9 @@ export class Orchestrator implements SessionHooks {
       return session.mode === 'plan' ? undefined : { allow: false, by: 'kelpie', message: 'This round-up is not in plan mode any more: carry on with the work.' };
     }
     if (req.tool.startsWith('mcp__kelpie__')) return { allow: true, by: 'kelpie' };
+    const works = worksItself(session);
+    if (works && req.tool === 'Bash') return undefined;
+    if (works && TODO_TOOLS.includes(req.tool)) return { allow: true, by: 'kelpie' };
     const input = (req.input ?? {}) as { file_path?: unknown; path?: unknown; pattern?: unknown };
     const scratch = session.scratch;
     const cwd = real(session.cwd) ?? session.cwd;
@@ -522,9 +591,21 @@ export class Orchestrator implements SessionHooks {
       // Resolved through links, so none can lead out of those directories.
       if (target && contained && readable.some((dir) => within(target, dir))) return { allow: true, by: 'kelpie' };
     }
-    if (scratch && SCRATCH_TOOLS.includes(req.tool)) {
+    if (SCRATCH_TOOLS.includes(req.tool)) {
       const path = place(input.file_path);
-      if (path?.startsWith(scratch + sep)) return { allow: true, by: 'kelpie' };
+      if (scratch && path?.startsWith(scratch + sep)) return { allow: true, by: 'kelpie' };
+      const feature = works && path ? this.featureEdit(session, path) : undefined;
+      if (feature === true) return { allow: true, by: 'kelpie' };
+      if (feature) return { allow: false, by: 'kelpie', message: feature };
+    }
+    if (works) {
+      const home = this.store.worktreeOf(session.id);
+      const where = home?.state === 'active' && existsSync(home.path) ? `your feature checkout (${home.path}, by absolute path)` : 'your feature checkout (open_feature_checkout makes it)';
+      return {
+        allow: false,
+        by: 'kelpie',
+        message: `You may only use your kelpie tools, read the repo and your feature branch, edit files in ${where}${scratch ? ` and your scratch folder (${scratch})` : ''}, and run commands the person allows. Give anything else to an agent.`,
+      };
     }
     return {
       allow: false,
@@ -535,8 +616,35 @@ export class Orchestrator implements SessionHooks {
     };
   }
 
-  /** An orchestrator whose agents the person stopped hears it with its next turn, whoever sends it: once. */
+  /**
+   * Whether the orchestrator may edit `path` (resolved) as in its feature checkout: true, or why not
+   * if it is there; undefined if it is not (its checkout made and on disk).
+   */
+  private featureEdit(parent: Session, path: string): true | string | undefined {
+    const home = this.store.worktreeOf(parent.id);
+    const dir = home?.state === 'active' && existsSync(home.path) ? real(home.path) : undefined;
+    if (!home || !dir || !within(path, dir)) return undefined;
+    // Its git metadata is Kelpie's to keep, not part of the feature's files.
+    if (within(path, join(dir, '.git'))) return 'The feature checkout\'s .git is Kelpie\'s to keep: edit only the feature\'s files.';
+    if (parent.mode === 'plan') return PLANNING_EDITS;
+    const muster = this.manager.children(parent.id).find((c) => c.kind === 'muster' && c.cwd === home.path && this.isWorking(c));
+    if (muster) return `Muster ("${muster.title}") is merging in the feature checkout right now: no edits there until it is done. End your turn; you will be notified when it finishes.`;
+    return true;
+  }
+
+  /**
+   * Kelpie's word for an orchestrator's next turn, whoever sends it, each once: that the person
+   * changed its delegation level, and that they stopped (or resumed) its agents.
+   */
   notice(session: Session): string | undefined {
+    const level = this.levelNotes.get(session.id);
+    this.levelNotes.delete(session.id);
+    // The stop note goes last: that is where Kelpie looks for it (see hasHaltNote).
+    return [level && delegationNote(level), this.haltNotice(session)].filter(Boolean).join('\n\n') || undefined;
+  }
+
+  /** An orchestrator whose agents the person stopped hears it with its next turn, whoever sends it: once. */
+  private haltNotice(session: Session): string | undefined {
     const resumed = this.resumedNotes.get(session.id);
     if (resumed) {
       this.resumedNotes.delete(session.id);
@@ -639,6 +747,10 @@ export class Orchestrator implements SessionHooks {
         );
       }
       const home = await this.worktrees.ensureHome({ id: parent.id, title: parent.title, baseBranch: parent.baseBranch, baseCommit: parent.baseCommit }, repo);
+      // The writer forks from the feature branch's last commit: the orchestrator's own edits go in first.
+      await this.commitOwn(parent, home).catch((err) => {
+        throw new ToolError(`could not commit your edits in the feature checkout before starting the writer: ${(err as Error).message}`);
+      });
       const child = this.manager.create(this.worktrees.agentPath(repo, parent.id, id), { ...opts, id });
       try {
         await this.worktrees.createAgent({ id, title }, home, input.deliver ?? 'muster');
@@ -706,6 +818,31 @@ export class Orchestrator implements SessionHooks {
   }
 
   /**
+   * The feature branch's checkout, for the orchestrator to work in itself: made from the base branch
+   * the first time (which fixes the base, as a first writer does), brought back if the sweep took it.
+   */
+  async openFeatureCheckout(parent: Session): Promise<{ featureCheckout: string; featureBranch: string; baseBranch: string }> {
+    const repo = this.worktrees ? await this.worktrees.repoOf(parent.cwd) : undefined;
+    if (!repo || !this.worktrees) throw new ToolError(`${parent.cwd} is not a git repository, so there is no feature checkout to work in: give changes to an agent`);
+    const home = this.store.worktreeOf(parent.id);
+    if (!home && (!parent.baseBranch || !parent.baseCommit)) throw new ToolError(NO_BASE_CHECKOUT);
+    if (!home || home.state !== 'active' || !existsSync(home.path)) {
+      if (!(await this.worktrees.makeRoom((row) => this.inUse(row), 1, (row) => row.sessionId === parent.id))) {
+        throw new ToolError(`All ${this.worktrees.max} worktrees are in use or hold uncommitted work, so the feature checkout can't be made now. Try again once agents finish.`);
+      }
+    }
+    try {
+      const live = home
+        ? await this.worktrees.ensure(home)
+        : await this.worktrees.ensureHome({ id: parent.id, title: parent.title, baseBranch: parent.baseBranch!, baseCommit: parent.baseCommit! }, repo);
+      return { featureCheckout: live.path, featureBranch: live.branch, baseBranch: live.baseBranch };
+    } catch (err) {
+      if (err instanceof GitError) throw new ToolError(`could not make the feature checkout: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
    * Brings agents' branches into the feature branch, in order. Kelpie merges what git can merge
    * cleanly; at the first conflict, the rest go to a Muster agent with every agent's brief and report.
    */
@@ -736,11 +873,16 @@ export class Orchestrator implements SessionHooks {
       if ((await this.worktrees.ownCommits(row)) === 0) throw new ToolError(`"${agent.title}" has nothing to muster: no commits on ${row.branch} beyond the feature branch it was cut from`);
       rows.push({ agent, row });
     }
-    // Merging changes files under anyone working in the feature branch (readers running tests).
-    if (this.inUse(home)) {
+    // Merging changes files under anyone working in the feature branch (readers running tests); the
+    // orchestrator itself is busy calling this.
+    if (this.inUse(home, parent)) {
       throw new ToolError('agents are working in the feature branch right now (read-only agents or Muster). End your turn; muster once they are done.');
     }
     const live = await this.worktrees.ensure(home);
+    // A merge refuses a feature checkout with uncommitted work: the orchestrator's own edits go in first.
+    await this.commitOwn(parent, live).catch((err) => {
+      throw new ToolError(`could not commit your edits in the feature checkout before mustering: ${(err as Error).message}`);
+    });
     const merged: string[] = [];
     for (const [i, { agent, row }] of rows.entries()) {
       const result = await this.worktrees.merge(live, row.branch, `Muster: ${agent.title} (${row.branch})`);
@@ -1319,9 +1461,28 @@ export class Orchestrator implements SessionHooks {
     }
   }
 
-  /** Someone is working in this worktree right now, or about to (its writer, Muster, or a reader). */
-  private inUse(row: WorktreeRow): boolean {
-    return this.manager.all().some((s) => s.cwd === row.path && (this.isWorking(s) || s.launching));
+  /**
+   * Someone is working in this worktree right now, or about to (its writer, Muster, or a reader; for
+   * the feature branch's, an orchestrator that works there itself), but `except`.
+   */
+  private inUse(row: WorktreeRow, except?: Session): boolean {
+    const busy = (s: Session) => s !== except && (this.isWorking(s) || s.launching);
+    if (this.manager.all().some((s) => s.cwd === row.path && busy(s))) return true;
+    const parent = row.kind === 'home' ? this.manager.get(row.roundUpId) : undefined;
+    return !!parent && worksItself(parent) && busy(parent);
+  }
+
+  /**
+   * Commits what the orchestrator left uncommitted in its feature checkout, where it edits itself at
+   * solo and balanced (or did, until the person changed the level): at the end of its turns, before a
+   * writer forks from the feature branch, and before anything is merged into it. Never while Muster
+   * works there: what is uncommitted then is Muster's. True if it committed.
+   */
+  private async commitOwn(parent: Session, home = this.store.worktreeOf(parent.id)): Promise<boolean> {
+    if (!home || !this.worktrees || home.state !== 'active') return false;
+    if (!worksItself(parent) && !this.levelNotes.has(parent.id)) return false;
+    if (this.manager.children(parent.id).some((c) => c.kind === 'muster' && c.cwd === home.path && this.isWorking(c))) return false;
+    return this.worktrees.commitEdits(home, 'orchestrator');
   }
 
   /** The worktree a session runs in: its own, or one it was sent to read (or Muster's feature branch). */

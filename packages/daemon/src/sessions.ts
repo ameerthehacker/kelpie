@@ -217,6 +217,9 @@ export interface SendOptions {
   together?: TogetherTurn[];
 }
 
+/** A permission rule for commands: `Bash`, or `Bash(...)`. */
+const isBashRule = (rule: string) => rule === 'Bash' || rule.startsWith('Bash(');
+
 const FROM: Record<Exclude<OutboxSource, 'user'>, string> = { orchestrator: 'From the orchestrator:', kelpie: 'From Kelpie:' };
 
 /**
@@ -694,13 +697,17 @@ export class Session {
   /**
    * What the person allowed for a sub-agent's whole round-up. Never the Claude in Chrome tools, even
    * by a rule saved before Kelpie stopped offering them: every use of the person's browser is asked about.
+   * An orchestrator that works itself (solo, balanced) gets the round-up's command rules: its edits
+   * go by Kelpie's own checks (its hooks' `decide`), never by a saved rule.
    */
   private savedRules(): string[] {
-    if (!this.row.parentId) return [];
-    return this.ctx.store
-      .rulesOf(this.row.parentId)
+    const roundUp = this.row.parentId ?? (this.delegation !== 'delegate' ? this.id : undefined);
+    if (!roundUp) return [];
+    const rules = this.ctx.store
+      .rulesOf(roundUp)
       .map((r) => r.rule)
       .filter((r) => !isChromeTool(r));
+    return this.row.parentId ? rules : rules.filter(isBashRule);
   }
 
   /**
@@ -1501,7 +1508,9 @@ export class SessionManager {
           continue;
         }
       }
-      const rule = opts.allow && opts.remember && session.parentId && pending.rule && !isChromeTool(pending.rule) ? pending.rule : undefined;
+      // The orchestrator's own: only its commands, once it works itself (see Session.savedRules).
+      const remembers = session.parentId ? !isChromeTool(pending.rule ?? '') : session.delegation !== 'delegate' && isBashRule(pending.rule ?? '');
+      const rule = opts.allow && opts.remember && pending.rule && remembers ? pending.rule : undefined;
       const ok = session.answer(
         requestId,
         opts.allow

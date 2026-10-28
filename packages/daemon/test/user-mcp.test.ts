@@ -89,7 +89,7 @@ function setup(env: Record<string, string> = {}) {
 
 /** An orchestrator round-up, and the argv of an agent it started (a reader, unless `writes`). */
 async function agentArgs(ctx: ReturnType<typeof setup>, writes = false) {
-  const parent = ctx.sessions.create();
+  const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
   await parent.send('Go');
   await waitFor(() => jsonLines<string[]>(ctx.argsFile).length === 1);
   const { agentId } = await ctx.orch.spawn(parent, writes ? { title: 'Writer', task: 'change', writes: true } : { title: 'Reader', task: 'look', writes: false });
@@ -182,7 +182,7 @@ describe("the person's MCP servers for agents", () => {
   it("routes every call to a person's MCP tool to the person, and remembers it per tool for the round-up", async () => {
     const ctx = setup({ FAKE_ASK: 'is:open', FAKE_ASK_TOOL: 'mcp__github__search_issues', FAKE_ASK_SERVER: 'github' });
     ctx.orch.settings.update({ useUserMcp: true, mcpAllow: grants('github') });
-    const parent = ctx.sessions.create();
+    const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
     await parent.send('Go');
     // The orchestrator's own ask (it never has the server) is refused by Kelpie's policy, never shown.
     await waitFor(() => jsonLines(ctx.answers).length === 1);
@@ -210,7 +210,7 @@ describe("the person's MCP servers for agents", () => {
   it('asks again for another tool of a server one tool of which is remembered', async () => {
     const ctx = setup({ FAKE_ASK: 'x', FAKE_ASK_TOOL: 'mcp__github__create_issue', FAKE_ASK_SERVER: 'github' });
     ctx.orch.settings.update({ useUserMcp: true, mcpAllow: grants('github') });
-    const parent = ctx.sessions.create();
+    const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
     await parent.send('Go');
     await waitFor(() => jsonLines(ctx.answers).length === 1);
     ctx.store.addRule(parent.id, 'mcp__github__search_issues');
@@ -222,7 +222,7 @@ describe("the person's MCP servers for agents", () => {
   it('never sends an agent (or the orchestrator) a turn from Kelpie or the orchestrator that starts with /', async () => {
     const stdin = join(tmp('kelpie-stdin-'), 'stdin.jsonl');
     const ctx = setup({ FAKE_STDIN_FILE: stdin, FAKE_EVERY_TURN: '1' });
-    const parent = ctx.sessions.create();
+    const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
     // The person's own turns may be commands.
     await parent.send('/compact');
     await waitFor(() => jsonLines<{ text: string }>(stdin).some((l) => l.text === '/compact'));
@@ -252,7 +252,7 @@ describe("the person's MCP servers for agents", () => {
     const ctx = setup();
     const github: McpGrant = { scope: 'user', name: 'github', fingerprint: '0123456789abcdef' };
     const notes: McpGrant = { scope: 'user', name: 'notes', fingerprint: '0123456789abcdef' };
-    const parent = ctx.sessions.create();
+    const parent = ctx.sessions.create(undefined, { delegation: 'delegate' });
     const other = ctx.sessions.create();
     const rules = (id: string) => ctx.store.rulesOf(id).map((r) => r.rule).sort();
     // Rules saved before a server was allowed were for another server of that name.

@@ -3,7 +3,7 @@
  * role is also enforced by its tool set (read-only repo tools, no commands); these say how to use it.
  */
 
-import { MAX_AGENTS, relayQuestion, type Mode } from '@kelpie/protocol';
+import { MAX_AGENTS, relayQuestion, type Delegation, type Mode } from '@kelpie/protocol';
 import type { ToolThread } from '../review/reviews.js';
 
 export const NOTIFICATION_TAG = 'kelpie-notification';
@@ -22,7 +22,8 @@ const MODE_RULES: Partial<Record<Mode, string>> = {
   acceptEdits: `The person has this round-up in accept-edits mode: agents change files freely, but anything else that needs permission (most commands, web access) waits for the person's approval.`,
 };
 
-export const orchestratorPrompt = (scratch?: string, mode: Mode = 'auto', maxAgents: number = MAX_AGENTS.default) => {
+/** `_delegation`: the round-up's level; the prompt per level is "Delegation prompts"' (this one is delegate's). */
+export const orchestratorPrompt = (scratch?: string, mode: Mode = 'auto', maxAgents: number = MAX_AGENTS.default, _delegation: Delegation = 'delegate') => {
   const rules = [
     `You may read the repo yourself with Read, Grep and Glob: your working directory is the person's checkout, which may not be on your base branch and may hold their uncommitted changes. Once writers have started, list_agents gives featureCheckout, where your feature branch is checked out: read the feature's code there, and call list_agents again for its path if a read there fails (it may have been cleaned up; asking brings it back). Use them for quick answers and sharper briefs, and keep it light so your context stays lean: give any substantial investigation to a read-only agent. You never change repo files and cannot run commands: changes, builds and tests go to sub-agents via spawn_agent. ${files(scratch)} Never state facts about the code or about results that neither your own reading nor an agent's report gave you.`,
     `Your agents are your plan. Every unit of work is one agent, and its title is what the person sees in the Agents pane next to that agent's progress and todos, so make it a short name for the unit ("Checkout API", "RCA ticket 4512"), never "Agent 1". You have no todo list of your own: list_agents is your tracker. Work that must wait for another agent's result is not spawned yet: tell the person it is waiting, and spawn it when you are notified that its input is ready.`,

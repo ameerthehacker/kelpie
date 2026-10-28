@@ -51,7 +51,8 @@ function setup(env: Record<string, string> = {}, opts: { maxAgents?: number; not
 
 /** Starts an orchestrator round-up and returns an MCP client holding its run's token. */
 async function orchestrator(ctx: ReturnType<typeof setup>, create: Parameters<SessionManager['create']>[1] = {}) {
-  const parent = ctx.sessions.create(undefined, create);
+  // Today's orchestrator, which only coordinates, unless a test picks another level.
+  const parent = ctx.sessions.create(undefined, { delegation: 'delegate', ...create });
   await parent.send('Do the things');
   const argv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[0]);
   const config = JSON.parse(argv[argv.indexOf('--mcp-config') + 1]!);
@@ -442,7 +443,7 @@ describe('orchestrator round-ups', () => {
 
   it('settles the orchestrator\'s scratch edits and kelpie tools itself in plan mode, and leaves its plan to the person', async () => {
     const ctx = setup({ FAKE_HANG: '1' }, { scratch: true });
-    const parent = ctx.sessions.create(undefined, { mode: 'plan' });
+    const parent = ctx.sessions.create(undefined, { mode: 'plan', delegation: 'delegate' });
     const ask = (tool: string, input: Record<string, unknown>) => ctx.orch.decide(parent, { requestId: 'q', tool, title: tool, input });
     expect(ask('Write', { file_path: join(parent.scratch!, 'plan.md'), content: 'x' })).toMatchObject({ allow: true });
     expect(ask('mcp__kelpie__spawn_agent', {})).toMatchObject({ allow: true });

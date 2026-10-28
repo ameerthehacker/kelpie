@@ -34,7 +34,10 @@ export interface View {
   /** That base's commit, for git. */
   base: string;
   headSha: string;
-  /** An agent's work under way: its worktree's files are the new side, uncommitted work included. */
+  /**
+   * Work under way: the worktree's files are the new side, uncommitted work included. An agent's
+   * worktree, or the feature checkout while it holds uncommitted work (the orchestrator's own edits).
+   */
   workdir?: string;
   dirty?: boolean;
   /** A merge or rebase under way in its worktree: the view is of its branch's commits instead. */
@@ -211,6 +214,10 @@ export class Changes {
       const head = await this.revParse(home.repoRoot, `refs/heads/${home.branch}`);
       if (!head) return 'none';
       const baseSha = await ownBase(home, head);
+      // The orchestrator's edits under way (it works there itself at solo and balanced) show until
+      // Kelpie commits them; never half of Muster's merge.
+      const onDisk = (home.state === 'active' || home.state === 'creating') && existsSync(home.path);
+      const dirty = onDisk && !(await operationIn(home.path)) && (await runGit(home.path, ['status', '--porcelain'])).stdout.trim().length > 0;
       return {
         scope: 'feature',
         sessionId,
@@ -222,6 +229,7 @@ export class Changes {
         branch: home.branch,
         baseRef: home.baseBranch,
         ...(existsSync(home.path) ? { checkoutPath: home.path } : {}),
+        ...(dirty ? { workdir: home.path, dirty } : {}),
       };
     }
     if (session.kind === 'muster' || !session.writes) return 'none';
@@ -307,7 +315,7 @@ export class Changes {
       baseRef: view.baseRef,
       baseSha: view.baseSha,
       headSha: view.headSha,
-      ...(view.scope === 'agent' ? { dirty: !!view.dirty } : {}),
+      ...(view.scope === 'agent' || view.dirty ? { dirty: !!view.dirty } : {}),
       ...(view.inProgress ? { inProgress: view.inProgress } : {}),
       ...(view.checkoutPath ? { checkoutPath: view.checkoutPath } : {}),
       ...(musteredFrom ? { musteredFrom } : {}),
@@ -564,7 +572,10 @@ export class Changes {
   private async owner(view: View, file: ChangedFile, side: Side, line: number): Promise<AgentRef | null> {
     if (view.scope === 'agent') return view.agent!;
     if (side === 'deletions') return file.agents.length === 1 ? file.agents[0]! : null;
-    const blame = await runGit(view.repo, ['blame', '--porcelain', '-L', `${line},${line}`, view.headSha, '--', file.path]);
+    // Uncommitted lines (the orchestrator's edits under way) blame to no commit, so to nobody.
+    const blame = view.workdir
+      ? await runGit(view.workdir, ['blame', '--porcelain', '-L', `${line},${line}`, '--', file.path])
+      : await runGit(view.repo, ['blame', '--porcelain', '-L', `${line},${line}`, view.headSha, '--', file.path]);
     const commit = blame.code === 0 ? blame.stdout.split(/\s/, 1)[0] : undefined;
     if (!commit) return null;
     const deliveries = this.store.deliveriesOf(view.roundUpId);
