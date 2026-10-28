@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
 import { openStore } from '@kelpie/store';
 import { createApp, delegationNote, Orchestrator, SessionManager, WORK_TOOLS, Worktrees, type Session } from '../src/index.js';
+import { inDir, namesDir } from '../src/orchestrator/orchestrator.js';
 
 const FAKE = join(import.meta.dirname, '../../adapters/test/fake-claude.mjs');
 const FIXTURE = join(import.meta.dirname, '../../adapters/fixtures/claude-code/plain.jsonl');
@@ -358,32 +359,114 @@ describe('delegation levels', () => {
     await waitFor(() => log(home).split('\n')[0] === 'kelpie: orchestrator edits (wip.txt)');
   });
 
-  it('applies the round-up’s saved command rules to an orchestrator that works itself, never its edit rules', async () => {
+  it('runs the orchestrator’s commands in its feature checkout, never the person’s, and none while Muster merges there', async () => {
+    const ctx = setup({ FAKE_HANG: '1' });
+    const { parent, call } = await orchestrator(ctx, { delegation: 'balanced' });
+    const cwd = realpathSync(ctx.checkout);
+    const guard = (command: string, at = cwd) => ctx.orch.guardCommand(parent, { command, cwd: at });
+    // No feature checkout yet: nowhere to run it.
+    expect(guard('pnpm test')).toEqual({ deny: expect.stringMatching(/call open_feature_checkout first/) });
+    await call('set_base_branch', { branch: 'origin/main' });
+    const { data } = await call('open_feature_checkout');
+    const home = data.featureCheckout as string;
+    expect(home).toBe(ctx.store.worktreeOf(parent.id)!.path);
+
+    // Its shell in the person's checkout (as every process's first command finds it): started in the feature checkout instead.
+    const moved = guard('pwd -P > where.txt & pwd -P > also.txt; wait');
+    expect(moved).toEqual({ command: `cd '${home}' || exit 1; pwd -P > where.txt & pwd -P > also.txt; wait` });
+    // As the harness's shell runs it, from the person's checkout: every part runs in the feature checkout.
+    execFileSync('bash', ['-c', (moved as { command: string }).command], { cwd: ctx.checkout });
+    expect(readFileSync(join(home, 'where.txt'), 'utf8').trim()).toBe(realpathSync(home));
+    expect(readFileSync(join(home, 'also.txt'), 'utf8').trim()).toBe(realpathSync(home));
+    expect(existsSync(join(ctx.checkout, 'where.txt'))).toBe(false);
+    // Already inside it (the shell keeps its cwd between commands): left as it is.
+    expect(guard('pnpm test', realpathSync(home))).toBeUndefined();
+    expect(guard('pnpm test', join(realpathSync(home), 'src'))).toBeUndefined();
+    // Elsewhere (its scratch folder, say): moved back.
+    expect(guard('ls', parent.scratch!)).toEqual({ command: `cd '${home}' || exit 1; ls` });
+
+    // Naming the person's checkout, however it is spelled, is refused; a directory that only starts the same is not it.
+    for (const command of [`cd ${ctx.checkout} && git status`, `git -C "${cwd}" stash`, `rm ${cwd}/app.txt`, `ls ${ctx.checkout}`]) {
+      expect(guard(command)).toEqual({ deny: expect.stringContaining(`never in the person's checkout (${ctx.checkout})`) });
+    }
+    expect(guard(`ls ${ctx.checkout}-two`)).toEqual({ command: expect.stringContaining('ls ') });
+    expect(guard(`cat ${home}/app.txt`, realpathSync(home))).toBeUndefined();
+
+    // Muster at work in the feature checkout: no commands there, as no edits.
+    const muster = ctx.sessions.create(home, { parentId: parent.id, role: 'agent', kind: 'muster', writes: true, title: 'Muster: API' });
+    await muster.send('merge');
+    await waitFor(() => muster.working);
+    expect(guard('pnpm test', realpathSync(home))).toEqual({ deny: expect.stringMatching(/Muster \("Muster: API"\) is merging in the feature checkout right now: no commands/) });
+    await muster.interrupt();
+    await ctx.sessions.delete(muster.id);
+    expect(guard('pnpm test', realpathSync(home))).toBeUndefined();
+  });
+
+  it('spots a command naming a directory, however it is spelled, and starts one elsewhere whatever its operators', () => {
+    const repo = join(homedir(), 'code', 'acme');
+    for (const command of [`ls ${repo}`, `cd ${repo}/src`, `cat "${repo}"`, 'cd ~/code/acme && ls', 'ls $HOME/code/acme/', 'ls ${HOME}/code/acme']) {
+      expect(namesDir(command, repo), command).toBe(true);
+    }
+    for (const command of [`ls ${repo}-two`, `ls ${repo}.bak`, 'ls ~/code/acmex', 'pnpm test']) expect(namesDir(command, repo), command).toBe(false);
+    // Kelpie's folder inside the repo (KELPIE_HOME under it) is not the person's checkout.
+    expect(namesDir(`ls ${repo}/.kelpie/worktrees/x/home`, repo, [join(repo, '.kelpie', 'worktrees')])).toBe(false);
+    expect(namesDir(`ls ${repo}/.kelpie/worktrees/x/home ${repo}/app.txt`, repo, [join(repo, '.kelpie', 'worktrees')])).toBe(true);
+    expect(inDir("/w/it's here", 'a && b')).toBe(`cd '/w/it'\\''s here' || exit 1; a && b`);
+  });
+
+  it('puts every command of an orchestrator that works itself through Kelpie’s guard, ahead of the harness’s checks; none at delegate', async () => {
+    const answers = join(tmp('kelpie-answers-'), 'answers.jsonl');
+    const ctx = setup({ FAKE_HOOK: 'pnpm test', FAKE_ANSWER_FILE: answers });
+    const parent = ctx.sessions.create(undefined, { delegation: 'solo' });
+    await parent.send('Run the tests');
+    // Its first command, before any feature checkout: refused, saying how to get one.
+    await waitFor(() => jsonLines(answers).length > 0);
+    expect(jsonLines(answers)[0]).toEqual({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: expect.stringMatching(/open_feature_checkout first/) },
+    });
+
+    // At delegate it has no commands, and no guard.
+    const other = join(tmp('kelpie-answers-'), 'answers.jsonl');
+    const d = setup({ FAKE_HOOK: 'pnpm test', FAKE_ANSWER_FILE: other });
+    const p = d.sessions.create(undefined, { delegation: 'delegate' });
+    await p.send('Run the tests');
+    await waitFor(() => idle(p));
+    expect(jsonLines(other)).toEqual([]);
+  });
+
+  it('keeps the round-up’s saved rules from the orchestrator, and saves none from its own requests', async () => {
     const answers = join(tmp('kelpie-answers-'), 'answers.jsonl');
     const ctx = setup({ FAKE_ASK: 'pnpm test', FAKE_ANSWER_FILE: answers });
     const parent = ctx.sessions.create(undefined, { delegation: 'balanced' });
+    // Rules the person saved for its agents, a broad one among them.
     ctx.store.addRule(parent.id, 'Bash(pnpm test)');
+    ctx.store.addRule(parent.id, 'Bash');
     ctx.store.addRule(parent.id, 'Edit');
     await parent.send('Run the tests');
     const argv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[0]);
-    expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie', `Read(/${parent.scratch}/**)`, 'Bash(pnpm test)']);
-    await waitFor(() => jsonLines(answers).length > 0);
-    expect(jsonLines<{ behavior: string }>(answers)[0]).toMatchObject({ behavior: 'allow' });
+    expect(flag(argv, '--allowedTools')).toEqual(['mcp__kelpie', `Read(/${parent.scratch}/**)`]);
+    // Its command waits for the person, saved rule or not.
+    await waitFor(() => parent.approvals().length === 1);
+    expect(parent.approvals()[0]).toMatchObject({ tool: 'Bash', rule: 'Bash(pnpm test)' });
+    expect(jsonLines(answers)).toEqual([]);
 
-    // Without a rule, its command waits for the person; at delegate, none apply and Kelpie refuses it.
-    const other = setup({ FAKE_ASK: 'pnpm test' });
-    const p = other.sessions.create(undefined, { delegation: 'balanced' });
-    await p.send('Run the tests');
-    await waitFor(() => p.approvals().length === 1);
-    expect(p.approvals()[0]).toMatchObject({ tool: 'Bash' });
-    const res = await other.app.request('/api/approvals', {
+    const res = await ctx.app.request('/api/approvals', {
       method: 'POST',
       headers: { host: '127.0.0.1:7317', 'content-type': 'application/json' },
-      body: JSON.stringify({ items: [{ sessionId: p.id, requestId: p.approvals()[0]!.requestId }], decision: 'allow', remember: true }),
+      body: JSON.stringify({ items: [{ sessionId: parent.id, requestId: parent.approvals()[0]!.requestId }], decision: 'allow', remember: true }),
     });
     expect(res.status).toBe(200);
-    // "Allow for round-up" on its command is saved for the round-up.
-    await waitFor(() => other.store.rulesOf(p.id).length === 1);
-    expect(other.store.rulesOf(p.id).map((r) => r.rule)).toEqual(['Bash(pnpm test)']);
+    // "Allow for round-up" on its own command allows it once: no rule for the harness, none saved.
+    await waitFor(() => jsonLines(answers).length > 0);
+    expect(jsonLines<{ behavior: string; updatedPermissions?: unknown }>(answers)[0]).toEqual(expect.objectContaining({ behavior: 'allow' }));
+    expect(jsonLines<{ updatedPermissions?: unknown }>(answers)[0]!.updatedPermissions).toBeUndefined();
+    expect(ctx.store.rulesOf(parent.id).map((r) => r.rule)).toEqual(['Bash(pnpm test)', 'Bash', 'Edit']);
+
+    // Its agents still get them.
+    const agent = ctx.sessions.create(undefined, { parentId: parent.id, role: 'agent', title: 'Tests' });
+    const before = jsonLines(ctx.argsFile).length;
+    await agent.send('Run the tests');
+    const agentArgv = await waitFor(() => jsonLines<string[]>(ctx.argsFile)[before]);
+    expect(flag(agentArgv, '--allowedTools')).toEqual(expect.arrayContaining(['Bash(pnpm test)', 'Bash', 'Edit']));
   });
 });

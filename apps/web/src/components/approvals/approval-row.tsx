@@ -37,7 +37,7 @@ export function ApprovalRow({ group, selected, busy, onAnswer, onSelect, canReme
   busy: boolean;
   onAnswer: (answer: GroupAnswer) => void;
   onSelect: () => void;
-  /** "Allow for round-up" needs a rule to save (and an agent asking, not the orchestrator). */
+  /** "Allow for round-up" needs a rule to save and an agent asking, not only the orchestrator (see `canRemember`). */
   canRemember?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -89,7 +89,7 @@ export function ApprovalRow({ group, selected, busy, onAnswer, onSelect, canReme
               type="button"
               disabled={busy}
               onClick={() => onAnswer({ decision: 'allow', remember: true })}
-              title={`Allow ${ruleLabel(group.rule)} for every agent in this round-up, now and later`}
+              title={`Allow ${ruleLabel(group.rule)} for every agent in this round-up, now and later (never the orchestrator, which asks each time)`}
               className={cn(btn, 'bg-chip text-fg2 hover:bg-raise')}
             >
               Allow for round-up

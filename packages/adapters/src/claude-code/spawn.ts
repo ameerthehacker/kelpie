@@ -8,7 +8,7 @@ import { createInterface } from 'node:readline';
 import { Readable } from 'node:stream';
 import type { Effort, KelpieEvent } from '@kelpie/protocol';
 import { resetFromText, type UsageLimitStop } from '../limits.js';
-import type { Adapter, PermissionAnswer, Run, RunExit, RunSpec } from '../types.js';
+import type { Adapter, CommandGuard, CommandVerdict, PermissionAnswer, Run, RunExit, RunSpec } from '../types.js';
 import { ClaudeCodeParser } from './parse.js';
 
 type Obj = Record<string, any>;
@@ -57,6 +57,23 @@ export const ARTIFACT_WRITE_RULES = [
 
 const STDERR_TAIL = 8 * 1024;
 const CONTROL_TIMEOUT_MS = 5000;
+/** The hook callback Kelpie registers for a run's `commandGuard`. */
+const COMMAND_HOOK = 'kelpie-command';
+
+/**
+ * Registers a run's `commandGuard` the way the Agent SDK registers its hooks: an `initialize` control
+ * request, after which the CLI asks (`hook_callback`) before every Bash call, ahead of its permission
+ * checks and rules, with the command and its shell's cwd. Claude Code 2.1.308 takes it in print mode.
+ */
+export const initializeRequest = () => ({ subtype: 'initialize', hooks: { PreToolUse: [{ matcher: 'Bash', hookCallbackIds: [COMMAND_HOOK] }] } });
+
+/** A guard's verdict as the CLI takes a PreToolUse hook's output: refused, or run with a new command. */
+export function hookOutput(verdict: CommandVerdict, toolInput: Obj): Obj {
+  if (!verdict) return {};
+  if ('deny' in verdict) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: verdict.deny } };
+  // Without a decision, the new input still goes to the CLI's permission checks (and to us, if they ask).
+  return { hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { ...toolInput, command: verdict.command } } };
+}
 
 export function claudeArgs(spec: RunSpec): string[] {
   const args = [
@@ -147,12 +164,16 @@ class ClaudeCodeRun implements Run {
   private mcpDir: string | undefined;
   /** Its effort is pinned by CLAUDE_CODE_EFFORT_LEVEL, which no live change gets past. */
   private effortPinned = false;
+  private readonly commandGuard: CommandGuard | undefined;
+  /** Why Kelpie ended it before it could work: the CLI did not take its command guard. */
+  private refused: string | undefined;
 
   constructor(spec: RunSpec) {
     this.runId = spec.runId ?? randomUUID();
     this.runDir = spec.runDir ?? join(homedir(), '.kelpie', 'runs', this.runId);
     this.parser = new ClaudeCodeParser({ runId: this.runId, todos: spec.todos });
     this.done = new Promise((r) => (this.resolveDone = r));
+    this.commandGuard = spec.commandGuard;
 
     const bin = spec.bin ?? 'claude';
     // rawLine pointers index raw.jsonl from line 1, so a directory holds exactly one run.
@@ -183,7 +204,31 @@ class ClaudeCodeRun implements Run {
     // Exit is reported only after the last stdout line has been read.
     this.child.on('close', (code, signal) => void linesDone.then(() => this.finish({ code, signal })));
 
+    // Sent before the first turn: the CLI reads stdin in order, so its first command is guarded too.
+    if (this.commandGuard) void this.guardCommands();
     if (spec.prompt) this.send(spec.prompt);
+  }
+
+  /** Registers the command guard; a CLI that does not take it is ended, rather than run unguarded. */
+  private async guardCommands(): Promise<void> {
+    const res = await this.control(initializeRequest());
+    if (res?.subtype === 'success' || this.exit) return;
+    this.refused = `the harness did not take Kelpie's command check: ${res?.error ?? 'no answer'}`;
+    this.child.kill('SIGTERM');
+  }
+
+  /** Answers a command guard callback: the guard's verdict, or a refusal if it failed. */
+  private async answerHook(requestId: string, request: Obj): Promise<void> {
+    const input = (request.input ?? {}) as Obj;
+    const toolInput = (input.tool_input ?? {}) as Obj;
+    let verdict: CommandVerdict;
+    try {
+      verdict = await this.commandGuard!({ command: String(toolInput.command ?? ''), cwd: String(input.cwd ?? '') });
+    } catch (err) {
+      verdict = { deny: `Kelpie could not check this command: ${(err as Error).message}` };
+    }
+    if (this.exit) return;
+    this.child.stdin.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response: hookOutput(verdict, toolInput) } }) + '\n');
   }
 
   get harnessSessionId(): string | undefined {
@@ -291,9 +336,11 @@ class ClaudeCodeRun implements Run {
       const res = o.response ?? {};
       this.controls.get(res.request_id)?.(res);
       this.controls.delete(res.request_id);
+    } else if (o.type === 'control_request' && o.request?.subtype === 'hook_callback' && o.request.callback_id === COMMAND_HOOK && this.commandGuard) {
+      void this.answerHook(o.request_id, o.request);
     } else if (o.type === 'control_request' && o.request?.subtype !== 'can_use_tool') {
-      // Permission requests become events and wait for an answer. We register no hook callbacks, so
-      // nothing else should ask; refuse rather than hang the CLI.
+      // Permission requests become events and wait for an answer. Our only hook callback is the
+      // command guard's, so nothing else should ask; refuse rather than hang the CLI.
       this.child.stdin.write(
         JSON.stringify({ type: 'control_response', response: { subtype: 'error', request_id: o.request_id, error: 'unsupported by kelpie' } }) + '\n',
       );
@@ -305,6 +352,7 @@ class ClaudeCodeRun implements Run {
   private finish(exit: RunExit, error?: string): void {
     if (this.exit) return;
     this.exit = exit;
+    error ??= this.refused;
     if (this.mcpDir) rmSync(this.mcpDir, { recursive: true, force: true });
     for (const resolve of this.controls.values()) resolve({ subtype: 'error', error: 'process exited' });
     this.controls.clear();

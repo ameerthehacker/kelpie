@@ -1,8 +1,7 @@
-import type { Effort, LinkedTicket, Mode, SessionTitleSource, UsageLimitPause } from '@kelpie/protocol';
+import type { Delegation, Effort, LinkedTicket, Mode, SessionTitleSource, UsageLimitPause } from '@kelpie/protocol';
 import { formatDistanceStrict } from 'date-fns';
 import { generatePath } from 'react-router';
 import type { AgentSummary } from './agents.js';
-import type { Delegation } from './delegation.js';
 import { pausedStatus } from './limits.js';
 import { groupCounts, planGroup, type Placed } from './status.js';
 
@@ -52,8 +51,8 @@ export interface RoundUp {
   baseCommit?: string;
   /** How freely its agents work; a sub-agent reports its round-up's. */
   mode: Mode;
-  /** How much its orchestrator does itself rather than delegates; absent from a daemon without levels. */
-  delegation?: Delegation;
+  /** How much its orchestrator does itself rather than delegates; a sub-agent reports its round-up's. */
+  delegation: Delegation;
   /** Jira and Asana tickets linked to a top-level round-up, in the order they were linked. */
   tickets?: LinkedTicket[];
   /** A sub-agent's own branch and its worktree's state: whether its work still waits to be mustered. */

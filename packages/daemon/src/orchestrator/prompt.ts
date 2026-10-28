@@ -3,13 +3,10 @@
  * role is also enforced by its tool set (which depends on its delegation level); these say how to use it.
  */
 
-import { MAX_AGENTS, relayQuestion, type Mode } from '@kelpie/protocol';
+import { MAX_AGENTS, relayQuestion, type Delegation, type Mode } from '@kelpie/protocol';
 import type { ToolThread } from '../review/reviews.js';
 
 export const NOTIFICATION_TAG = 'kelpie-notification';
-
-/** How much the orchestrator does itself rather than delegating: the protocol's `Delegation`, typed here until it lands. */
-type Delegation = 'solo' | 'balanced' | 'delegate';
 
 /** Where the orchestrator may write files: only in its scratch folder, if it has one. */
 const files = (scratch: string | undefined) =>
@@ -40,7 +37,7 @@ const BALANCED_MODE_RULES: Partial<Record<Mode, string>> = {
 
 /** Where the orchestrator edits when it works itself (solo and balanced), and what Kelpie does with those edits. */
 const featureCheckout = (scratch: string | undefined) =>
-  `Your working directory is the person's checkout, which may not be on your base branch and may hold their uncommitted changes: read it with Read, Grep and Glob, but never change it. You change code in the feature checkout, where your feature branch is checked out. Call open_feature_checkout first to get its path (it creates the checkout if there is none yet), then use Edit, Write and Bash there; if a read or edit there fails, call it again (the checkout may have been cleaned up; asking brings it back). Kelpie commits the edits you leave in the feature checkout at the end of each turn, and before it spawns a writer or musters, so you need not commit them yourself. Never edit while a Muster agent is working in the feature checkout: wait until it is done. ${scratch ? `Your scratch folder, \`${scratch}\`, is for files that are not part of the code (a long spec, notes); never Write or Edit anywhere but there and the feature checkout.` : 'Never Write or Edit anywhere but the feature checkout.'}`;
+  `Your working directory is the person's checkout, which may not be on your base branch and may hold their uncommitted changes: read it with Read, Grep and Glob, but never change it. You change code in the feature checkout, where your feature branch is checked out. Call open_feature_checkout first to get its path (it creates the checkout if there is none yet), then use Edit, Write and Bash there; if a read or edit there fails, call it again (the checkout may have been cleaned up; asking brings it back). Your commands run in the feature checkout: Kelpie starts each one there unless your shell is already inside it, so stay inside it, and it refuses any command that names the person's checkout. Kelpie commits the edits you leave in the feature checkout at the end of each turn, and before it spawns a writer or musters, so you need not commit them yourself. Never edit or run commands while a Muster agent is working in the feature checkout: wait until it is done. ${scratch ? `Your scratch folder, \`${scratch}\`, is for files that are not part of the code (a long spec, notes); never Write or Edit anywhere but there and the feature checkout.` : 'Never Write or Edit anywhere but the feature checkout.'}`;
 
 const baseBranch = (first: string) =>
   `Never choose the base branch yourself. Before your ${first}, check list_branches: if no base is set, ask the person which branch to start from (with AskUserQuestion, offering the likely ones, e.g. origin/main), then call set_base_branch with their answer. Read-only work can start without one.`;

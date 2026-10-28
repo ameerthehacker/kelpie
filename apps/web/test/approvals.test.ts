@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { KelpieEvent } from '@kelpie/protocol';
-import { approvalsSummary, broaderRule, focusAfter, groupApprovals, pendingQuestions, questionKey, shownQuestion, type PendingApproval } from '../src/lib/approvals.js';
+import { approvalsSummary, broaderRule, canRemember, focusAfter, groupApprovals, pendingQuestions, questionKey, shownQuestion, type PendingApproval } from '../src/lib/approvals.js';
 import { buildChat, type PlanView } from '../src/lib/chat.js';
 
 const ask = (over: Partial<PendingApproval>): PendingApproval => ({
@@ -17,6 +17,14 @@ const ask = (over: Partial<PendingApproval>): PendingApproval => ({
 });
 
 describe('approvals', () => {
+  it('offers "Allow for round-up" only when an agent asks, never for the orchestrator’s own commands alone', () => {
+    const [agent] = groupApprovals([ask({})]);
+    const [own] = groupApprovals([ask({ sessionId: 'r', agentTitle: 'Round-up' })]);
+    const [both] = groupApprovals([ask({ sessionId: 'r', agentTitle: 'Round-up' }), ask({})]);
+    const [ruleless] = groupApprovals([ask({ rule: undefined })]);
+    expect([agent, own, both, ruleless].map((g) => canRemember(g!))).toEqual([true, false, true, false]);
+  });
+
   it('groups the same ask from many agents into one row, oldest first, and leaves plans to the chat', () => {
     const items = [
       ask({ sessionId: 'a2', agentTitle: 'Billing', ts: '2026-01-01T00:00:02.000Z' }),

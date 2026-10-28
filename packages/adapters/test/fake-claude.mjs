@@ -29,6 +29,9 @@
 // FAKE_TURN_DELAY (ms) holds each later FAKE_EVERY_TURN answer back that long after its echo: a turn that takes a while.
 // FAKE_SLOW (ms) does the same for the first turn: its init and echo go out at once, the rest of the fixture that much later.
 // A turn held back by either ends at an interrupt the way the real CLI's does: "[Request interrupted by user]", then an aborted result.
+// FAKE_HOOK=<command>: if a PreToolUse hook on Bash was registered (an initialize control request), the first turn
+// first calls it back (hook_callback) for that command, with FAKE_HOOK_CWD as the shell's cwd, and goes on once
+// answered; FAKE_ANSWER_FILE gets the hook's output.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -76,7 +79,11 @@ function limitTurn(message, limit) {
 }
 
 const ASK_ID = 'fake-ask-1';
+const HOOK_ID = 'fake-hook-1';
 let asking = false;
+/** The PreToolUse hook callback registered for Bash, if any. */
+let bashHook;
+let hooking = false;
 /** A turn's answer held back by FAKE_TURN_DELAY or FAKE_SLOW, until an interrupt ends the turn instead. */
 let delayed;
 const later = (ms, fn) => {
@@ -92,6 +99,15 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (process.env.FAKE_ANSWER_FILE) appendFileSync(process.env.FAKE_ANSWER_FILE, JSON.stringify(msg.response.response) + '\n');
     lines.forEach(out);
     continue;
+  }
+  if (msg.type === 'control_response' && msg.response?.request_id === HOOK_ID && hooking) {
+    hooking = false;
+    if (process.env.FAKE_ANSWER_FILE) appendFileSync(process.env.FAKE_ANSWER_FILE, JSON.stringify(msg.response.response) + '\n');
+    lines.forEach(out);
+    continue;
+  }
+  if (msg.type === 'control_request' && msg.request?.subtype === 'initialize') {
+    bashHook = msg.request.hooks?.PreToolUse?.find((h) => h.matcher === 'Bash')?.hookCallbackIds?.[0];
   }
   if (msg.type === 'control_request') {
     if (process.env.FAKE_CONTROL_FILE && msg.request?.subtype !== 'interrupt') appendFileSync(process.env.FAKE_CONTROL_FILE, JSON.stringify(msg.request) + '\n');
@@ -137,7 +153,12 @@ for await (const line of createInterface({ input: process.stdin })) {
     else answer();
   } else if (msg.type === 'user' && !printed) {
     printed = true;
-    if (process.env.FAKE_ASK && !hang) {
+    if (process.env.FAKE_HOOK && bashHook && !hang) {
+      hooking = true;
+      const tool_input = { command: process.env.FAKE_HOOK, description: 'A command' };
+      const input = { session_id: JSON.parse(lines[0]).session_id, cwd: process.env.FAKE_HOOK_CWD ?? process.cwd(), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input, tool_use_id: 'toolu_fake' };
+      out({ type: 'control_request', request_id: HOOK_ID, request: { subtype: 'hook_callback', callback_id: bashHook, input, tool_use_id: 'toolu_fake' } });
+    } else if (process.env.FAKE_ASK && !hang) {
       const command = process.env.FAKE_ASK;
       asking = true;
       const tool = process.env.FAKE_ASK_TOOL;

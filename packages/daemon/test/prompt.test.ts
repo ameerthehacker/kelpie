@@ -32,7 +32,9 @@ describe('the orchestrator prompt by delegation level', () => {
     expect(prompt).toContain('Call open_feature_checkout first to get its path');
     expect(prompt).toContain('use Edit, Write and Bash there');
     expect(prompt).toContain('Kelpie commits the edits you leave in the feature checkout at the end of each turn, and before it spawns a writer or musters');
-    expect(prompt).toContain('Never edit while a Muster agent is working in the feature checkout');
+    expect(prompt).toContain('Never edit or run commands while a Muster agent is working in the feature checkout');
+    expect(prompt).toContain('Your commands run in the feature checkout: Kelpie starts each one there unless your shell is already inside it');
+    expect(prompt).toContain("it refuses any command that names the person's checkout");
     expect(prompt).toContain('Threads in the "No agent" group are on your own edits: fix those yourself');
     expect(prompt).not.toContain('Kelpie starts a "Review fixes" writer');
     expect(prompt).not.toContain('You never do the work yourself');

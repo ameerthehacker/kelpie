@@ -1,15 +1,10 @@
 import type { QueryClient } from '@tanstack/react-query';
+import { DEFAULT_DELEGATION, DELEGATIONS, type Delegation } from '@kelpie/protocol';
 import { api } from './api.js';
 import type { RoundUp } from './round-ups.js';
 
-/*
- * How much the orchestrator does itself rather than hands to sub-agents. Stand-ins for
- * @kelpie/protocol's `DELEGATIONS`, `Delegation` and `DEFAULT_DELEGATION` (packages/protocol/src/settings.ts)
- * until that lands on this branch; the same names and values, so switching is an import.
- */
-export const DELEGATIONS = ['solo', 'balanced', 'delegate'] as const;
-export type Delegation = (typeof DELEGATIONS)[number];
-export const DEFAULT_DELEGATION: Delegation = 'balanced';
+/** How much the orchestrator does itself rather than hands to sub-agents: the protocol's levels, for the app. */
+export { DEFAULT_DELEGATION, DELEGATIONS, type Delegation };
 
 /** How each level reads in the composer and Settings. */
 export const DELEGATION_INFO: Record<Delegation, { label: string; detail: string }> = {

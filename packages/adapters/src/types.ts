@@ -26,6 +26,11 @@ export interface RunSpec {
    * auto mode the CLI would otherwise decide MCP tool calls itself, without asking us.
    */
   askTools?: string[];
+  /**
+   * Kelpie's word on each command before the harness's own permission checks (and any rule) see it:
+   * a PreToolUse hook on Bash. Without it, commands go to those checks as they are.
+   */
+  commandGuard?: CommandGuard;
   /** Directories outside `cwd` the harness may work in too (e.g. the round-up's scratch folder). */
   addDirs?: string[];
   appendSystemPrompt?: string;
@@ -49,6 +54,17 @@ export interface RunSpec {
   env?: Record<string, string>;
   extraArgs?: string[];
 }
+
+/** A command the harness is about to run, and where its shell is now. */
+export interface CommandCall {
+  command: string;
+  cwd: string;
+}
+
+/** Run the command as it is (undefined), run `command` in its place, or refuse it, telling the model why. */
+export type CommandVerdict = { command: string } | { deny: string } | undefined;
+
+export type CommandGuard = (call: CommandCall) => CommandVerdict | Promise<CommandVerdict>;
 
 export interface RunExit {
   code: number | null;
