@@ -47,6 +47,8 @@ export interface Artifacts {
 
 /** One document with its text, cut at `DOCUMENT_MAX_BYTES` (`truncated`). */
 export interface ArtifactDocumentBody extends ArtifactDocument {
+  /** Where it is on disk (for "Open in VS Code"). */
+  file: string;
   text: string;
   truncated?: boolean;
 }

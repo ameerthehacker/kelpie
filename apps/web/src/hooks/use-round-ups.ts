@@ -15,6 +15,7 @@ import { dropSession, SUB_AGENTS, upsertSubAgent } from './use-round-up-status';
 import type { ReviewState } from '@/lib/review';
 import { reviewKey } from './use-review';
 import { CHANGES } from './use-changes';
+import { ARTIFACTS } from '@/lib/artifacts';
 import { workbenchStream } from '@/lib/workbench';
 
 const ROUND_UPS = ['round-ups'] as const;
@@ -53,6 +54,7 @@ export function useRoundUps() {
             // Reviews and diffs too: their events missed while away are not replayed.
             void queryClient.invalidateQueries({ queryKey: ['review'] });
             void queryClient.invalidateQueries({ queryKey: [CHANGES] });
+            void queryClient.invalidateQueries({ queryKey: [ARTIFACTS] });
           },
           // Straight after, on every (re)connect: which sub-agents are working, for notifications and the sidebar's dots.
           'sub-agents': (msg) => {
@@ -98,6 +100,8 @@ export function useRoundUps() {
             const { roundUpId, sessionId } = JSON.parse(msg.data) as { roundUpId: string; sessionId: string };
             void queryClient.invalidateQueries({ queryKey: [CHANGES, sessionId] });
             if (roundUpId !== sessionId) void queryClient.invalidateQueries({ queryKey: [CHANGES, roundUpId] });
+            // Agents leave documents in the scratch folder as they work.
+            void queryClient.invalidateQueries({ queryKey: [ARTIFACTS, roundUpId] });
           },
           // The Workbench: every card on the board as the stream connects, then each card as it changes.
           ...workbenchStream(queryClient),

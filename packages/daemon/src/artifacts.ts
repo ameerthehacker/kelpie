@@ -78,7 +78,7 @@ export class Artifacts {
     const doc = await this.describe(scratch, rel, this.authors(roundUp, agents), this.store.acceptedArtifacts(roundUp.id)).catch(() => undefined);
     if (!doc) throw new ArtifactError('no such document', 404);
     const { text, truncated } = await readHead(real, DOCUMENT_MAX_BYTES);
-    return { ...doc, text, ...(truncated ? { truncated } : {}) };
+    return { ...doc, file: real, text, ...(truncated ? { truncated } : {}) };
   }
 
   /** The person accepted an artifact (an `artifactKey`). */
