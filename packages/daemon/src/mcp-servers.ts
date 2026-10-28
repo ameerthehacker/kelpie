@@ -445,7 +445,20 @@ interface Probed {
   scope: string;
   status: McpStatus;
   config: Obj;
+  /** Its tools not marked read-only (MCP's readOnlyHint), when Claude Code listed its tools. */
+  writes?: string[];
 }
+
+/**
+ * Servers' tools that change things, by server name, for when Claude Code has not listed a server's
+ * tools (it wasn't checked, or didn't connect). Read-only agents are denied them.
+ */
+export const KNOWN_WRITES: Record<string, string[]> = {
+  'claude.ai Claude Docs': ['create', 'update', 'delete', 'batch'],
+};
+
+/** A server's tool as Claude Code names it in rules: `mcp__claude_ai_Claude_Docs__update`. */
+export const mcpToolName = (server: string, tool: string): string => `${askRule(server)}__${tool.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 
 interface Check {
   at: number;
@@ -537,15 +550,18 @@ export class McpServers {
 
   /**
    * The `mcpServers` map for an agent working for a round-up in `repo`: each server whose grant
-   * matches it exactly (scope, repo, name and fingerprint), and the names left out with why.
+   * matches it exactly (scope, repo, name and fingerprint), and the names left out with why; and
+   * the tools of those servers that change things (`mcpToolName`s), for read-only agents to be denied.
    */
-  forAgents(repo: string, grants: readonly McpGrant[]): { servers: Record<string, Obj>; skipped: { name: string; reason: string }[] } {
+  forAgents(repo: string, grants: readonly McpGrant[]): { servers: Record<string, Obj>; skipped: { name: string; reason: string }[]; writes: string[] } {
     const granted = new Map(grants.map((g) => [keyOf(g), g.fingerprint]));
     const servers: Record<string, Obj> = {};
+    const writes: string[] = [];
     const prefixes = new Map<string, string>();
     const skipped: { name: string; reason: string }[] = [];
     // Strongest first, so of two allowed servers with one name the one Claude Code would load wins.
     const dir = resolve(repo);
+    const probed = new Map((this.checks.get(dir)?.probed ?? []).map((p) => [`${p.scope}\0${p.name}`, p]));
     const found = this.found(dir).sort((a, b) => PRECEDENCE.indexOf(b.scope) - PRECEDENCE.indexOf(a.scope));
     const pins = new Pins();
     for (const s of found) {
@@ -562,9 +578,11 @@ export class McpServers {
       else {
         servers[s.name] = p ? this.fromNeutral(s, p) : s.config;
         prefixes.set(prefix, s.name);
+        const tools = probed.get(`${s.scope}\0${s.name}`)?.writes ?? (Object.hasOwn(KNOWN_WRITES, s.name) ? KNOWN_WRITES[s.name]! : []);
+        writes.push(...tools.map((t) => mcpToolName(s.name, t)));
       }
     }
-    return { servers, skipped };
+    return { servers, skipped, writes };
   }
 
   /**
@@ -735,7 +753,10 @@ export class McpServers {
         const servers: unknown = o.response?.response?.mcpServers;
         if (!Array.isArray(servers)) return finish(new Error(o.response?.error ? String(o.response.error) : 'Claude Code gave no MCP server list'));
         last = servers.filter(isObj).flatMap((s): Probed[] => {
-          const p = { name: String(s.name), scope: String(s.scope ?? ''), status: statusOf(s.status), config: {} };
+          // Tools are listed with Claude Code's reading of their MCP annotations (`readOnly`).
+          const tools = Array.isArray(s.tools) ? s.tools.filter(isObj) : [];
+          const writes = tools.filter((t) => t.annotations?.readOnly !== true && t.annotations?.readOnlyHint !== true).map((t) => String(t.name));
+          const p = { name: String(s.name), scope: String(s.scope ?? ''), status: statusOf(s.status), config: {}, ...(tools.length ? { writes } : {}) };
           if (s.scope !== 'claudeai') return [p];
           // Only a connector's entry is kept (its type, URL and id: the account signs it in); without them no agent could load it.
           const c = isObj(s.config) ? s.config : {};
