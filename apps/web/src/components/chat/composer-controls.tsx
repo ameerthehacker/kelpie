@@ -1,4 +1,4 @@
-import { CheckIcon, ChevronDownIcon, ChevronsRightIcon, ClipboardListIcon, FilePenLineIcon, GitBranchIcon, LockIcon } from 'lucide-react';
+import { CheckIcon, ChevronDownIcon, ChevronsRightIcon, ClipboardListIcon, FilePenLineIcon, GitBranchIcon, LockIcon, NetworkIcon, ScaleIcon, UserIcon } from 'lucide-react';
 import { useId, useState, type ComponentType, type KeyboardEvent } from 'react';
 import type { Effort, Mode } from '@kelpie/protocol';
 import { DropdownMenu as DropdownMenuPrimitive } from 'radix-ui';
@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import type { Branch } from '@/hooks/use-branches';
+import { DELEGATION_INFO, DELEGATIONS, type Delegation } from '@/lib/delegation';
 import { EFFORT_INFO, EFFORTS, effortOf, effortSuffix } from '@/lib/effort';
 import { harnessOf, modelLabel } from '@/lib/harnesses';
 import { MODE_INFO } from '@/lib/modes';
@@ -181,6 +182,45 @@ export function ModeMenu({ mode, modes, onMode }: { mode: Mode; modes: readonly 
               <span className="flex flex-col gap-0.5">
                 <span className="text-fg text-[13px]">{MODE_INFO[m].label}</span>
                 <span className="text-mu text-xs leading-snug">{MODE_INFO[m].detail}</span>
+              </span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+const DELEGATION_ICON: Record<Delegation, ComponentType<{ className?: string; strokeWidth?: number }>> = {
+  solo: UserIcon,
+  balanced: ScaleIcon,
+  delegate: NetworkIcon,
+};
+
+function DelegationIcon({ delegation, className }: { delegation: Delegation; className?: string }) {
+  const Icon = DELEGATION_ICON[delegation];
+  return <Icon aria-hidden="true" className={cn('text-mu2 size-3.5 shrink-0', className)} strokeWidth={2.2} />;
+}
+
+/** How much the orchestrator does itself rather than hands to sub-agents: the tokens' trade-off. */
+export function DelegationMenu({ delegation, onDelegation }: { delegation: Delegation; onDelegation: (d: Delegation) => void }) {
+  const { label } = DELEGATION_INFO[delegation];
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger className={chip} aria-label={`Delegation: ${label}`} title="How much Kelpie delegates to sub-agents">
+        <DelegationIcon delegation={delegation} />
+        <span className="hidden truncate @md:inline">{label}</span>
+        {caret}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" side="top" className={cn(menu, 'w-80')}>
+        <DropdownMenuLabel className={heading}>Delegation</DropdownMenuLabel>
+        <DropdownMenuRadioGroup value={delegation} onValueChange={(d) => onDelegation(d as Delegation)}>
+          {DELEGATIONS.map((d) => (
+            <DropdownMenuRadioItem key={d} value={d} className="items-start gap-2.5 py-2">
+              <DelegationIcon delegation={d} className="mt-0.5" />
+              <span className="flex flex-col gap-0.5">
+                <span className="text-fg text-[13px]">{DELEGATION_INFO[d].label}</span>
+                <span className="text-mu text-xs leading-snug">{DELEGATION_INFO[d].detail}</span>
               </span>
             </DropdownMenuRadioItem>
           ))}
