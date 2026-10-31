@@ -50,10 +50,10 @@ export function AgentChip({ agent, title, harness, onClick, disabled }: { agent?
       title={`Open ${agent?.title ?? title}`}
       onClick={onClick}
       className={cn(
-        'bg-chip hover:bg-raise flex h-[30px] max-w-[16rem] items-center gap-2 rounded-full pr-3 pl-1.5 text-[13px] transition-colors disabled:opacity-60',
-        focused ? 'text-fg shadow-[inset_0_0_0_1.5px_var(--acc)]' : 'text-fg2',
-        !focused && state === 'needs-you' && 'shadow-[inset_0_0_0_1px_var(--wait)]',
-        !focused && state === 'failed' && 'shadow-[inset_0_0_0_1px_var(--fail)]',
+        'flex h-[30px] max-w-[16rem] items-center gap-2 rounded-full pr-3 pl-1.5 text-[13px] transition-colors disabled:opacity-60',
+        focused ? 'bg-raise text-fg' : 'bg-chip text-fg2 hover:bg-raise',
+        state === 'needs-you' && 'shadow-[inset_0_0_0_1px_var(--wait)]',
+        state === 'failed' && 'shadow-[inset_0_0_0_1px_var(--fail)]',
       )}
     >
       <HarnessMark harness={agent?.harness ?? harness ?? 'claude-code'} />
