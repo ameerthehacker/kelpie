@@ -70,6 +70,15 @@ describe('the orchestrator prompt by delegation level', () => {
     expect(balanced).toContain('muster_agents');
   });
 
+  it('sends connector and artifact work to agents, and edits to writers', () => {
+    for (const prompt of [balanced, delegate]) {
+      expect(prompt).toContain("You have none of the person's connectors");
+      expect(prompt).toContain("changing one a writer's (writes: true)");
+      expect(prompt).toContain('those need a browser agent');
+    }
+    expect(solo).not.toContain('Artifact tools');
+  });
+
   it.each([['solo', 'your file edits go through freely'], ['balanced', 'you and your agents change files freely'], ['delegate', 'agents change files freely']] as const)(
     '%s explains accept-edits mode for who edits',
     (delegation, text) => {
